@@ -4,40 +4,33 @@ import {
   AssertionCaptureResultSchema,
   CanonicalAssertionObservationSchema,
   UtcDateTimeSchema,
+  evaluateCapturedAssertion,
   type AssertionCaptureInput,
   type AssertionCaptureResult,
   type AssertionEvidenceCapture,
+  type AssertionSnapshotBrowserController,
   type AssertionV1,
   type BrowserController,
   type CanonicalAssertionObservation,
-  type CompactElement,
-  type PolicyActivitySummary,
-  type UntrustedAgentObservation,
+  type TransientAssertionSnapshotV1,
 } from "@tracegate/shared"
 
-import {
-  type CurrentAssertionSnapshot,
-} from "./browser-controller.js"
 import { redactUrlForPersistence } from "./policy.js"
 
 const QUIET_INTERVAL_MS = 750
 const MAX_CAPTURE_ATTEMPTS = 3
-
-interface AssertionSnapshotSource {
-  currentAssertionSnapshot(signal: AbortSignal): Promise<CurrentAssertionSnapshot>
-}
 
 export interface FreshAssertionEvidenceCaptureOptions {
   readonly sleep?: (durationMs: number, signal: AbortSignal) => Promise<void>
   readonly now?: () => Date
 }
 
-function asSource(controller: BrowserController): AssertionSnapshotSource {
-  const candidate = controller as BrowserController & Partial<AssertionSnapshotSource>
-  if (typeof candidate.currentAssertionSnapshot !== "function") {
-    throw new Error("Browser controller does not expose fresh assertion snapshots")
+function asSource(controller: BrowserController): AssertionSnapshotBrowserController {
+  const candidate = controller as BrowserController & Partial<AssertionSnapshotBrowserController>
+  if (typeof candidate.captureAssertionSnapshot !== "function") {
+    throw new Error("Browser controller does not expose dedicated assertion snapshots")
   }
-  return candidate as AssertionSnapshotSource
+  return candidate as BrowserController & AssertionSnapshotBrowserController
 }
 
 async function defaultSleep(durationMs: number, signal: AbortSignal): Promise<void> {
@@ -56,158 +49,48 @@ async function defaultSleep(durationMs: number, signal: AbortSignal): Promise<vo
   })
 }
 
-function comparable(value: string, caseSensitive: boolean): string {
-  return caseSensitive ? value : value.toLocaleLowerCase("en-US")
-}
-
-function nameMatches(
-  element: CompactElement,
-  matcher: Extract<AssertionV1, { kind: "semantic" | "state" }>["locator"]["accessibleName"],
-): boolean {
-  const actual = comparable(element.name, matcher.caseSensitive)
-  const expected = comparable(matcher.value, matcher.caseSensitive)
-  return matcher.operator === "equals" ? actual === expected : actual.includes(expected)
-}
-
-function semanticMatches(
-  observation: UntrustedAgentObservation,
-  assertion: Extract<AssertionV1, { kind: "semantic" | "state" }>,
-): CompactElement[] {
-  return observation.elements.filter(
-    (element) =>
-      element.role.toLocaleLowerCase("en-US") ===
-        assertion.locator.role.toLocaleLowerCase("en-US") &&
-      nameMatches(element, assertion.locator.accessibleName),
-  )
-}
-
-function unverifiable(
-  assertion: AssertionV1,
-  reasonCode: CanonicalAssertionObservation["reasonCode"],
-  actualSummary: string,
-): CanonicalAssertionObservation {
-  return CanonicalAssertionObservationSchema.parse({
-    assertionId: assertion.id,
-    status: "unverifiable",
-    observedResult: null,
-    expectedSummary: assertion.label ?? `${assertion.kind} assertion`,
-    actualSummary,
-    reasonCode,
-  })
-}
-
-function observed(
-  assertion: AssertionV1,
-  result: boolean,
-  actualSummary: string,
-): CanonicalAssertionObservation {
-  return CanonicalAssertionObservationSchema.parse({
-    assertionId: assertion.id,
-    status: "observed",
-    observedResult: result,
-    expectedSummary: assertion.label ?? `${assertion.kind} assertion`,
-    actualSummary,
-    reasonCode: null,
-  })
-}
-
-export function evaluateAssertionFromObservation(
-  assertion: AssertionV1,
-  observation: UntrustedAgentObservation,
-): CanonicalAssertionObservation {
-  if (assertion.kind === "url") {
-    const actual = new URL(observation.url)
-    const expected = new URL(assertion.expectedUrl)
-    const result =
-      assertion.operator === "equals"
-        ? actual.href === expected.href
-        : actual.origin === expected.origin && actual.pathname === expected.pathname
-    return observed(assertion, result, result ? "Final URL matched" : "Final URL did not match")
-  }
-
-  if (assertion.kind === "text") {
-    if (assertion.scope === "document_visible_text" && observation.truncated) {
-      return unverifiable(assertion, "observation_truncated", "Visible document text was truncated")
-    }
-    const actual = comparable(
-      assertion.scope === "title" ? observation.title : observation.visibleText,
-      assertion.caseSensitive,
-    )
-    const expected = comparable(assertion.expected, assertion.caseSensitive)
-    const result =
-      assertion.operator === "equals"
-        ? actual === expected
-        : assertion.operator === "contains"
-          ? actual.includes(expected)
-          : !actual.includes(expected)
-    return observed(assertion, result, result ? "Text predicate matched" : "Text predicate did not match")
-  }
-
-  if (observation.truncated) {
-    return unverifiable(assertion, "observation_truncated", "Semantic element capture was truncated")
-  }
-  const matches = semanticMatches(observation, assertion)
-  if (assertion.kind === "semantic") {
-    const result =
-      assertion.count.operator === "equals"
-        ? matches.length === assertion.count.value
-        : assertion.count.operator === "at_least"
-          ? matches.length >= assertion.count.value
-          : matches.length <= assertion.count.value
-    return observed(assertion, result, `Observed ${matches.length} semantic matches`)
-  }
-
-  if (matches.length > 1) {
-    return unverifiable(assertion, "semantic_match_ambiguous", "More than one semantic element matched")
-  }
-  if (matches.length === 0) {
-    return observed(assertion, false, "No semantic element matched")
-  }
-  const element = matches[0]!
-  const actual =
-    assertion.property === "value"
-      ? (element.attributes.value ?? null)
-      : element[assertion.property]
-  if (actual === null) {
-    return unverifiable(assertion, "unsupported_state", "Requested element state was unavailable")
-  }
-  return observed(
-    assertion,
-    actual === assertion.expected,
-    actual === assertion.expected ? "Element state matched" : "Element state did not match",
-  )
-}
-
 function sha256(value: string): string {
   return createHash("sha256").update(value, "utf8").digest("hex")
 }
 
-function canonicalFingerprint(
-  snapshot: CurrentAssertionSnapshot,
-  assertions: readonly CanonicalAssertionObservation[],
-): string {
-  return sha256(
-    JSON.stringify({
-      documentId: snapshot.documentId,
-      loaderId: snapshot.loaderId,
-      url: snapshot.observation.url,
-      title: snapshot.observation.title,
-      visibleText: snapshot.observation.visibleText,
-      // Element refs encode the observation revision and therefore change on
-      // every capture even when browser-observable state is identical.
-      elements: snapshot.observation.elements.map(({ ref: _ref, ...element }) => element),
-      truncated: snapshot.observation.truncated,
-      policyActivity: snapshot.policyActivity,
-      assertions,
-    }),
+function assertionRelevantProjection(
+  snapshot: TransientAssertionSnapshotV1,
+  assertions: readonly AssertionV1[],
+): unknown {
+  const captureFinalUrl = assertions.some((assertion) => assertion.kind === "url")
+  const captureTitle = assertions.some(
+    (assertion) => assertion.kind === "text" && assertion.scope === "title",
   )
+  const captureDocumentVisibleText = assertions.some(
+    (assertion) => assertion.kind === "text" && assertion.scope === "document_visible_text",
+  )
+  return {
+    finalUrl: captureFinalUrl ? snapshot.finalUrl : null,
+    title: captureTitle ? snapshot.title : null,
+    documentVisibleText: captureDocumentVisibleText ? snapshot.documentVisibleText : null,
+    semanticStateValues: snapshot.semanticStateValues,
+  }
+}
+
+function canonicalFingerprint(
+  snapshot: TransientAssertionSnapshotV1,
+  assertions: readonly AssertionV1[],
+): string {
+  return sha256(JSON.stringify(assertionRelevantProjection(snapshot, assertions)))
 }
 
 function unstableAssertions(
-  assertions: readonly AssertionV1[],
+  assertions: readonly CanonicalAssertionObservation[],
 ): CanonicalAssertionObservation[] {
   return assertions.map((assertion) =>
-    unverifiable(assertion, "page_unstable", "Canonical captures did not stabilize"),
+    CanonicalAssertionObservationSchema.parse({
+      assertionId: assertion.assertionId,
+      status: "unverifiable",
+      observedResult: null,
+      expectedSummary: assertion.expectedSummary,
+      actualSummary: "Assertion-relevant browser state did not stabilize.",
+      reasonCode: "page_unstable",
+    }),
   )
 }
 
@@ -228,21 +111,25 @@ export class FreshBrowserAssertionEvidenceCapture implements AssertionEvidenceCa
     const source = asSource(controller)
     let previousFingerprint: string | null = null
     let accepted: {
-      snapshot: CurrentAssertionSnapshot
+      snapshot: TransientAssertionSnapshotV1
       assertions: CanonicalAssertionObservation[]
       fingerprint: string
       attempts: number
     } | null = null
-    let lastSnapshot: CurrentAssertionSnapshot | null = null
+    let last: {
+      snapshot: TransientAssertionSnapshotV1
+      assertions: CanonicalAssertionObservation[]
+      fingerprint: string
+    } | null = null
 
     for (let attempt = 1; attempt <= MAX_CAPTURE_ATTEMPTS; attempt += 1) {
       if (attempt > 1) await this.#sleep(QUIET_INTERVAL_MS, signal)
-      const snapshot = await source.currentAssertionSnapshot(signal)
+      const snapshot = await source.captureAssertionSnapshot(input, signal)
       const assertions = input.assertions.map((assertion) =>
-        evaluateAssertionFromObservation(assertion, snapshot.observation),
+        evaluateCapturedAssertion(assertion, snapshot),
       )
-      const fingerprint = canonicalFingerprint(snapshot, assertions)
-      lastSnapshot = snapshot
+      const fingerprint = canonicalFingerprint(snapshot, input.assertions)
+      last = { snapshot, assertions, fingerprint }
       if (fingerprint === previousFingerprint) {
         accepted = { snapshot, assertions, fingerprint, attempts: attempt }
         break
@@ -250,32 +137,36 @@ export class FreshBrowserAssertionEvidenceCapture implements AssertionEvidenceCa
       previousFingerprint = fingerprint
     }
 
-    if (!lastSnapshot) throw new Error("Fresh assertion capture produced no snapshot")
-    const assertions = accepted?.assertions ?? unstableAssertions(input.assertions)
-    const fingerprint = accepted?.fingerprint ?? canonicalFingerprint(lastSnapshot, assertions)
+    if (!last) throw new Error("Fresh assertion capture produced no snapshot")
+    const selected = accepted ?? last
+    const assertions = accepted ? accepted.assertions : unstableAssertions(last.assertions)
     const capturedAt = UtcDateTimeSchema.parse(this.#now().toISOString())
-    const snapshot = accepted?.snapshot ?? lastSnapshot
+    const canonicalFinalUrl = selected.snapshot.finalUrl.status === "captured"
+      ? selected.snapshot.finalUrl.value
+      : null
     return AssertionCaptureResultSchema.parse({
       transient: {
         schemaVersion: 1,
-        canonicalFinalUrl: snapshot.observation.url,
-        documentId: snapshot.documentId,
-        loaderId: snapshot.loaderId,
+        canonicalFinalUrl,
+        documentId: selected.snapshot.documentId,
+        loaderId: selected.snapshot.loaderId,
         capturedAt,
         assertionObservations: assertions,
-        evidenceHash: fingerprint,
+        evidenceHash: selected.fingerprint,
       },
       evidence: {
         schemaVersion: 1,
         capturedAt,
-        redactedDisplayUrl: redactUrlForPersistence(snapshot.observation.url),
-        documentIdHash: sha256(snapshot.documentId),
-        loaderIdHash: sha256(snapshot.loaderId),
+        redactedDisplayUrl: canonicalFinalUrl === null
+          ? null
+          : redactUrlForPersistence(canonicalFinalUrl),
+        documentIdHash: sha256(selected.snapshot.documentId),
+        loaderIdHash: sha256(selected.snapshot.loaderId),
         quietIntervalMs: QUIET_INTERVAL_MS,
         requiredIdenticalCaptures: 2,
         captureAttempts: accepted?.attempts ?? MAX_CAPTURE_ATTEMPTS,
-        evidenceHash: fingerprint,
-        policyActivity: snapshot.policyActivity,
+        evidenceHash: selected.fingerprint,
+        policyActivity: selected.snapshot.policyActivity,
         assertions,
       },
     })

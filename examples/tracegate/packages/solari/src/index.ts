@@ -5,7 +5,6 @@ export {
 export {
   SolariCdpBrowserController,
   SolariBrowserControllerFactory,
-  type CurrentAssertionSnapshot,
   type CurrentOriginTextResult,
   type CurrentPageDiscoverySnapshot,
   type RawCurrentOriginWebMcpTool,
@@ -15,7 +14,6 @@ export {
 export { SolariWebMcpReadOnlyAdapter } from "./webmcp-readonly-adapter.js"
 export {
   FreshBrowserAssertionEvidenceCapture,
-  evaluateAssertionFromObservation,
   type FreshAssertionEvidenceCaptureOptions,
 } from "./fresh-evidence-capture.js"
 export {

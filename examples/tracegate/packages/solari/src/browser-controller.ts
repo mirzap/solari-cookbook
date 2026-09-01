@@ -2,16 +2,19 @@ import {
   ObservationRevisionSchema,
   RunWarningSchema,
   TraceGateError,
+  TransientAssertionSnapshotV1Schema,
   UntrustedAgentObservationSchema,
   createControlError,
+  type AssertionCaptureInput,
+  type AssertionSnapshotBrowserController,
   type BrowserController,
   type BrowserControllerFactory,
   type BrowserLease,
   type CompactElement,
   type ElementActionInput,
   type ObservationRevision,
-  type PolicyActivitySummary,
   type PolicyDenyCode,
+  type TransientAssertionSnapshotV1,
   type UntrustedAgentObservation,
 } from "@tracegate/shared"
 import {
@@ -64,6 +67,11 @@ const MAX_SEMANTIC_CANDIDATES = 100
 const MAX_ELEMENT_ROLE_CHARACTERS = 100
 const MAX_ELEMENT_FIELD_CHARACTERS = 500
 const MAX_VISIBLE_TEXT_CHARACTERS = 20_000
+const MAX_ASSERTION_TITLE_CHARACTERS = 16_384
+const MAX_ASSERTION_DOCUMENT_TEXT_CHARACTERS = 262_144
+const MAX_ASSERTION_SEMANTIC_MATCHES = 21
+const MAX_ASSERTION_STATE_MATCHES = 2
+const MAX_ASSERTION_STATE_VALUE_CHARACTERS = 500
 
 const ALLOWED_KEYS = new Set([
   "Escape",
@@ -115,6 +123,56 @@ interface InPageSemanticSnapshot {
   readonly elements: readonly InPageSemanticElement[]
 }
 
+interface InPageAssertionProjectionRequest {
+  readonly assertionId: string
+  readonly kind: "semantic" | "state"
+  readonly role: string
+  readonly nameOperator: "equals" | "contains"
+  readonly nameValue: string
+  readonly nameCaseSensitive: boolean
+  readonly property: "checked" | "selected" | "expanded" | "disabled" | "value" | null
+}
+
+type InPageAssertionValue =
+  | {
+      readonly assertionId: string
+      readonly kind: "semantic"
+      readonly status: "captured"
+      readonly matchedCount: number
+      readonly truncated: boolean
+    }
+  | {
+      readonly assertionId: string
+      readonly kind: "state"
+      readonly status: "captured"
+      readonly property: "checked" | "selected" | "expanded" | "disabled" | "value"
+      readonly matchedCount: number
+      readonly matchesTruncated: boolean
+      readonly actualValue: boolean | string | null
+      readonly valueTruncated: boolean
+    }
+  | {
+      readonly assertionId: string
+      readonly kind: "semantic" | "state"
+      readonly status: "unavailable"
+      readonly reasonCode: "semantic_data_unavailable" | "sensitive_control"
+    }
+
+interface InPageAssertionCapture {
+  readonly finalUrl:
+    | { readonly status: "captured"; readonly value: string }
+    | { readonly status: "unavailable"; readonly reasonCode: "evidence_invalid" }
+  readonly title:
+    | { readonly status: "captured"; readonly value: string; readonly truncated: boolean }
+    | { readonly status: "unavailable"; readonly reasonCode: "text_data_unavailable" }
+    | null
+  readonly documentVisibleText:
+    | { readonly status: "captured"; readonly value: string; readonly truncated: boolean }
+    | { readonly status: "unavailable"; readonly reasonCode: "text_data_unavailable" }
+    | null
+  readonly semanticStateValues: readonly InPageAssertionValue[]
+}
+
 export interface CurrentPageDiscoverySnapshot {
   readonly observationRevision: ObservationRevision
   readonly jsonLdTexts: readonly string[]
@@ -127,13 +185,6 @@ export interface CurrentOriginTextResult {
   readonly finalUrl: string
   readonly text: string
   readonly truncated: boolean
-}
-
-export interface CurrentAssertionSnapshot {
-  readonly documentId: string
-  readonly loaderId: string
-  readonly observation: UntrustedAgentObservation
-  readonly policyActivity: PolicyActivitySummary
 }
 
 export interface RawCurrentOriginWebMcpTool {
@@ -457,7 +508,7 @@ async function readElement(locator: Locator): Promise<ElementSnapshot> {
   })
 }
 
-export class SolariCdpBrowserController implements BrowserController {
+export class SolariCdpBrowserController implements BrowserController, AssertionSnapshotBrowserController {
   readonly #allowedOrigins: Set<string>
   readonly #maxObservationBytes: number
   readonly #internalOperationTimeoutMs: number
@@ -1307,19 +1358,418 @@ export class SolariCdpBrowserController implements BrowserController {
     return result
   }
 
-  async currentAssertionSnapshot(signal: AbortSignal): Promise<CurrentAssertionSnapshot> {
-    const observation = await this.observe(signal)
-    const identity = Math.max(1, this.#documentSequence)
-    return {
+  async captureAssertionSnapshot(
+    input: AssertionCaptureInput,
+    signal: AbortSignal,
+  ): Promise<TransientAssertionSnapshotV1> {
+    throwIfAborted(signal)
+    this.#throwIfFatalPolicyViolation()
+    const page = this.#requirePage()
+    this.#assertCurrentOrigin()
+    const documentSequence = this.#documentSequence
+    const captureTitle = input.assertions.some(
+      (assertion) => assertion.kind === "text" && assertion.scope === "title",
+    )
+    const captureDocumentVisibleText = input.assertions.some(
+      (assertion) => assertion.kind === "text" && assertion.scope === "document_visible_text",
+    )
+    const projections: InPageAssertionProjectionRequest[] = input.assertions.flatMap(
+      (assertion): InPageAssertionProjectionRequest[] => {
+        if (assertion.kind !== "semantic" && assertion.kind !== "state") return []
+        return [{
+          assertionId: assertion.id,
+          kind: assertion.kind,
+          role: assertion.locator.role,
+          nameOperator: assertion.locator.accessibleName.operator,
+          nameValue: assertion.locator.accessibleName.value,
+          nameCaseSensitive: assertion.locator.accessibleName.caseSensitive,
+          property: assertion.kind === "state" ? assertion.property : null,
+        }]
+      },
+    )
+
+    const collected = await runBrowserPhase(
+      "assertion snapshot capture",
+      this.#internalOperationTimeoutMs,
+      signal,
+      (phaseSignal) => raceWithAbort(
+        page.evaluate(
+          (request): InPageAssertionCapture => {
+            type StateProperty = "checked" | "selected" | "expanded" | "disabled" | "value"
+            interface SemanticAccumulator {
+              readonly projection: InPageAssertionProjectionRequest
+              matchedCount: number
+              truncated: boolean
+            }
+            interface StateAccumulator {
+              readonly projection: InPageAssertionProjectionRequest & { readonly property: StateProperty }
+              matchedCount: number
+              matchesTruncated: boolean
+              actualValue: boolean | string | null
+              valueTruncated: boolean
+              sensitive: boolean
+            }
+
+            const finalUrl: InPageAssertionCapture["finalUrl"] = (() => {
+              try {
+                return { status: "captured", value: window.location.href }
+              } catch {
+                return { status: "unavailable", reasonCode: "evidence_invalid" }
+              }
+            })()
+            const title: InPageAssertionCapture["title"] = request.captureTitle
+              ? (() => {
+                  try {
+                    const value = document.title
+                    return {
+                      status: "captured",
+                      value: value.slice(0, request.maximumTitleCharacters),
+                      truncated: value.length > request.maximumTitleCharacters,
+                    }
+                  } catch {
+                    return { status: "unavailable", reasonCode: "text_data_unavailable" }
+                  }
+                })()
+              : null
+            const documentVisibleText: InPageAssertionCapture["documentVisibleText"] =
+              request.captureDocumentVisibleText
+                ? (() => {
+                    try {
+                      const value = (document.body?.innerText ?? "").replace(/\s+/g, " ").trim()
+                      return {
+                        status: "captured",
+                        value: value.slice(0, request.maximumDocumentTextCharacters),
+                        truncated: value.length > request.maximumDocumentTextCharacters,
+                      }
+                    } catch {
+                      return { status: "unavailable", reasonCode: "text_data_unavailable" }
+                    }
+                  })()
+                : null
+
+            if (request.projections.length === 0) {
+              return { finalUrl, title, documentVisibleText, semanticStateValues: [] }
+            }
+
+            const semanticAccumulators = new Map<string, SemanticAccumulator>()
+            const stateAccumulators = new Map<string, StateAccumulator>()
+            for (const projection of request.projections) {
+              if (projection.kind === "semantic") {
+                semanticAccumulators.set(projection.assertionId, {
+                  projection,
+                  matchedCount: 0,
+                  truncated: false,
+                })
+              } else if (projection.property !== null) {
+                stateAccumulators.set(projection.assertionId, {
+                  projection: projection as InPageAssertionProjectionRequest & { readonly property: StateProperty },
+                  matchedCount: 0,
+                  matchesTruncated: false,
+                  actualValue: null,
+                  valueTruncated: false,
+                  sensitive: false,
+                })
+              }
+            }
+
+            const isVisibleTextNode = (node: Text): boolean => {
+              const range = document.createRange()
+              range.selectNode(node)
+              const rect = range.getBoundingClientRect()
+              return rect.width > 0 && rect.height > 0
+            }
+            const isVisible = (element: Element): boolean => {
+              const style = getComputedStyle(element)
+              if (style.display === "contents") {
+                for (const child of element.childNodes) {
+                  if (child.nodeType === Node.ELEMENT_NODE && isVisible(child as Element)) return true
+                  if (child.nodeType === Node.TEXT_NODE && isVisibleTextNode(child as Text)) return true
+                }
+                return false
+              }
+              if (typeof element.checkVisibility === "function" && !element.checkVisibility()) return false
+              if (style.visibility !== "visible") return false
+              const rect = element.getBoundingClientRect()
+              return rect.width > 0 && rect.height > 0
+            }
+            const accessibleName = (element: HTMLElement): string => {
+              const input = element instanceof HTMLInputElement ? element : null
+              const select = element instanceof HTMLSelectElement ? element : null
+              const textarea = element instanceof HTMLTextAreaElement ? element : null
+              const labelledBy = element.getAttribute("aria-labelledby")
+                ?.split(/\s+/)
+                .filter(Boolean)
+                .map((id) => document.getElementById(id)?.textContent ?? "")
+                .join(" ")
+              const labelText = input?.labels
+                ? [...input.labels].map((label) => label.textContent ?? "").join(" ")
+                : select?.labels
+                  ? [...select.labels].map((label) => label.textContent ?? "").join(" ")
+                  : textarea?.labels
+                    ? [...textarea.labels].map((label) => label.textContent ?? "").join(" ")
+                    : null
+              const name =
+                element.getAttribute("aria-label") ??
+                labelledBy ??
+                labelText ??
+                element.getAttribute("alt") ??
+                element.getAttribute("title") ??
+                (input?.type === "submit" ? input.value : null) ??
+                element.innerText ??
+                element.textContent ??
+                ""
+              return name.replace(/\s+/g, " ").trim()
+            }
+            const semanticRole = (element: HTMLElement): string => {
+              const tag = element.tagName.toLowerCase()
+              const input = element instanceof HTMLInputElement ? element : null
+              const explicitRole = element.getAttribute("role")?.trim().split(/\s+/)[0]
+              if (explicitRole) return explicitRole
+              if (tag === "a" && element.hasAttribute("href")) return "link"
+              if (tag === "button") return "button"
+              if (tag === "select") return "combobox"
+              if (tag === "textarea") return "textbox"
+              if (tag === "option") return "option"
+              if (/^h[1-6]$/.test(tag)) return "heading"
+              if (tag === "main") return "main"
+              if (tag === "nav") return "navigation"
+              if (tag === "article") return "article"
+              if (tag === "li") return "listitem"
+              if (tag === "img") return "img"
+              if (input?.type === "checkbox") return "checkbox"
+              if (input?.type === "radio") return "radio"
+              if (input?.type === "submit") return "button"
+              if (tag === "input" || element.isContentEditable) return "textbox"
+              return "control"
+            }
+            const matchesProjection = (
+              role: string,
+              name: string,
+              projection: InPageAssertionProjectionRequest,
+            ): boolean => {
+              const actualRole = role.toLocaleLowerCase("en-US")
+              const expectedRole = projection.role.toLocaleLowerCase("en-US")
+              if (actualRole !== expectedRole) return false
+              const actualName = projection.nameCaseSensitive
+                ? name
+                : name.toLocaleLowerCase("en-US")
+              const expectedName = projection.nameCaseSensitive
+                ? projection.nameValue
+                : projection.nameValue.toLocaleLowerCase("en-US")
+              return projection.nameOperator === "equals"
+                ? actualName === expectedName
+                : actualName.includes(expectedName)
+            }
+            const isSensitiveValueControl = (element: HTMLElement, role: string, name: string): boolean => {
+              const input = element instanceof HTMLInputElement ? element : null
+              const type = input?.type.toLowerCase() ?? ""
+              const autocomplete = element.getAttribute("autocomplete")?.toLowerCase() ?? ""
+              if (["password", "file", "email", "tel"].includes(type)) return true
+              if (/password|passcode|otp|one[- ]?time|email|tel|phone|address|cc-|card|cvv|iban|account|ssn|health|medical/i.test(autocomplete)) return true
+              const identity = [role, name, element.getAttribute("name") ?? "", type, autocomplete].join(" ")
+              return /\b(?:password|passcode|otp|one[- ]?time|email|phone|address|card|cvv|iban|account|social security|ssn|health|medical|resume|cv)\b/i.test(identity)
+            }
+            const readState = (
+              element: HTMLElement,
+              property: StateProperty,
+            ): { readonly value: boolean | string | null; readonly truncated: boolean; readonly sensitive: boolean } => {
+              const input = element instanceof HTMLInputElement ? element : null
+              if (property === "checked") {
+                const value = input && ["checkbox", "radio"].includes(input.type)
+                  ? input.checked
+                  : element.getAttribute("aria-checked")
+                return {
+                  value: typeof value === "boolean" ? value : value === null ? null : value === "true",
+                  truncated: false,
+                  sensitive: false,
+                }
+              }
+              if (property === "selected") {
+                const value = element instanceof HTMLOptionElement
+                  ? element.selected
+                  : element.getAttribute("aria-selected")
+                return {
+                  value: typeof value === "boolean" ? value : value === null ? null : value === "true",
+                  truncated: false,
+                  sensitive: false,
+                }
+              }
+              if (property === "expanded") {
+                const value = element.getAttribute("aria-expanded")
+                return { value: value === null ? null : value === "true", truncated: false, sensitive: false }
+              }
+              if (property === "disabled") {
+                const nativeValue = "disabled" in element
+                  ? Boolean((element as HTMLButtonElement).disabled)
+                  : null
+                const ariaValue = element.getAttribute("aria-disabled")
+                return {
+                  value: nativeValue ?? (ariaValue === null ? null : ariaValue === "true"),
+                  truncated: false,
+                  sensitive: false,
+                }
+              }
+
+              const role = semanticRole(element)
+              const name = accessibleName(element)
+              if (isSensitiveValueControl(element, role, name)) {
+                return { value: null, truncated: false, sensitive: true }
+              }
+              const value = input
+                ? input.value
+                : element instanceof HTMLSelectElement
+                  ? element.value
+                  : element instanceof HTMLTextAreaElement
+                    ? element.value
+                    : null
+              return {
+                value: value?.slice(0, request.maximumStateValueCharacters) ?? null,
+                truncated: value !== null && value.length > request.maximumStateValueCharacters,
+                sensitive: false,
+              }
+            }
+
+            let semanticReadFailed = false
+            try {
+              const nodes = document.querySelectorAll(request.semanticSelector)
+              for (const node of nodes) {
+                try {
+                  const element = node as HTMLElement
+                  if (!isVisible(element)) continue
+                  const role = semanticRole(element)
+                  const name = accessibleName(element)
+                  for (const accumulator of semanticAccumulators.values()) {
+                    if (!matchesProjection(role, name, accumulator.projection)) continue
+                    if (accumulator.matchedCount < request.maximumSemanticMatches) {
+                      accumulator.matchedCount += 1
+                    } else {
+                      accumulator.truncated = true
+                    }
+                  }
+                  for (const accumulator of stateAccumulators.values()) {
+                    if (!matchesProjection(role, name, accumulator.projection)) continue
+                    if (accumulator.matchedCount < request.maximumStateMatches) {
+                      accumulator.matchedCount += 1
+                      if (accumulator.matchedCount === 1) {
+                        const state = readState(element, accumulator.projection.property)
+                        accumulator.actualValue = state.value
+                        accumulator.valueTruncated = state.truncated
+                        accumulator.sensitive = state.sensitive
+                      } else {
+                        accumulator.actualValue = null
+                        accumulator.valueTruncated = false
+                        accumulator.sensitive = false
+                      }
+                    } else {
+                      accumulator.matchesTruncated = true
+                    }
+                  }
+                } catch {
+                  semanticReadFailed = true
+                }
+              }
+            } catch {
+              semanticReadFailed = true
+            }
+
+            const semanticStateValues: InPageAssertionValue[] = []
+            for (const projection of request.projections) {
+              if (semanticReadFailed) {
+                semanticStateValues.push({
+                  assertionId: projection.assertionId,
+                  kind: projection.kind,
+                  status: "unavailable",
+                  reasonCode: "semantic_data_unavailable",
+                })
+                continue
+              }
+              if (projection.kind === "semantic") {
+                const accumulator = semanticAccumulators.get(projection.assertionId)
+                if (!accumulator) {
+                  semanticStateValues.push({
+                    assertionId: projection.assertionId,
+                    kind: "semantic",
+                    status: "unavailable",
+                    reasonCode: "semantic_data_unavailable",
+                  })
+                  continue
+                }
+                semanticStateValues.push({
+                  assertionId: projection.assertionId,
+                  kind: "semantic",
+                  status: "captured",
+                  matchedCount: accumulator.matchedCount,
+                  truncated: accumulator.truncated,
+                })
+                continue
+              }
+              const accumulator = stateAccumulators.get(projection.assertionId)
+              if (!accumulator) {
+                semanticStateValues.push({
+                  assertionId: projection.assertionId,
+                  kind: "state",
+                  status: "unavailable",
+                  reasonCode: "semantic_data_unavailable",
+                })
+              } else if (accumulator.matchedCount === 1 && accumulator.sensitive) {
+                semanticStateValues.push({
+                  assertionId: projection.assertionId,
+                  kind: "state",
+                  status: "unavailable",
+                  reasonCode: "sensitive_control",
+                })
+              } else {
+                semanticStateValues.push({
+                  assertionId: projection.assertionId,
+                  kind: "state",
+                  status: "captured",
+                  property: accumulator.projection.property,
+                  matchedCount: accumulator.matchedCount,
+                  matchesTruncated: accumulator.matchesTruncated,
+                  actualValue: accumulator.matchedCount === 1 ? accumulator.actualValue : null,
+                  valueTruncated: accumulator.matchedCount === 1 && accumulator.valueTruncated,
+                })
+              }
+            }
+            return { finalUrl, title, documentVisibleText, semanticStateValues }
+          },
+          {
+            captureTitle,
+            captureDocumentVisibleText,
+            projections,
+            semanticSelector: SEMANTIC_SELECTOR,
+            maximumTitleCharacters: MAX_ASSERTION_TITLE_CHARACTERS,
+            maximumDocumentTextCharacters: MAX_ASSERTION_DOCUMENT_TEXT_CHARACTERS,
+            maximumSemanticMatches: MAX_ASSERTION_SEMANTIC_MATCHES,
+            maximumStateMatches: MAX_ASSERTION_STATE_MATCHES,
+            maximumStateValueCharacters: MAX_ASSERTION_STATE_VALUE_CHARACTERS,
+          },
+        ),
+        phaseSignal,
+      ),
+    )
+
+    throwIfAborted(signal)
+    if (this.#documentSequence !== documentSequence) {
+      throw staleElement("Document changed during assertion capture")
+    }
+    this.#assertCurrentOrigin()
+    this.#throwIfFatalPolicyViolation()
+    if (collected.finalUrl.status === "captured" && collected.finalUrl.value !== page.url()) {
+      throw staleElement("URL changed during assertion capture")
+    }
+    const identity = Math.max(1, documentSequence)
+    return TransientAssertionSnapshotV1Schema.parse({
+      schemaVersion: 1,
+      ...collected,
       documentId: `document-${identity}`,
       loaderId: `loader-${identity}`,
-      observation,
       policyActivity: {
         passiveWarningCount: this.#passivePolicyCount,
         agentBlockedCount: this.#fatalPolicyCount,
         codes: [...new Set([...this.#passivePolicyCodes, ...this.#fatalPolicyCodes])],
       },
-    }
+    })
   }
 
   async #resolve(
