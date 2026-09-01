@@ -101,18 +101,30 @@ const INTERFACE_CHANNELS: readonly InterfaceChannel[] = [
   "visual_fallback",
 ];
 
+function channelForDiscoveredKind(kind: "semantic" | "llms_txt" | "json_ld" | "webmcp" | "configured_mcp" | "visual_fallback"): InterfaceChannel {
+  if (kind === "semantic") return "semantic_ui";
+  if (kind === "webmcp") return "page_webmcp";
+  return kind;
+}
+
 function summarizeInterfaceUsage(runs: readonly RunSnapshot[], events: readonly EventEnvelope[] = []): InterfaceUsageSummary {
   return InterfaceUsageSummarySchema.parse({
     schemaVersion: 1,
     metrics: INTERFACE_CHANNELS.map((channel) => {
       const metrics = runs.flatMap((run) => run.interfaceUsage?.metrics.filter((metric) => metric.channel === channel) ?? []);
+      const discoveryEvents = events.filter((event) => event.type === "run.discovery.completed");
+      const discoveredFromEvents = discoveryEvents.reduce((total, event) => total + event.payload.interfaces.filter((entry) => channelForDiscoveredKind(entry.kind) === channel).length, 0);
+      const admittedFromDiscovery = channel === "page_webmcp"
+        ? discoveryEvents.filter((event) => event.payload.webMcpGate === "admitted_read_only").length
+        : 0;
       const started = events.filter((event) => event.type === "run.tool.started" && event.payload.interfaceSource === channel);
       const completed = events.filter((event) => event.type === "run.tool.completed" && event.payload.interfaceSource === channel);
+      const invoked = events.length > 0 ? started.length : metrics.reduce((total, metric) => total + metric.invoked, 0);
       return {
         channel,
-        discovered: metrics.reduce((total, metric) => total + metric.discovered, 0),
-        admitted: metrics.reduce((total, metric) => total + metric.admitted, 0),
-        invoked: events.length > 0 ? started.length : metrics.reduce((total, metric) => total + metric.invoked, 0),
+        discovered: Math.max(metrics.reduce((total, metric) => total + metric.discovered, 0), discoveredFromEvents, invoked > 0 ? 1 : 0),
+        admitted: Math.max(metrics.reduce((total, metric) => total + metric.admitted, 0), admittedFromDiscovery, invoked > 0 ? 1 : 0),
+        invoked,
         succeeded: events.length > 0 ? completed.filter((event) => event.type === "run.tool.completed" && event.payload.success).length : metrics.reduce((total, metric) => total + metric.succeeded, 0),
         failed: events.length > 0 ? completed.filter((event) => event.type === "run.tool.completed" && !event.payload.success).length : metrics.reduce((total, metric) => total + metric.failed, 0),
       };

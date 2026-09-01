@@ -32,6 +32,12 @@ const INTERFACE_DESCRIPTIONS: Record<InterfaceChannel, string> = {
 };
 const INTERFACE_ORDER: readonly InterfaceChannel[] = ["page_webmcp", "configured_mcp", "semantic_ui", "llms_txt", "json_ld", "visual_fallback"];
 
+function channelForDiscoveredKind(kind: "semantic" | "llms_txt" | "json_ld" | "webmcp" | "configured_mcp" | "visual_fallback"): InterfaceChannel {
+  if (kind === "semantic") return "semantic_ui";
+  if (kind === "webmcp") return "page_webmcp";
+  return kind;
+}
+
 async function loadAllEvents(evaluationId: Parameters<TracegateApiClient["events"]>[0], signal: AbortSignal): Promise<readonly EventEnvelope[]> {
   const events: EventEnvelope[] = [];
   let cursor: Parameters<TracegateApiClient["events"]>[1] = null;
@@ -90,8 +96,13 @@ function RunCard({ run }: { readonly run: RunSnapshot }) {
 function AgentInterfaceInsights({ runs, history }: { readonly runs: readonly RunSnapshot[]; readonly history: readonly EventEnvelope[] | null }) {
   const totals = useMemo(() => INTERFACE_ORDER.map((channel) => {
     const runMetrics = runs.flatMap((run) => run.interfaceUsage?.metrics.filter((metric) => metric.channel === channel) ?? []);
-    const discovered = runMetrics.reduce((sum, metric) => sum + metric.discovered, 0);
-    const admitted = runMetrics.reduce((sum, metric) => sum + metric.admitted, 0);
+    const discoveryEvents = history?.filter((event) => event.type === "run.discovery.completed") ?? [];
+    const discoveredFromEvents = discoveryEvents.reduce((sum, event) => sum + event.payload.interfaces.filter((entry) => channelForDiscoveredKind(entry.kind) === channel).length, 0);
+    const admittedFromDiscovery = channel === "page_webmcp"
+      ? discoveryEvents.filter((event) => event.payload.webMcpGate === "admitted_read_only").length
+      : 0;
+    const discovered = Math.max(runMetrics.reduce((sum, metric) => sum + metric.discovered, 0), discoveredFromEvents);
+    const admitted = Math.max(runMetrics.reduce((sum, metric) => sum + metric.admitted, 0), admittedFromDiscovery);
     const started = history?.filter((event) => event.type === "run.tool.started" && event.payload.interfaceSource === channel) ?? [];
     const completed = history?.filter((event) => event.type === "run.tool.completed" && event.payload.interfaceSource === channel) ?? [];
     const invoked = started.length;
