@@ -21,6 +21,7 @@ import {
   chromium,
   type Browser,
   type BrowserContext,
+  type ElementHandle,
   type Locator,
   type Page,
 } from "playwright-core"
@@ -142,7 +143,28 @@ interface ElementSnapshot extends PolicyElementSnapshot {
   readonly checked: boolean | null
   readonly selected: boolean | null
   readonly expanded: boolean | null
+  readonly normalizedHref: string | null
+  readonly hrefPresent: boolean
+  readonly identityTruncated: boolean
   readonly truncated: boolean
+}
+
+type ElementActionKind = "click" | "type" | "select" | "press_key"
+
+interface SafeSemanticIdentity {
+  readonly tag: string
+  readonly role: string
+  readonly name: string
+  readonly type: string
+  readonly controlName: string
+  readonly autocomplete: string
+  readonly hrefPresent: boolean
+  readonly normalizedHref: string | null
+  readonly target: string
+  readonly download: boolean
+  readonly formmethod: string
+  readonly disabled: boolean | null
+  readonly recoverable: boolean
 }
 
 interface ActivePolicyAction {
@@ -158,8 +180,8 @@ interface FirstFatalPolicyViolation {
 interface RegistryEntry {
   readonly ref: string
   readonly revision: ObservationRevision
-  readonly locator: Locator
-  readonly identity: Pick<ElementSnapshot, "tag" | "role" | "name">
+  readonly handle: ElementHandle<HTMLElement | SVGElement>
+  readonly identity: SafeSemanticIdentity
   readonly snapshot: ElementSnapshot
 }
 
@@ -299,7 +321,7 @@ function staleElement(message = "Element reference is stale"): TraceGateError {
   )
 }
 
-function ambiguousElement(): TraceGateError {
+function ambiguousElement(message = "Element semantic identity changed"): TraceGateError {
   return new TraceGateError(
     RunWarningSchema.parse({
       schemaVersion: 1,
@@ -307,7 +329,7 @@ function ambiguousElement(): TraceGateError {
       code: "ambiguous_element",
       phase: "browser_action",
       retryable: true,
-      message: "Element semantic identity changed",
+      message,
       fieldIssues: [],
       causeChain: [],
     }),
@@ -451,15 +473,58 @@ function truncateUtf8(value: string, maxBytes: number): { value: string; truncat
   return { value: bytes.subarray(0, end).toString("utf8"), truncated: true }
 }
 
-async function readElement(locator: Locator): Promise<ElementSnapshot> {
-  return locator.evaluate((node) => {
+function normalizeIdentityWhitespace(value: string | undefined): string {
+  return (value ?? "").replace(/\s+/g, " ").trim()
+}
+
+function safeSemanticIdentity(snapshot: ElementSnapshot): SafeSemanticIdentity {
+  // Value/selection/expansion/placeholder state is intentionally omitted: it is volatile and
+  // is not an input to obviousUnsafeControl. Every policy/effect-bearing input stays exact.
+  return {
+    tag: snapshot.tag.toLowerCase(),
+    role: snapshot.role.toLowerCase(),
+    name: snapshot.name,
+    type: (snapshot.attributes.type ?? "").toLowerCase(),
+    controlName: normalizeIdentityWhitespace(snapshot.attributes.name),
+    autocomplete: normalizeIdentityWhitespace(snapshot.attributes.autocomplete).toLowerCase(),
+    hrefPresent: snapshot.hrefPresent,
+    normalizedHref: snapshot.normalizedHref,
+    target: normalizeIdentityWhitespace(snapshot.attributes.target).toLowerCase(),
+    download: snapshot.attributes.download === "true",
+    formmethod: normalizeIdentityWhitespace(snapshot.attributes.formmethod).toLowerCase(),
+    disabled: snapshot.disabled,
+    recoverable: !snapshot.identityTruncated && (!snapshot.hrefPresent || snapshot.normalizedHref !== null),
+  }
+}
+
+function sameSafeSemanticIdentity(
+  left: SafeSemanticIdentity,
+  right: SafeSemanticIdentity,
+): boolean {
+  return left.recoverable === right.recoverable &&
+    left.tag === right.tag &&
+    left.role === right.role &&
+    left.name === right.name &&
+    left.type === right.type &&
+    left.controlName === right.controlName &&
+    left.autocomplete === right.autocomplete &&
+    left.hrefPresent === right.hrefPresent &&
+    left.normalizedHref === right.normalizedHref &&
+    left.target === right.target &&
+    left.download === right.download &&
+    left.formmethod === right.formmethod &&
+    left.disabled === right.disabled
+}
+
+async function readElement(handle: ElementHandle<HTMLElement | SVGElement>): Promise<ElementSnapshot> {
+  return handle.evaluate((node, limits) => {
     const element = node as HTMLElement
     const tag = element.tagName.toLowerCase()
     const input = element instanceof HTMLInputElement ? element : null
     const select = element instanceof HTMLSelectElement ? element : null
     const option = element instanceof HTMLOptionElement ? element : null
     const rawExplicitRole = element.getAttribute("role")?.trim()
-    const explicitRole = rawExplicitRole?.slice(0, MAX_ELEMENT_ROLE_CHARACTERS)
+    const explicitRole = rawExplicitRole?.slice(0, limits.maximumElementRoleCharacters)
     const inferredRole =
       tag === "a"
         ? "link"
@@ -507,14 +572,29 @@ async function readElement(locator: Locator): Promise<ElementSnapshot> {
       ""
     const normalizedName = name.replace(/\s+/g, " ").trim()
     let truncated =
-      normalizedName.length > MAX_ELEMENT_FIELD_CHARACTERS ||
-      (rawExplicitRole?.length ?? 0) > MAX_ELEMENT_ROLE_CHARACTERS
+      normalizedName.length > limits.maximumElementFieldCharacters ||
+      (rawExplicitRole?.length ?? 0) > limits.maximumElementRoleCharacters
+    let identityTruncated = truncated
     const attributes: Record<string, string> = {}
     for (const attribute of ["name", "placeholder", "autocomplete", "href", "target"] as const) {
       const value = element.getAttribute(attribute)
-      if (value) {
-        if (value.length > 500) truncated = true
-        attributes[attribute] = value.slice(0, 500)
+      if (value !== null) {
+        if (value.length > limits.maximumElementFieldCharacters) {
+          truncated = true
+          if (attribute !== "placeholder") identityTruncated = true
+        }
+        attributes[attribute] = value.slice(0, limits.maximumElementFieldCharacters)
+      }
+    }
+    const rawHref = element.getAttribute("href")
+    let normalizedHref: string | null = null
+    if (rawHref !== null) {
+      try {
+        const resolved = new URL(rawHref, element.ownerDocument.baseURI).href
+        if (resolved.length > limits.maximumElementFieldCharacters) identityTruncated = true
+        normalizedHref = resolved.slice(0, limits.maximumElementFieldCharacters)
+      } catch {
+        normalizedHref = null
       }
     }
     if (input) attributes.type = input.type.toLowerCase()
@@ -541,7 +621,7 @@ async function readElement(locator: Locator): Promise<ElementSnapshot> {
     return {
       tag,
       role: explicitRole || inferredRole,
-      name: normalizedName.slice(0, 500),
+      name: normalizedName.slice(0, limits.maximumElementFieldCharacters),
       disabled: "disabled" in element ? Boolean((element as HTMLButtonElement).disabled) : null,
       checked:
         input && ["checkbox", "radio"].includes(input.type)
@@ -560,8 +640,14 @@ async function readElement(locator: Locator): Promise<ElementSnapshot> {
           ? null
           : element.getAttribute("aria-expanded") === "true",
       attributes,
+      normalizedHref,
+      hrefPresent: rawHref !== null,
+      identityTruncated,
       truncated,
     }
+  }, {
+    maximumElementRoleCharacters: MAX_ELEMENT_ROLE_CHARACTERS,
+    maximumElementFieldCharacters: MAX_ELEMENT_FIELD_CHARACTERS,
   })
 }
 
@@ -575,6 +661,7 @@ export class SolariCdpBrowserController implements BrowserController, AssertionS
   #page: Page | null = null
   #revision = 0
   #registry = new Map<string, RegistryEntry>()
+  #retiredHandles: Array<ElementHandle<HTMLElement | SVGElement>> = []
   #initialNavigationCompleted = false
   #activePolicyAction: ActivePolicyAction | null = null
   #nextPolicyActionToken = 0
@@ -648,7 +735,7 @@ export class SolariCdpBrowserController implements BrowserController, AssertionS
         if (frame === this.#page?.mainFrame()) {
           this.#documentSequence += 1
           this.#observedDocumentSequence = null
-          this.#registry.clear()
+          this.#clearRegistry()
         }
       })
       await runBrowserPhase(
@@ -669,7 +756,7 @@ export class SolariCdpBrowserController implements BrowserController, AssertionS
       this.#context = null
       this.#page = null
       this.#observedDocumentSequence = null
-      this.#registry.clear()
+      this.#clearRegistry()
       if (context) await settleWithin(context.close(), 5_000)
       if (browser) await settleWithin(browser.close(), 5_000)
       throw error
@@ -685,7 +772,7 @@ export class SolariCdpBrowserController implements BrowserController, AssertionS
       this.#page = null
       this.#activePolicyAction = null
       this.#observedDocumentSequence = null
-      this.#registry.clear()
+      this.#clearRegistry()
       this.#closePromise = (async () => {
         try {
           if (context) await settleWithin(context.close(), 5_000)
@@ -780,7 +867,7 @@ export class SolariCdpBrowserController implements BrowserController, AssertionS
     const documentSequence = this.#documentSequence
     this.#revision += 1
     const revision = ObservationRevisionSchema.parse(this.#revision)
-    this.#registry.clear()
+    this.#clearRegistry()
 
     const controls = page.locator(SEMANTIC_SELECTOR)
     const collection = controls.evaluateAll(
@@ -862,12 +949,27 @@ export class SolariCdpBrowserController implements BrowserController, AssertionS
           let truncated =
             normalizedName.length > limits.maximumElementFieldCharacters ||
             (rawExplicitRole?.length ?? 0) > limits.maximumElementRoleCharacters
+          let identityTruncated = truncated
           const attributes: Record<string, string> = {}
           for (const attribute of ["name", "placeholder", "autocomplete", "href", "target"] as const) {
             const value = element.getAttribute(attribute)
-            if (value) {
-              if (value.length > limits.maximumElementFieldCharacters) truncated = true
+            if (value !== null) {
+              if (value.length > limits.maximumElementFieldCharacters) {
+                truncated = true
+                if (attribute !== "placeholder") identityTruncated = true
+              }
               attributes[attribute] = value.slice(0, limits.maximumElementFieldCharacters)
+            }
+          }
+          const rawHref = element.getAttribute("href")
+          let normalizedHref: string | null = null
+          if (rawHref !== null) {
+            try {
+              const resolved = new URL(rawHref, element.ownerDocument.baseURI).href
+              if (resolved.length > limits.maximumElementFieldCharacters) identityTruncated = true
+              normalizedHref = resolved.slice(0, limits.maximumElementFieldCharacters)
+            } catch {
+              normalizedHref = null
             }
           }
           if (input) attributes.type = input.type.toLowerCase()
@@ -913,6 +1015,9 @@ export class SolariCdpBrowserController implements BrowserController, AssertionS
                 ? null
                 : element.getAttribute("aria-expanded") === "true",
             attributes,
+            normalizedHref,
+            hrefPresent: rawHref !== null,
+            identityTruncated,
             truncated,
           }
         }
@@ -1004,12 +1109,17 @@ export class SolariCdpBrowserController implements BrowserController, AssertionS
         truncated = true
         break
       }
+      const handle = await raceWithAbort(controls.nth(sourceIndex).elementHandle(), signal)
+      if (!handle) {
+        truncated = true
+        continue
+      }
       elements.push(element)
       this.#registry.set(ref, {
         ref,
         revision,
-        locator: controls.nth(sourceIndex),
-        identity: { tag: snapshot.tag, role: snapshot.role, name: snapshot.name },
+        handle,
+        identity: safeSemanticIdentity(snapshot),
         snapshot,
       })
     }
@@ -1046,12 +1156,16 @@ export class SolariCdpBrowserController implements BrowserController, AssertionS
   }
 
   async click(input: ElementActionInput, signal: AbortSignal): Promise<UntrustedAgentObservation> {
-    const entry = await this.#resolve(input, signal)
+    const entry = await this.#resolve(input, signal, "click")
     this.#assertElementSafe(entry.snapshot)
-    const href = entry.snapshot.attributes.href
-    if (href) assertAllowedNavigation(new URL(href, this.#requirePage().url()).href, this.#allowedOrigins)
-    return this.#runWithPolicyAction(href ? "navigation" : "direct_interaction", async () => {
-      await entry.locator.click({ timeout: this.#internalOperationTimeoutMs })
+    if (entry.identity.hrefPresent) {
+      if (entry.identity.normalizedHref === null) {
+        throw blockedByPolicy("origin_not_admitted", "Navigation URL is invalid")
+      }
+      assertAllowedNavigation(entry.identity.normalizedHref, this.#allowedOrigins)
+    }
+    return this.#runWithPolicyAction(entry.identity.hrefPresent ? "navigation" : "direct_interaction", async () => {
+      await entry.handle.click({ timeout: this.#internalOperationTimeoutMs })
       return this.observe(signal)
     })
   }
@@ -1061,11 +1175,11 @@ export class SolariCdpBrowserController implements BrowserController, AssertionS
     signal: AbortSignal,
   ): Promise<UntrustedAgentObservation> {
     if (Buffer.byteLength(input.text, "utf8") > 4_000) throw new Error("Text is too large")
-    const entry = await this.#resolve(input, signal)
+    const entry = await this.#resolve(input, signal, "type")
     this.#assertElementSafe(entry.snapshot)
     return this.#runWithPolicyAction("direct_interaction", async () => {
-      if (input.clearFirst) await entry.locator.fill(input.text)
-      else await entry.locator.pressSequentially(input.text)
+      if (input.clearFirst) await entry.handle.fill(input.text)
+      else await entry.handle.type(input.text)
       return this.observe(signal)
     })
   }
@@ -1074,10 +1188,10 @@ export class SolariCdpBrowserController implements BrowserController, AssertionS
     input: ElementActionInput & { readonly value: string },
     signal: AbortSignal,
   ): Promise<UntrustedAgentObservation> {
-    const entry = await this.#resolve(input, signal)
+    const entry = await this.#resolve(input, signal, "select")
     this.#assertElementSafe(entry.snapshot)
     return this.#runWithPolicyAction("direct_interaction", async () => {
-      await entry.locator.selectOption(input.value)
+      await entry.handle.selectOption(input.value)
       return this.observe(signal)
     })
   }
@@ -1089,10 +1203,10 @@ export class SolariCdpBrowserController implements BrowserController, AssertionS
     if (!ALLOWED_KEYS.has(input.key)) {
       throw blockedByPolicy("press_key_forbidden", "Keyboard key is not allowed")
     }
-    const entry = await this.#resolve(input, signal)
+    const entry = await this.#resolve(input, signal, "press_key")
     this.#assertElementSafe(entry.snapshot)
     return this.#runWithPolicyAction("direct_interaction", async () => {
-      await entry.locator.press(input.key)
+      await entry.handle.press(input.key)
       return this.observe(signal)
     })
   }
@@ -1833,6 +1947,7 @@ export class SolariCdpBrowserController implements BrowserController, AssertionS
   async #resolve(
     input: ElementActionInput,
     signal: AbortSignal,
+    action: ElementActionKind,
   ): Promise<RegistryEntry> {
     throwIfAborted(signal)
     this.#throwIfFatalPolicyViolation()
@@ -1843,17 +1958,294 @@ export class SolariCdpBrowserController implements BrowserController, AssertionS
     ) throw staleElement()
     const entry = this.#registry.get(input.ref)
     if (!entry || entry.revision !== input.observationRevision) throw staleElement()
-    if (!(await entry.locator.isVisible().catch(() => false))) throw staleElement()
-    const current = await readElement(entry.locator).catch(() => null)
-    if (!current) throw staleElement()
-    if (
-      current.tag !== entry.identity.tag ||
-      current.role !== entry.identity.role ||
-      current.name !== entry.identity.name
-    ) {
-      throw ambiguousElement()
+
+    const documentSequence = this.#documentSequence
+    this.#assertCurrentOrigin()
+    this.#assertElementSafe(entry.snapshot)
+
+    let identityChanged = false
+    if (await this.#isHandleActionable(entry.handle, action)) {
+      const current = await readElement(entry.handle).catch(() => null)
+      if (current) {
+        const currentIdentity = safeSemanticIdentity(current)
+        if (sameSafeSemanticIdentity(currentIdentity, entry.identity)) {
+          this.#assertElementSafe(current)
+          this.#assertRecoveryContext(documentSequence)
+          return { ...entry, identity: currentIdentity, snapshot: current }
+        }
+        identityChanged = true
+      }
     }
-    return { ...entry, snapshot: current }
+
+    if (!entry.identity.recoverable) {
+      if (identityChanged) throw ambiguousElement()
+      throw staleElement("Element reference cannot be safely rebound from a truncated identity")
+    }
+
+    // A single failed direct binding gets exactly one semantic scan; no action retries rescan.
+    const reboundHandle = await this.#freshSemanticLookup(entry.identity, action, signal)
+    if (reboundHandle !== null) {
+      try {
+        this.#assertRecoveryContext(documentSequence)
+      } catch (error) {
+        await reboundHandle.dispose().catch(() => {})
+        throw error
+      }
+    }
+    if (reboundHandle === null) {
+      if (identityChanged) throw ambiguousElement()
+      throw staleElement("Element reference is stale and no unique semantic replacement exists")
+    }
+
+    if (!(await this.#isHandleActionable(reboundHandle, action))) {
+      await reboundHandle.dispose().catch(() => {})
+      throw staleElement("Recovered element is no longer actionable")
+    }
+    const rebound = await readElement(reboundHandle).catch(() => null)
+    if (!rebound) {
+      await reboundHandle.dispose().catch(() => {})
+      throw staleElement("Recovered element detached before dispatch")
+    }
+    const reboundIdentity = safeSemanticIdentity(rebound)
+    if (!sameSafeSemanticIdentity(reboundIdentity, entry.identity)) {
+      await reboundHandle.dispose().catch(() => {})
+      throw ambiguousElement("Recovered element identity changed before dispatch")
+    }
+    try {
+      this.#assertElementSafe(rebound)
+      this.#assertRecoveryContext(documentSequence)
+    } catch (error) {
+      await reboundHandle.dispose().catch(() => {})
+      throw error
+    }
+    const reboundEntry = { ...entry, handle: reboundHandle, identity: reboundIdentity, snapshot: rebound }
+    this.#registry.set(entry.ref, reboundEntry)
+    await entry.handle.dispose().catch(() => {})
+    return reboundEntry
+  }
+
+  async #freshSemanticLookup(
+    identity: SafeSemanticIdentity,
+    action: ElementActionKind,
+    signal: AbortSignal,
+  ): Promise<ElementHandle<HTMLElement | SVGElement> | null> {
+    const controls = this.#requirePage().locator(SEMANTIC_SELECTOR)
+    const lookup = controls.evaluateAll((nodes, request) => {
+      const normalizeWhitespace = (value: string | null): string =>
+        (value ?? "").replace(/\s+/g, " ").trim()
+      const visibleTextNode = (node: Text): boolean => {
+        const range = document.createRange()
+        range.selectNode(node)
+        const rect = range.getBoundingClientRect()
+        return rect.width > 0 && rect.height > 0
+      }
+      const visible = (element: Element): boolean => {
+        const style = getComputedStyle(element)
+        if (style.display === "contents") {
+          for (const child of element.childNodes) {
+            if (child.nodeType === Node.ELEMENT_NODE && visible(child as Element)) return true
+            if (child.nodeType === Node.TEXT_NODE && visibleTextNode(child as Text)) return true
+          }
+          return false
+        }
+        if (typeof element.checkVisibility === "function" && !element.checkVisibility()) return false
+        if (style.visibility !== "visible") return false
+        const rect = element.getBoundingClientRect()
+        return rect.width > 0 && rect.height > 0
+      }
+      const actionable = (element: HTMLElement): boolean => {
+        const disabled = "disabled" in element && Boolean((element as HTMLButtonElement).disabled)
+        if (disabled || element.getAttribute("aria-disabled")?.toLowerCase() === "true") return false
+        if (request.action === "select") return element instanceof HTMLSelectElement
+        if (request.action !== "type") return true
+        if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
+          return !element.readOnly
+        }
+        return element.isContentEditable
+      }
+      const readIdentity = (node: Element): SafeSemanticIdentity => {
+        const element = node as HTMLElement
+        const tag = element.tagName.toLowerCase()
+        const input = element instanceof HTMLInputElement ? element : null
+        const select = element instanceof HTMLSelectElement ? element : null
+        const rawExplicitRole = element.getAttribute("role")?.trim()
+        const explicitRole = rawExplicitRole?.slice(0, request.maximumElementRoleCharacters)
+        const inferredRole =
+          tag === "a"
+            ? "link"
+            : tag === "button"
+              ? "button"
+              : tag === "select"
+                ? "combobox"
+                : tag === "textarea"
+                  ? "textbox"
+                  : tag === "option"
+                    ? "option"
+                    : /^h[1-6]$/.test(tag)
+                      ? "heading"
+                      : tag === "main"
+                        ? "main"
+                        : tag === "nav"
+                          ? "navigation"
+                          : tag === "article"
+                            ? "article"
+                            : tag === "li"
+                              ? "listitem"
+                              : tag === "img"
+                                ? "img"
+                                : input?.type === "checkbox"
+                                  ? "checkbox"
+                                  : input?.type === "radio"
+                                    ? "radio"
+                                    : input?.type === "submit"
+                                      ? "button"
+                                      : tag === "input" || element.isContentEditable
+                                        ? "textbox"
+                                        : "control"
+        const labelText =
+          input?.labels?.[0]?.textContent ??
+          select?.labels?.[0]?.textContent ??
+          (element instanceof HTMLTextAreaElement ? element.labels?.[0]?.textContent : null)
+        const name =
+          element.getAttribute("aria-label") ??
+          labelText ??
+          element.getAttribute("alt") ??
+          element.getAttribute("title") ??
+          (input?.type === "submit" ? input.value : null) ??
+          element.innerText ??
+          element.textContent ??
+          ""
+        const normalizedName = name.replace(/\s+/g, " ").trim()
+        const rawHref = element.getAttribute("href")
+        let normalizedHref: string | null = null
+        let identityTruncated =
+          normalizedName.length > request.maximumElementFieldCharacters ||
+          (rawExplicitRole?.length ?? 0) > request.maximumElementRoleCharacters
+        if (rawHref !== null) {
+          try {
+            const resolved = new URL(rawHref, element.ownerDocument.baseURI).href
+            if (resolved.length > request.maximumElementFieldCharacters) identityTruncated = true
+            normalizedHref = resolved.slice(0, request.maximumElementFieldCharacters)
+          } catch {
+            normalizedHref = null
+          }
+        }
+        const controlName = element.getAttribute("name")
+        const autocomplete = element.getAttribute("autocomplete")
+        const target = element.getAttribute("target")
+        if (
+          (controlName?.length ?? 0) > request.maximumElementFieldCharacters ||
+          (autocomplete?.length ?? 0) > request.maximumElementFieldCharacters ||
+          (target?.length ?? 0) > request.maximumElementFieldCharacters
+        ) identityTruncated = true
+        let formmethod = ""
+        if (input?.form) formmethod = (input.formMethod || input.form.method).toLowerCase()
+        if (element instanceof HTMLButtonElement && element.form) {
+          formmethod = (element.formMethod || element.form.method).toLowerCase()
+        }
+        return {
+          tag,
+          role: (explicitRole || inferredRole).toLowerCase(),
+          name: normalizedName.slice(0, request.maximumElementFieldCharacters),
+          type: input
+            ? input.type.toLowerCase()
+            : element instanceof HTMLButtonElement
+              ? element.type.toLowerCase()
+              : "",
+          controlName: normalizeWhitespace(controlName),
+          autocomplete: normalizeWhitespace(autocomplete).toLowerCase(),
+          hrefPresent: rawHref !== null,
+          normalizedHref,
+          target: normalizeWhitespace(target).toLowerCase(),
+          download: element instanceof HTMLAnchorElement && element.hasAttribute("download"),
+          formmethod,
+          disabled: "disabled" in element ? Boolean((element as HTMLButtonElement).disabled) : null,
+          recoverable: !identityTruncated && (rawHref === null || normalizedHref !== null),
+        }
+      }
+      const equal = (candidate: SafeSemanticIdentity): boolean =>
+        candidate.recoverable &&
+        candidate.tag === request.identity.tag &&
+        candidate.role === request.identity.role &&
+        candidate.name === request.identity.name &&
+        candidate.type === request.identity.type &&
+        candidate.controlName === request.identity.controlName &&
+        candidate.autocomplete === request.identity.autocomplete &&
+        candidate.hrefPresent === request.identity.hrefPresent &&
+        candidate.normalizedHref === request.identity.normalizedHref &&
+        candidate.target === request.identity.target &&
+        candidate.download === request.identity.download &&
+        candidate.formmethod === request.identity.formmethod &&
+        candidate.disabled === request.identity.disabled
+
+      let firstIndex: number | null = null
+      let matchingCount = 0
+      let indeterminate = false
+      for (let index = 0; index < nodes.length; index += 1) {
+        const node = nodes[index]
+        if (!node) continue
+        try {
+          if (!visible(node)) continue
+          const element = node as HTMLElement
+          if (!actionable(element) || !equal(readIdentity(node))) continue
+          matchingCount += 1
+          if (firstIndex === null) firstIndex = index
+          if (matchingCount > 1) break
+        } catch {
+          indeterminate = true
+        }
+      }
+      return { firstIndex, matchingCount, indeterminate }
+    }, {
+      identity,
+      action,
+      maximumElementRoleCharacters: MAX_ELEMENT_ROLE_CHARACTERS,
+      maximumElementFieldCharacters: MAX_ELEMENT_FIELD_CHARACTERS,
+    })
+    const result = await raceWithAbort(lookup, signal)
+    if (result.matchingCount > 1) {
+      throw ambiguousElement("Multiple visible actionable elements share the original semantic identity")
+    }
+    if (result.indeterminate) {
+      throw staleElement("Semantic recovery could not safely inspect every candidate")
+    }
+    if (result.matchingCount !== 1 || result.firstIndex === null) return null
+    return raceWithAbort(controls.nth(result.firstIndex).elementHandle(), signal)
+  }
+
+  async #isHandleActionable(
+    handle: ElementHandle<HTMLElement | SVGElement>,
+    action: ElementActionKind,
+  ): Promise<boolean> {
+    if (!(await handle.isVisible().catch(() => false))) return false
+    if (action === "type") return handle.isEditable().catch(() => false)
+    if (action === "select") {
+      const isSelect = await handle.evaluate((node) => node instanceof HTMLSelectElement).catch(() => false)
+      if (!isSelect) return false
+    }
+    return handle.isEnabled().catch(() => false)
+  }
+
+  #assertRecoveryContext(documentSequence: number): void {
+    if (
+      this.#documentSequence !== documentSequence ||
+      this.#observedDocumentSequence !== documentSequence
+    ) {
+      throw staleElement("Document changed during element recovery")
+    }
+    this.#assertCurrentOrigin()
+    this.#throwIfFatalPolicyViolation()
+  }
+
+  #clearRegistry(): void {
+    for (const entry of this.#registry.values()) this.#retiredHandles.push(entry.handle)
+    this.#registry.clear()
+    if (!this.#activePolicyAction) this.#disposeRetiredHandles()
+  }
+
+  #disposeRetiredHandles(): void {
+    const handles = this.#retiredHandles.splice(0)
+    for (const handle of handles) void handle.dispose().catch(() => {})
   }
 
   #assertElementSafe(snapshot: ElementSnapshot): void {
@@ -1898,6 +2290,7 @@ export class SolariCdpBrowserController implements BrowserController, AssertionS
       return await operation()
     } finally {
       if (this.#activePolicyAction === activeAction) this.#activePolicyAction = null
+      this.#disposeRetiredHandles()
     }
   }
 
