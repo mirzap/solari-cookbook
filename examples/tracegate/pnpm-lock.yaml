@@ -176,6 +176,69 @@ importers:
         specifier: 4.5.4
         version: 4.5.4
 
+  apps/demo:
+    devDependencies:
+      '@types/node':
+        specifier: 26.4.0
+        version: 26.4.0
+      typescript:
+        specifier: 7.0.2
+        version: 7.0.2
+
+  packages/ai:
+    dependencies:
+      '@tanstack/ai':
+        specifier: 0.52.0
+        version: 0.52.0
+      '@tanstack/ai-openrouter':
+        specifier: 0.19.5
+        version: 0.19.5
+      zod:
+        specifier: 4.5.4
+        version: 4.5.4
+    devDependencies:
+      '@types/node':
+        specifier: 26.4.0
+        version: 26.4.0
+      tsx:
+        specifier: 4.23.13
+        version: 4.23.13
+      typescript:
+        specifier: 7.0.2
+        version: 7.0.2
+
+  packages/shared:
+    dependencies:
+      zod:
+        specifier: 4.5.4
+        version: 4.5.4
+    devDependencies:
+      '@types/node':
+        specifier: 26.4.0
+        version: 26.4.0
+      typescript:
+        specifier: 7.0.2
+        version: 7.0.2
+
+  packages/solari:
+    dependencies:
+      '@solarisdk/browser':
+        specifier: 0.1.2
+        version: 0.1.2
+      '@solarisdk/sdk':
+        specifier: 0.1.2
+        version: 0.1.2
+      playwright-core:
+        specifier: 1.62.1
+        version: 1.62.1
+    devDependencies:
+      '@types/node':
+        specifier: 26.4.0
+        version: 26.4.0
+      typescript:
+        specifier: 7.0.2
+        version: 7.0.2
+
 packages:
 
   '@ag-ui/core@0.1.1-canary.beta.0':
