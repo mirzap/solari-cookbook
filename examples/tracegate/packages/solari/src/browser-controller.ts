@@ -26,8 +26,11 @@ import {
   assertAllowedNavigation,
   blockedByPolicy,
   canonicalAllowedOrigins,
-  classifyObservableRequest,
+  classifyBlockedRequest,
+  classifyBlockedWebSocket,
   obviousUnsafeControl,
+  type BlockedPolicyDisposition,
+  type BrowserPolicyActionScope,
   type PolicyElementSnapshot,
 } from "./policy.js"
 
@@ -80,6 +83,11 @@ interface ElementSnapshot extends PolicyElementSnapshot {
   readonly selected: boolean | null
   readonly expanded: boolean | null
   readonly truncated: boolean
+}
+
+interface ActivePolicyAction {
+  readonly scope: BrowserPolicyActionScope
+  readonly token: number
 }
 
 interface RegistryEntry {
@@ -460,7 +468,8 @@ export class SolariCdpBrowserController implements BrowserController {
   #revision = 0
   #registry = new Map<string, RegistryEntry>()
   #initialNavigationCompleted = false
-  #hasDispatchedAgentAction = false
+  #activePolicyAction: ActivePolicyAction | null = null
+  #nextPolicyActionToken = 0
   #documentSequence = 0
   #observedDocumentSequence: number | null = null
   #passivePolicyCount = 0
@@ -565,6 +574,7 @@ export class SolariCdpBrowserController implements BrowserController {
       this.#browser = null
       this.#context = null
       this.#page = null
+      this.#activePolicyAction = null
       this.#observedDocumentSequence = null
       this.#registry.clear()
       this.#closePromise = (async () => {
@@ -581,71 +591,76 @@ export class SolariCdpBrowserController implements BrowserController {
   async navigate(url: string, signal: AbortSignal): Promise<UntrustedAgentObservation> {
     throwIfAborted(signal)
     const target = assertAllowedNavigation(url, this.#allowedOrigins)
-    if (this.#initialNavigationCompleted) this.#hasDispatchedAgentAction = true
     const page = this.#requirePage()
-    const deadline = Date.now() + this.#internalOperationTimeoutMs
-    let committed = false
-    try {
-      await runBrowserPhase(
-        "navigation commit",
-        remainingPhaseMs(deadline, "navigation commit"),
-        signal,
-        () => page.goto(target.href, {
-          waitUntil: "commit",
-          timeout: remainingPhaseMs(deadline, "navigation commit"),
-        }),
-      )
-      committed = true
-      this.#initialNavigationCompleted = true
-      throwIfAborted(signal)
-      this.#assertCurrentOrigin()
+    const performNavigation = async (): Promise<UntrustedAgentObservation> => {
+      const deadline = Date.now() + this.#internalOperationTimeoutMs
+      let committed = false
+      try {
+        await runBrowserPhase(
+          "navigation commit",
+          remainingPhaseMs(deadline, "navigation commit"),
+          signal,
+          () => page.goto(target.href, {
+            waitUntil: "commit",
+            timeout: remainingPhaseMs(deadline, "navigation commit"),
+          }),
+        )
+        committed = true
+        this.#initialNavigationCompleted = true
+        throwIfAborted(signal)
+        this.#assertCurrentOrigin()
 
-      // Commit establishes the new main document. DOMContentLoaded is only a
-      // bounded stabilization hint because a committed page may never emit it.
-      const stabilizationBudget = Math.min(
-        MAX_DOM_CONTENT_LOADED_GRACE_MS,
-        Math.max(100, Math.floor(this.#internalOperationTimeoutMs * 0.15)),
-        remainingPhaseMs(deadline, "navigation stabilization"),
-      )
-      // Proceed after the grace period without forcibly stopping the document;
-      // generic sites may still need pending scripts and resources to become usable.
-      await waitForOptionalBrowserPhase(
-        "DOMContentLoaded stabilization",
-        stabilizationBudget,
-        signal,
-        page.waitForLoadState("domcontentloaded"),
-      )
+        // Commit establishes the new main document. DOMContentLoaded is only a
+        // bounded stabilization hint because a committed page may never emit it.
+        const stabilizationBudget = Math.min(
+          MAX_DOM_CONTENT_LOADED_GRACE_MS,
+          Math.max(100, Math.floor(this.#internalOperationTimeoutMs * 0.15)),
+          remainingPhaseMs(deadline, "navigation stabilization"),
+        )
+        // Proceed after the grace period without forcibly stopping the document;
+        // generic sites may still need pending scripts and resources to become usable.
+        await waitForOptionalBrowserPhase(
+          "DOMContentLoaded stabilization",
+          stabilizationBudget,
+          signal,
+          page.waitForLoadState("domcontentloaded"),
+        )
 
-      const quietIntervalMs = Math.min(
-        MAX_DOCUMENT_QUIET_INTERVAL_MS,
-        Math.max(50, Math.floor(this.#internalOperationTimeoutMs * 0.02)),
-        remainingPhaseMs(deadline, "document stabilization"),
-      )
-      const documentSequence = this.#documentSequence
-      await runBrowserPhase(
-        "document stabilization",
-        remainingPhaseMs(deadline, "document stabilization"),
-        signal,
-        (phaseSignal) => raceWithAbort(page.waitForTimeout(quietIntervalMs), phaseSignal),
-      )
-      if (this.#documentSequence !== documentSequence) {
-        throw staleElement("Document changed during navigation stabilization")
+        const quietIntervalMs = Math.min(
+          MAX_DOCUMENT_QUIET_INTERVAL_MS,
+          Math.max(50, Math.floor(this.#internalOperationTimeoutMs * 0.02)),
+          remainingPhaseMs(deadline, "document stabilization"),
+        )
+        const documentSequence = this.#documentSequence
+        await runBrowserPhase(
+          "document stabilization",
+          remainingPhaseMs(deadline, "document stabilization"),
+          signal,
+          (phaseSignal) => raceWithAbort(page.waitForTimeout(quietIntervalMs), phaseSignal),
+        )
+        if (this.#documentSequence !== documentSequence) {
+          throw staleElement("Document changed during navigation stabilization")
+        }
+        this.#assertCurrentOrigin()
+        return await runBrowserPhase(
+          "fresh navigation observation",
+          remainingPhaseMs(deadline, "fresh navigation observation"),
+          signal,
+          (phaseSignal) => this.observe(phaseSignal),
+        )
+      } catch (error) {
+        if (!committed || signal.aborted) {
+          void page.close({ runBeforeUnload: false }).catch(() => {})
+        } else {
+          void page.evaluate(() => window.stop()).catch(() => {})
+        }
+        throw error
       }
-      this.#assertCurrentOrigin()
-      return await runBrowserPhase(
-        "fresh navigation observation",
-        remainingPhaseMs(deadline, "fresh navigation observation"),
-        signal,
-        (phaseSignal) => this.observe(phaseSignal),
-      )
-    } catch (error) {
-      if (!committed || signal.aborted) {
-        void page.close({ runBeforeUnload: false }).catch(() => {})
-      } else {
-        void page.evaluate(() => window.stop()).catch(() => {})
-      }
-      throw error
     }
+
+    return this.#initialNavigationCompleted
+      ? this.#runWithPolicyAction("navigation", performNavigation)
+      : performNavigation()
   }
 
   async observe(signal: AbortSignal): Promise<UntrustedAgentObservation> {
@@ -926,9 +941,10 @@ export class SolariCdpBrowserController implements BrowserController {
     this.#assertElementSafe(entry.snapshot)
     const href = entry.snapshot.attributes.href
     if (href) assertAllowedNavigation(new URL(href, this.#requirePage().url()).href, this.#allowedOrigins)
-    this.#hasDispatchedAgentAction = true
-    await entry.locator.click({ timeout: this.#internalOperationTimeoutMs })
-    return this.observe(signal)
+    return this.#runWithPolicyAction("direct_interaction", async () => {
+      await entry.locator.click({ timeout: this.#internalOperationTimeoutMs })
+      return this.observe(signal)
+    })
   }
 
   async type(
@@ -938,10 +954,11 @@ export class SolariCdpBrowserController implements BrowserController {
     if (Buffer.byteLength(input.text, "utf8") > 4_000) throw new Error("Text is too large")
     const entry = await this.#resolve(input, signal)
     this.#assertElementSafe(entry.snapshot)
-    this.#hasDispatchedAgentAction = true
-    if (input.clearFirst) await entry.locator.fill(input.text)
-    else await entry.locator.pressSequentially(input.text)
-    return this.observe(signal)
+    return this.#runWithPolicyAction("direct_interaction", async () => {
+      if (input.clearFirst) await entry.locator.fill(input.text)
+      else await entry.locator.pressSequentially(input.text)
+      return this.observe(signal)
+    })
   }
 
   async select(
@@ -950,9 +967,10 @@ export class SolariCdpBrowserController implements BrowserController {
   ): Promise<UntrustedAgentObservation> {
     const entry = await this.#resolve(input, signal)
     this.#assertElementSafe(entry.snapshot)
-    this.#hasDispatchedAgentAction = true
-    await entry.locator.selectOption(input.value)
-    return this.observe(signal)
+    return this.#runWithPolicyAction("direct_interaction", async () => {
+      await entry.locator.selectOption(input.value)
+      return this.observe(signal)
+    })
   }
 
   async pressKey(
@@ -964,9 +982,10 @@ export class SolariCdpBrowserController implements BrowserController {
     }
     const entry = await this.#resolve(input, signal)
     this.#assertElementSafe(entry.snapshot)
-    this.#hasDispatchedAgentAction = true
-    await entry.locator.press(input.key)
-    return this.observe(signal)
+    return this.#runWithPolicyAction("direct_interaction", async () => {
+      await entry.locator.press(input.key)
+      return this.observe(signal)
+    })
   }
 
   async scroll(
@@ -978,7 +997,6 @@ export class SolariCdpBrowserController implements BrowserController {
     if (!Number.isInteger(amount) || amount < 1 || amount > 5_000) {
       throw new Error("Scroll amount is out of bounds")
     }
-    this.#hasDispatchedAgentAction = true
     await this.#requirePage().mouse.wheel(0, direction === "down" ? amount : -amount)
     return this.observe(signal)
   }
@@ -988,7 +1006,6 @@ export class SolariCdpBrowserController implements BrowserController {
     if (!Number.isInteger(durationMs) || durationMs < 0 || durationMs > 15_000) {
       throw new Error("Wait duration is out of bounds")
     }
-    this.#hasDispatchedAgentAction = true
     await this.#requirePage().waitForTimeout(durationMs)
     throwIfAborted(signal)
     return this.observe(signal)
@@ -1100,8 +1117,8 @@ export class SolariCdpBrowserController implements BrowserController {
     this.#assertCurrentOrigin()
     this.#assertObservedDocument()
     const page = this.#requirePage()
-    this.#hasDispatchedAgentAction = true
-    const execution = page.evaluate(
+    return this.#runWithPolicyAction("webmcp", async () => {
+      const execution = page.evaluate(
       async ({ expected, toolInput }) => {
         const modelContext = (
           document as Document & {
@@ -1199,10 +1216,11 @@ export class SolariCdpBrowserController implements BrowserController {
       this.#assertObservedDocument()
       throwIfAborted(signal)
       return result
-    } catch (error) {
-      if (signal.aborted) await this.close(AbortSignal.timeout(5_000)).catch(() => {})
-      throw error
-    }
+      } catch (error) {
+        if (signal.aborted) await this.close(AbortSignal.timeout(5_000)).catch(() => {})
+        throw error
+      }
+    })
   }
 
   async readCurrentOriginText(
@@ -1357,8 +1375,44 @@ export class SolariCdpBrowserController implements BrowserController {
     }
   }
 
-  #recordPolicy(code: PolicyDenyCode): void {
-    const fatal = this.#hasDispatchedAgentAction
+  async #runWithPolicyAction<T>(
+    scope: BrowserPolicyActionScope,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    if (this.#activePolicyAction) throw new Error("Browser policy action scopes must not overlap")
+    const activeAction: ActivePolicyAction = {
+      scope,
+      token: this.#nextPolicyActionToken + 1,
+    }
+    this.#nextPolicyActionToken = activeAction.token
+    this.#activePolicyAction = activeAction
+    try {
+      return await operation()
+    } finally {
+      if (this.#activePolicyAction === activeAction) this.#activePolicyAction = null
+    }
+  }
+
+  #activePageOrigin(): string | null {
+    const rawUrl = this.#page?.url()
+    if (!rawUrl) return null
+    try {
+      const url = new URL(rawUrl)
+      return url.protocol === "https:" && this.#allowedOrigins.has(url.origin)
+        ? url.origin
+        : null
+    } catch {
+      return null
+    }
+  }
+
+  #directEventDisposition(): BlockedPolicyDisposition {
+    const scope = this.#activePolicyAction?.scope
+    return scope === "direct_interaction" || scope === "webmcp" ? "fatal" : "passive"
+  }
+
+  #recordPolicy(code: PolicyDenyCode, disposition: BlockedPolicyDisposition): void {
+    const fatal = disposition === "fatal"
     if (fatal) this.#fatalPolicyCount = Math.min(1_000, this.#fatalPolicyCount + 1)
     else this.#passivePolicyCount = Math.min(1_000, this.#passivePolicyCount + 1)
     const destination = fatal ? this.#fatalPolicyCodes : this.#passivePolicyCodes
@@ -1372,41 +1426,50 @@ export class SolariCdpBrowserController implements BrowserController {
 
   async #installPolicyHandlers(context: BrowserContext, page: Page): Promise<void> {
     page.on("dialog", (dialog) => {
-      this.#recordPolicy("unknown_effect")
+      this.#recordPolicy("unknown_effect", this.#directEventDisposition())
       void dialog.dismiss().catch(() => {})
     })
     page.on("download", (download) => {
-      this.#recordPolicy("upload_or_download_forbidden")
+      this.#recordPolicy("upload_or_download_forbidden", "fatal")
       void download.cancel().catch(() => {})
     })
     page.on("filechooser", (chooser) => {
-      this.#recordPolicy("upload_or_download_forbidden")
+      this.#recordPolicy("upload_or_download_forbidden", "fatal")
       void chooser.setFiles([]).catch(() => {})
     })
     context.on("page", (candidate) => {
       if (candidate !== page) {
-        this.#recordPolicy("popup_forbidden")
+        this.#recordPolicy("popup_forbidden", "fatal")
         void candidate.close().catch(() => {})
       }
     })
     await context.routeWebSocket("**/*", async (route) => {
-      this.#recordPolicy("alternate_protocol_forbidden")
+      const disposition = classifyBlockedWebSocket(
+        route.url(),
+        this.#activePageOrigin(),
+        this.#activePolicyAction?.scope ?? null,
+      )
+      this.#recordPolicy("alternate_protocol_forbidden", disposition)
       await route.close({ code: 1008, reason: "TraceGate blocks WebSocket" }).catch(() => {})
     })
     await context.route("**/*", async (route) => {
       const request = route.request()
       let mainFrameNavigation = false
-      if (request.isNavigationRequest()) {
+      try {
         const requestFrame = request.frame()
         const requestPage = requestFrame.page()
         if (requestPage !== page) {
-          this.#recordPolicy("popup_forbidden")
+          this.#recordPolicy("popup_forbidden", "fatal")
           await route.abort("blockedbyclient").catch(() => {})
           return
         }
-        mainFrameNavigation = requestFrame === requestPage.mainFrame()
+        mainFrameNavigation =
+          request.isNavigationRequest() && requestFrame === requestPage.mainFrame()
+      } catch {
+        // Worker-owned requests have no frame. They can still be denied below,
+        // but frame absence must not fabricate main-document causality.
       }
-      const denyCode = classifyObservableRequest(
+      const decision = classifyBlockedRequest(
         {
           url: request.url(),
           method: request.method(),
@@ -1414,9 +1477,14 @@ export class SolariCdpBrowserController implements BrowserController {
           mainFrameNavigation,
         },
         this.#allowedOrigins,
+        {
+          resourceType: request.resourceType(),
+          activePageOrigin: this.#activePageOrigin(),
+          actionScope: this.#activePolicyAction?.scope ?? null,
+        },
       )
-      if (denyCode) {
-        this.#recordPolicy(denyCode)
+      if (decision) {
+        this.#recordPolicy(decision.code, decision.disposition)
         await route.abort("blockedbyclient").catch(() => {})
         return
       }

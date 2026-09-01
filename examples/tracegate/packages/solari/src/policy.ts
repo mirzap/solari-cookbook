@@ -23,6 +23,34 @@ export interface ObservableRequestSnapshot {
   readonly mainFrameNavigation: boolean
 }
 
+export type BrowserPolicyActionScope = "navigation" | "direct_interaction" | "webmcp"
+export type BlockedPolicyDisposition = "passive" | "fatal"
+
+export interface BlockedRequestContext {
+  readonly resourceType: string
+  readonly activePageOrigin: string | null
+  readonly actionScope: BrowserPolicyActionScope | null
+}
+
+export interface BlockedRequestDecision {
+  readonly code: PolicyDenyCode
+  readonly disposition: BlockedPolicyDisposition
+}
+
+const PASSIVE_SUBRESOURCE_TYPES = new Set([
+  "stylesheet",
+  "image",
+  "media",
+  "font",
+  "script",
+  "texttrack",
+  "eventsource",
+  "manifest",
+  "other",
+  "ping",
+  "beacon",
+])
+
 export function canonicalAllowedOrigins(origins: readonly string[]): Set<string> {
   if (origins.length === 0) throw new Error("At least one allowed origin is required")
   const result = new Set<string>()
@@ -141,6 +169,77 @@ export function classifyObservableRequest(
     return "origin_not_admitted"
   }
   return null
+}
+
+export function classifyBlockedRequest(
+  request: ObservableRequestSnapshot,
+  allowedOrigins: ReadonlySet<string>,
+  context: BlockedRequestContext,
+): BlockedRequestDecision | null {
+  const code = classifyObservableRequest(request, allowedOrigins)
+  if (!code) return null
+
+  // A blocked controlled-document request is evidence-relevant regardless of
+  // temporal action correlation: it attempted to replace the graded document.
+  if (request.mainFrameNavigation) return { code, disposition: "fatal" }
+
+  // Playwright does not expose a reliable request initiator that links a fetch
+  // to a particular DOM action. Treat temporal scope as supporting metadata,
+  // never as a permanent post-action latch. Page-load, wait, scroll, worker,
+  // and late traffic therefore remain passive.
+  if (context.actionScope === null || context.actionScope === "navigation") {
+    return { code, disposition: "passive" }
+  }
+
+  let destinationOrigin: string | null = null
+  try {
+    const destination = new URL(request.url)
+    if (destination.protocol === "http:" || destination.protocol === "https:") {
+      destinationOrigin = destination.origin
+    }
+  } catch {
+    // Malformed/non-network subresource destinations have no structural
+    // same-origin evidence and remain blocked as passive activity.
+  }
+
+  if (context.activePageOrigin === null || destinationOrigin !== context.activePageOrigin) {
+    return { code, disposition: "passive" }
+  }
+
+  const sameOriginStateChange =
+    code === "non_idempotent_request" || code === "request_body_forbidden"
+  return {
+    code,
+    disposition:
+      sameOriginStateChange || !PASSIVE_SUBRESOURCE_TYPES.has(context.resourceType.toLowerCase())
+        ? "fatal"
+        : "passive",
+  }
+}
+
+export function classifyBlockedWebSocket(
+  rawUrl: string,
+  activePageOrigin: string | null,
+  actionScope: BrowserPolicyActionScope | null,
+): BlockedPolicyDisposition {
+  if (
+    activePageOrigin === null ||
+    (actionScope !== "direct_interaction" && actionScope !== "webmcp")
+  ) {
+    return "passive"
+  }
+  try {
+    const url = new URL(rawUrl)
+    const comparableOrigin =
+      url.protocol === "wss:"
+        ? new URL(`https://${url.host}`).origin
+        : url.protocol === "ws:"
+          ? new URL(`http://${url.host}`).origin
+          : null
+    return comparableOrigin === activePageOrigin ? "fatal" : "passive"
+  } catch {
+    return "passive"
+  }
 }
 
 export function redactUrlForPersistence(rawUrl: string): string | null {
