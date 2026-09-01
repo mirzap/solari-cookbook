@@ -1,17 +1,24 @@
 import { createHash } from "node:crypto";
 import {
-  DispatchAwareRunToolCompletedEventSchema,
+  FailureAwareRunToolCompletedEventSchema,
+  FailureRecordSchema,
   SafeAgentActionSchema,
   SafeAgentToolExchangeSchema,
   SafeAgentToolNameSchema,
   SafeAgentToolResultSchema,
   SafeAgentToolSurfaceSchema,
+  SafeErrorSchema,
   ToolCallIdSchema,
   UntrustedAgentObservationSchema,
+  browserPolicyDiagnosticFromFailureRecord,
   isTraceGateError,
   redactJson,
+  type ErrorCategory,
+  type RunToolCompletionFailurePhase,
+  type RunToolCompletionFailureV1,
   type SafeAgentAction,
   type SafeAgentToolName,
+  type SafeErrorCode,
   type SafeAgentToolPort,
   type SafeAgentToolSurface,
   type ToolInterfaceSource,
@@ -52,12 +59,16 @@ type ExecutionStage = "pre_dispatch" | "port_entered" | "post_dispatch_validatio
 type OriginalDispatchState = {
   disposition: "dispatched" | "rejected_before_dispatch";
 };
-type DispatchAwareCompletion = Readonly<{
+type FailureAwareCompletion = Readonly<{
   tool: SafeAgentToolName;
   resultSummary: string;
 } & (
-  | { dispatchDisposition: "dispatched"; success: boolean }
-  | { dispatchDisposition: "rejected_before_dispatch"; success: false }
+  | { dispatchDisposition: "dispatched"; success: true }
+  | {
+      dispatchDisposition: "dispatched" | "rejected_before_dispatch";
+      success: false;
+      failure: RunToolCompletionFailureV1;
+    }
 )>;
 type OperationSettlement =
   | { readonly status: "fulfilled"; readonly value: unknown }
@@ -116,6 +127,53 @@ function interfaceSource(tool: SafeAgentToolName): ToolInterfaceSource {
 
 function isRejectedAdmission(admission: StoredAdmission): admission is RejectedAdmission {
   return "rejection" in admission;
+}
+
+function syntheticCompletionFailure(
+  code: SafeErrorCode,
+  category: ErrorCategory,
+  phase: RunToolCompletionFailurePhase,
+): RunToolCompletionFailureV1 {
+  return { schemaVersion: 1, code, category, phase };
+}
+
+function completionFailureFromError(
+  error: unknown,
+  phase: RunToolCompletionFailurePhase,
+): RunToolCompletionFailureV1 {
+  const parsedSafe = isTraceGateError(error) ? SafeErrorSchema.safeParse(error.safe) : null;
+  const safe = parsedSafe?.success ? parsedSafe.data : null;
+  let closedPhase = phase;
+  let browserPolicyDiagnostic: ReturnType<typeof browserPolicyDiagnosticFromFailureRecord> = null;
+  if (phase === "runtime_dispatch" && safe !== null) {
+    const failureRecord = FailureRecordSchema.safeParse(safe);
+    if (
+      failureRecord.success &&
+      failureRecord.data.code === "unsafe_action_blocked" &&
+      failureRecord.data.category === "policy" &&
+      failureRecord.data.phase === "browser_policy"
+    ) {
+      closedPhase = "browser_policy";
+      browserPolicyDiagnostic = browserPolicyDiagnosticFromFailureRecord(failureRecord.data);
+    }
+  }
+  return {
+    schemaVersion: 1,
+    code: safe?.code ?? "unexpected_run_error",
+    category: safe?.category ?? "unknown",
+    phase: closedPhase,
+    ...(browserPolicyDiagnostic === null ? {} : { browserPolicyDiagnostic }),
+  };
+}
+
+function completionFailurePhase(
+  stage: ExecutionStage | null,
+  dispatchDisposition: "dispatched" | "rejected_before_dispatch",
+): RunToolCompletionFailurePhase {
+  if (stage === "pre_dispatch") return "pre_dispatch_validation";
+  if (stage === "post_dispatch_validation") return "post_dispatch_validation";
+  if (stage === "port_entered" || dispatchDisposition === "dispatched") return "runtime_dispatch";
+  return "pre_dispatch_validation";
 }
 
 function feedbackReason(error: unknown, stage: ExecutionStage, malformedProposal = false): SafeToolErrorReason {
@@ -316,10 +374,11 @@ export class SerializedSafeToolExecutor implements AgentToolExecutor {
     return this.#feedback.get(providerCallId) ?? null;
   }
 
-  async failAdmitted(providerCallId: string, error: unknown): Promise<void> {
+  async failAdmitted(providerCallId: string, _error: unknown): Promise<void> {
     const admission = this.#requireAdmission(providerCallId);
     if (this.#completed.has(providerCallId)) return;
-    const run = () => this.#failAdmittedNow(admission, error, "rejected_before_dispatch");
+    const failure = syntheticCompletionFailure("provider_protocol_error", "model_provider", "proposal_admission");
+    const run = () => this.#failAdmittedNow(admission, failure, "rejected_before_dispatch");
     const result = this.#tail.then(run, run);
     this.#tail = result.then(() => {}, () => {});
     return result;
@@ -327,7 +386,7 @@ export class SerializedSafeToolExecutor implements AgentToolExecutor {
 
   async #failAdmittedNow(
     admission: StoredAdmission,
-    _error: unknown,
+    failure: RunToolCompletionFailureV1,
     dispatchDisposition: "dispatched" | "rejected_before_dispatch",
     fallbackReason: SafeToolErrorReason = "malformed_proposal",
   ): Promise<void> {
@@ -342,6 +401,7 @@ export class SerializedSafeToolExecutor implements AgentToolExecutor {
       tool: admission.toolName,
       dispatchDisposition,
       success: false,
+      failure,
       resultSummary: "Safe tool proposal was rejected or failed; bounded feedback was returned to the model.",
     });
   }
@@ -350,9 +410,22 @@ export class SerializedSafeToolExecutor implements AgentToolExecutor {
     const admission = this.#requireAdmission(providerCallId);
     if (this.#completed.has(providerCallId)) throw terminalError("provider_protocol_error", "Tool call was already completed", "agent.tool");
     const run = async () => {
-      this.assertTargetEvidenceAvailable();
+      try {
+        this.assertTargetEvidenceAvailable();
+      } catch (error) {
+        const failure = isRejectedAdmission(admission)
+          ? syntheticCompletionFailure("provider_protocol_error", "model_provider", "proposal_admission")
+          : completionFailureFromError(error, "pre_dispatch_validation");
+        await this.#failAdmittedNow(admission, failure, "rejected_before_dispatch", "tool_failed");
+        throw error;
+      }
       if (isRejectedAdmission(admission)) {
-        return this.#completeRecoverable(admission, admission.rejection, "rejected_before_dispatch");
+        return this.#completeRecoverable(
+          admission,
+          admission.rejection,
+          "rejected_before_dispatch",
+          syntheticCompletionFailure("provider_protocol_error", "model_provider", "proposal_admission"),
+        );
       }
       const parent = AbortSignal.any([this.#signal, providerSignal]);
       const originalDispatch: OriginalDispatchState = { disposition: "rejected_before_dispatch" };
@@ -377,42 +450,49 @@ export class SerializedSafeToolExecutor implements AgentToolExecutor {
         const staged = settledFailure instanceof StagedExecutionFailure ? settledFailure : null;
         const error = toolTimedOut && staged?.stage === "pre_dispatch" ? caught : staged?.cause ?? settledFailure;
         const dispatchDisposition = originalDispatch.disposition;
+        const completionFailure = toolTimedOut
+          ? completionFailureFromError(caught, completionFailurePhase(null, dispatchDisposition))
+          : staged?.cause instanceof EquivalentSemanticFailure
+            ? syntheticCompletionFailure("stale_element_exhausted", "tool_error", "pre_dispatch_validation")
+            : staged?.malformedProposal
+              ? syntheticCompletionFailure("provider_protocol_error", "model_provider", "pre_dispatch_validation")
+              : completionFailureFromError(error, completionFailurePhase(staged?.stage ?? null, dispatchDisposition));
         if (parent.aborted || (!toolTimedOut && isTraceGateError(error) && error.safe.code === "operation_aborted")) {
-          await this.#failAdmittedNow(admission, error, dispatchDisposition, "tool_failed");
+          await this.#failAdmittedNow(admission, completionFailure, dispatchDisposition, "tool_failed");
           throw error;
         }
         if (staged?.cause instanceof EquivalentSemanticFailure) {
-          return this.#completeRecoverable(admission, "tool_failed", dispatchDisposition, false, staged.cause.policy);
+          return this.#completeRecoverable(admission, "tool_failed", dispatchDisposition, completionFailure, false, staged.cause.policy);
         }
         if (staged?.stage === "pre_dispatch") {
           const reason = feedbackReason(error, "pre_dispatch", staged.malformedProposal);
-          if (isRecoverableError(error)) return this.#completeRecoverable(admission, reason, dispatchDisposition);
-          await this.#failAdmittedNow(admission, error, dispatchDisposition, reason);
+          if (isRecoverableError(error)) return this.#completeRecoverable(admission, reason, dispatchDisposition, completionFailure);
+          await this.#failAdmittedNow(admission, completionFailure, dispatchDisposition, reason);
           throw error;
         }
         if (!MUTATING_ACTIONS.has(admission.toolName)) {
-          if (isRecoverableError(error)) return this.#completeRecoverable(admission, "tool_failed", dispatchDisposition);
-          await this.#failAdmittedNow(admission, error, dispatchDisposition, "tool_failed");
+          if (isRecoverableError(error)) return this.#completeRecoverable(admission, "tool_failed", dispatchDisposition, completionFailure);
+          await this.#failAdmittedNow(admission, completionFailure, dispatchDisposition, "tool_failed");
           throw error;
         }
         if (staged && canRecoverWithoutTargetUncertainty(staged.stage, admission.toolName, error)) {
           const reason = feedbackReason(error, "pre_dispatch");
           if (reason === "stale_proposal") {
             const resynchronized = await this.#tryResynchronize(admission, parent);
-            return this.#completeRecoverable(admission, "stale_proposal", dispatchDisposition, resynchronized);
+            return this.#completeRecoverable(admission, "stale_proposal", dispatchDisposition, completionFailure, resynchronized);
           }
-          return this.#completeRecoverable(admission, reason, dispatchDisposition);
+          return this.#completeRecoverable(admission, reason, dispatchDisposition, completionFailure);
         }
         const resynchronized = await this.#tryResynchronize(admission, parent);
         if (resynchronized) {
           const runtimePolicy = staged?.semanticFailureFingerprint
             ? this.#recordEquivalentFailure(staged.semanticFailureFingerprint)
             : null;
-          return this.#completeRecoverable(admission, "tool_failed", dispatchDisposition, true, runtimePolicy);
+          return this.#completeRecoverable(admission, "tool_failed", dispatchDisposition, completionFailure, true, runtimePolicy);
         }
-        const failure = this.#loseTargetEvidence(error);
-        await this.#failAdmittedNow(admission, failure, dispatchDisposition, "tool_failed");
-        throw failure;
+        const terminalFailure = this.#loseTargetEvidence(error);
+        await this.#failAdmittedNow(admission, completionFailure, dispatchDisposition, "tool_failed");
+        throw terminalFailure;
       }
     };
     const result = this.#tail.then(run, run);
@@ -487,7 +567,12 @@ export class SerializedSafeToolExecutor implements AgentToolExecutor {
     }
 
     if (result.decision.decision === "deny") {
-      return this.#completeRecoverable(admission, "policy_denied", "dispatched");
+      return this.#completeRecoverable(
+        admission,
+        "policy_denied",
+        "dispatched",
+        syntheticCompletionFailure("unsafe_action_blocked", "policy", "runtime_dispatch"),
+      );
     }
     if (result.tool === "finish" && result.finishedBelief !== null) {
       this.#finished = { completed: result.finishedBelief, summary: result.summary };
@@ -496,7 +581,7 @@ export class SerializedSafeToolExecutor implements AgentToolExecutor {
     await this.#emitCompleted(admission, {
       tool: action.kind,
       dispatchDisposition: "dispatched",
-      success: result.decision.decision === "allow",
+      success: true,
       resultSummary: String(redactJson(result.summary, { maxStringLength: 2_000 })),
     });
     return JSON.stringify({ schemaVersion: 2, trust: "untrusted_page_or_tool_content", kind: "safe_tool_result", result });
@@ -576,17 +661,18 @@ export class SerializedSafeToolExecutor implements AgentToolExecutor {
     admission: StoredAdmission,
     reason: SafeToolErrorReason,
     dispatchDisposition: "dispatched" | "rejected_before_dispatch",
+    failure: RunToolCompletionFailureV1,
     resynchronized = false,
     runtimePolicy: TrustedRuntimeFailurePolicy | null = null,
   ): Promise<string> {
     const feedback = safeToolErrorFeedback(reason, resynchronized, runtimePolicy);
     this.#feedback.set(admission.providerCallId, feedback);
-    await this.#failAdmittedNow(admission, new Error("recoverable safe-tool rejection"), dispatchDisposition);
+    await this.#failAdmittedNow(admission, failure, dispatchDisposition);
     return feedback;
   }
 
-  async #emitCompleted(admission: StoredAdmission, completion: DispatchAwareCompletion): Promise<void> {
-    const event = DispatchAwareRunToolCompletedEventSchema.parse({
+  async #emitCompleted(admission: StoredAdmission, completion: FailureAwareCompletion): Promise<void> {
+    const event = FailureAwareRunToolCompletedEventSchema.parse({
       type: "run.tool.completed",
       payload: {
         toolCallId: ToolCallIdSchema.parse(admission.normalizedId),
@@ -595,6 +681,7 @@ export class SerializedSafeToolExecutor implements AgentToolExecutor {
         interfaceMode: this.#policy.interfaceMode,
         dispatchDisposition: completion.dispatchDisposition,
         success: completion.success,
+        ...(completion.success ? {} : { failure: completion.failure }),
         durationMs: Math.max(0, Math.floor(this.#now() - admission.admittedAt)),
         resultSummary: completion.resultSummary,
       },
