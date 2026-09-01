@@ -14,7 +14,11 @@ import {
   ToolCallIdSchema,
   UtcDateTimeSchema,
 } from "./ids.ts";
-import { ToolInterfaceSourceSchema } from "./mcp.ts";
+import {
+  InterfaceChannelSchema,
+  ToolInterfaceSourceSchema,
+  type InterfaceChannel,
+} from "./mcp.ts";
 import { PolicyActivitySchema, PolicyDenyCodeSchema } from "./policy.ts";
 import { ModelIdSchema } from "./models.ts";
 import { AdmissionReasonCodeSchema } from "./targets.ts";
@@ -35,6 +39,18 @@ const event = <T extends EventType, S extends z.ZodType>(type: T, payload: S) =>
 
 export const RunQueuedEventPayloadSchema = z.object({ runIndex: z.number().int().nonnegative() }).strict();
 export const RunStatusChangedEventPayloadSchema = z.object({ previous: RunStatusSchema, next: RunStatusSchema, mode: TransitionModeSchema }).strict();
+
+export const ToolDispatchDispositionSchema = z.enum([
+  "dispatched",
+  "rejected_before_dispatch",
+]);
+export type ToolDispatchDisposition = z.infer<typeof ToolDispatchDispositionSchema>;
+
+export const EffectiveToolDispatchDispositionSchema = z.enum([
+  ...ToolDispatchDispositionSchema.options,
+  "legacy_unclassified",
+]);
+export type EffectiveToolDispatchDisposition = z.infer<typeof EffectiveToolDispatchDispositionSchema>;
 
 export const RunEnvironmentEvidenceSchema = z.object({
   nodeVersion: z.string().min(1).max(50),
@@ -57,6 +73,49 @@ const countSummary = z.object({
   potentialLeaks: z.number().int().nonnegative(),
 }).strict();
 
+const runToolCompletionBase = {
+  toolCallId: ToolCallIdSchema,
+  tool: SafeAgentToolNameSchema,
+  interfaceSource: ToolInterfaceSourceSchema,
+  interfaceMode: InterfaceModeSchema,
+  durationMs: z.number().int().nonnegative(),
+  resultSummary: z.string().max(2_000),
+} as const;
+
+export const LegacyRunToolCompletedEventPayloadSchema = z.object({
+  ...runToolCompletionBase,
+  success: z.boolean(),
+}).strict();
+
+export const DispatchAwareRunToolCompletedEventPayloadSchema = z.discriminatedUnion("dispatchDisposition", [
+  z.object({
+    ...runToolCompletionBase,
+    dispatchDisposition: z.literal("dispatched"),
+    success: z.boolean(),
+  }).strict(),
+  z.object({
+    ...runToolCompletionBase,
+    dispatchDisposition: z.literal("rejected_before_dispatch"),
+    success: z.literal(false),
+  }).strict(),
+]);
+
+export const RunToolCompletedEventPayloadSchema = z.union([
+  DispatchAwareRunToolCompletedEventPayloadSchema,
+  LegacyRunToolCompletedEventPayloadSchema,
+]);
+export type RunToolCompletedEventPayload = z.infer<typeof RunToolCompletedEventPayloadSchema>;
+
+export const DispatchAwareRunToolCompletedEventSchema = event(
+  "run.tool.completed",
+  DispatchAwareRunToolCompletedEventPayloadSchema,
+);
+
+const runToolCompletedEventSchema = event(
+  "run.tool.completed",
+  RunToolCompletedEventPayloadSchema,
+);
+
 const agentEvents = [
   event("run.agent.iteration", z.object({ iteration: z.number().int().positive(), summary: z.string().max(2_000), historyBytes: z.number().int().nonnegative() }).strict()),
   event("run.agent.message", z.object({ role: z.enum(["assistant", "tool"]), summary: z.string().max(4_000) }).strict()),
@@ -67,19 +126,34 @@ const agentEvents = [
     interfaceMode: InterfaceModeSchema,
     argumentSummary: z.string().max(2_000),
   }).strict()),
-  event("run.tool.completed", z.object({
-    toolCallId: ToolCallIdSchema,
-    tool: SafeAgentToolNameSchema,
-    interfaceSource: ToolInterfaceSourceSchema,
-    interfaceMode: InterfaceModeSchema,
-    success: z.boolean(),
-    durationMs: z.number().int().nonnegative(),
-    resultSummary: z.string().max(2_000),
-  }).strict()),
+  runToolCompletedEventSchema,
   event("run.usage.updated", z.object({ promptTokens: z.number().int().nonnegative(), completionTokens: z.number().int().nonnegative(), totalTokens: z.number().int().nonnegative() }).strict()),
 ] as const;
 
 export const AgentTraceEventSchema = z.discriminatedUnion("type", agentEvents);
+
+export function resolveToolDispatchDisposition(
+  payload: RunToolCompletedEventPayload,
+): EffectiveToolDispatchDisposition {
+  if ("dispatchDisposition" in payload) return payload.dispatchDisposition;
+  return payload.success ? "dispatched" : "legacy_unclassified";
+}
+
+export type ToolCompletionInterfaceUsageDelta = Readonly<{
+  channel: InterfaceChannel;
+  outcome: "succeeded" | "failed";
+}>;
+
+export function toolCompletionInterfaceUsageDelta(
+  payload: RunToolCompletedEventPayload,
+): ToolCompletionInterfaceUsageDelta | null {
+  const channel = InterfaceChannelSchema.safeParse(payload.interfaceSource);
+  if (!channel.success || resolveToolDispatchDisposition(payload) !== "dispatched") return null;
+  return {
+    channel: channel.data,
+    outcome: payload.success ? "succeeded" : "failed",
+  };
+}
 
 export const RunEventSchema = z.discriminatedUnion("type", [
   event("evaluation.created", z.object({ requestedRuns: z.number().int().positive() }).strict()),

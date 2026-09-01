@@ -57,6 +57,26 @@ Do not edit, rename, format, stage, restore, or reset another lane’s exclusive
 - Page WebMCP is B-owned. Configured MCP is C-owned and initially limited to explicit unauthenticated loopback HTTP or HTTPS Streamable HTTP endpoints with endpoint/tool allowlists.
 - `mcp-preferred` changes interface strategy only; endpoint URLs and assertion values stay outside `AgentExecutionInputV2`. Server read-only annotations are hints, not authorization; descriptors require a separate local admission decision. All MCP descriptors/results are untrusted, bounded, redacted, and never grade directly.
 
+## Tool dispatch event handoff
+
+The F2C integration checkpoint is blocked until C and D adopt the A-owned terminal tool-event semantics below. `run.tool.started` is proposal-lifecycle trace data only; it is never proof that the runtime/browser tool port was entered and must not drive interface invocation or terminal outcome counts.
+
+`run.tool.completed` now has a dispatch-aware producer payload with the strict bounded disposition `dispatched | rejected_before_dispatch`. `dispatched` means C entered `SafeAgentToolPort.execute(...)`; set it immediately before calling the port so synchronous throws and rejected promises still count as dispatched. `rejected_before_dispatch` means the proposal terminated before that boundary and requires `success: false`. The compatibility event schema still accepts legacy payloads with no disposition: a legacy success proves dispatch, while a legacy failure is `legacy_unclassified` and must not be guessed from duration, summaries, starts, tool names, or sources. No persistence migration is required. Old readers are not forward-compatible with the new strict field, so rollout order is shared contract, then D reader/projection, then C producer.
+
+**C-lane emission handoff (`packages/agent`):**
+
+1. Construct every newly emitted terminal completion with `DispatchAwareRunToolCompletedEventSchema` (or its required payload schema); do not use the legacy branch for new events.
+2. Emit `rejected_before_dispatch` for rejected admission, malformed or unavailable actions, policy/stale/equivalent rejection, and abort/timeout before port entry. Emit `dispatched` for allow/deny results, port throws, post-dispatch validation failures, and abort/timeout after port entry.
+3. Track the boundary directly rather than inferring it from the eventual error. Recovery `inspect` calls do not change the original proposal's disposition and do not create another model-requested invocation.
+4. Keep the existing strict tool/source vocabularies, bounded redacted summaries, and usage non-fabrication rules.
+
+**D-lane projection handoff (`packages/db`, then `apps/web` projection consumers):**
+
+1. Derive interface `invoked`, `succeeded`, and `failed` only from deduplicated `run.tool.completed` events, using `toolCompletionInterfaceUsageDelta(...)`; first terminal event per `toolCallId` wins. Ignore starts for all three counters.
+2. Apply one completion atomically: dispatched success increments `invoked + succeeded`; dispatched failure increments `invoked + failed`; rejected/unclassified/orchestration completions increment none. This preserves `succeeded + failed === invoked` at every persisted cursor, including started-only and crash-truncated histories.
+3. Treat an explicit persisted `(invoked, succeeded, failed)` tuple atomically as a legacy fallback only when that channel has no tool trace activity; never mix an invoked count from starts/explicit state with outcomes from completions. Discovery/admission projection and the shared interface-usage invariants remain unchanged.
+4. D must land the compatible reader before C begins persisting dispatch-aware events. The checkpoint remains blocked until both handoffs compile and production projection is manually inspected; automated tests remain paused.
+
 ## Recovery step 6 assertion-capture seam
 
 Agent A owns the shared contract and deterministic projection; Agent B must implement the browser side next without changing the agent envelope:
