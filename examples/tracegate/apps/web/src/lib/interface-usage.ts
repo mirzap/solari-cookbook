@@ -49,16 +49,26 @@ export function projectInterfaceUsageMetrics(
     usedRunIds: Set<RunId>;
   }>();
 
-  for (const event of events ?? []) {
-    if (event.type !== "run.tool.started" && event.type !== "run.tool.completed") continue;
-    if (event.payload.interfaceSource !== "orchestration") {
-      tracedRunChannels.add(runChannelKey(event.runId, event.payload.interfaceSource));
+  const orderedEvents = [...(events ?? [])].sort((left, right) => {
+    const leftCursor = BigInt(left.cursor);
+    const rightCursor = BigInt(right.cursor);
+    return leftCursor < rightCursor ? -1 : leftCursor > rightCursor ? 1 : 0;
+  });
+  for (const event of orderedEvents) {
+    if (event.type === "run.tool.started") {
+      if (event.payload.interfaceSource !== "orchestration") {
+        tracedRunChannels.add(runChannelKey(event.runId, event.payload.interfaceSource));
+      }
+      continue;
     }
     if (event.type !== "run.tool.completed") continue;
 
     const completionKey = toolCompletionKey(event);
     if (completedToolCalls.has(completionKey)) continue;
     completedToolCalls.add(completionKey);
+    if (event.payload.interfaceSource !== "orchestration") {
+      tracedRunChannels.add(runChannelKey(event.runId, event.payload.interfaceSource));
+    }
     const delta = toolCompletionInterfaceUsageDelta(event.payload);
     if (delta === null) continue;
 

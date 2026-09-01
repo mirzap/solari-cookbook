@@ -24,6 +24,7 @@ import {
   RunSchema,
   RunStepSchema,
   redactJson,
+  toolCompletionBrowserActionDelta,
   toolCompletionInterfaceUsageDelta,
   validateRunTransition,
   type BrowserAssertionEvidenceV1,
@@ -180,13 +181,16 @@ function projectInterfaceUsage(
 
   for (const event of runEvents) {
     if (event.type === "run.discovery.completed") latestDiscovery = event;
-    if (event.type !== "run.tool.started" && event.type !== "run.tool.completed") continue;
-
-    const source = event.payload.interfaceSource;
-    if (source !== "orchestration") tracedChannels.add(source);
+    if (event.type === "run.tool.started") {
+      const source = event.payload.interfaceSource;
+      if (source !== "orchestration") tracedChannels.add(source);
+      continue;
+    }
     if (event.type !== "run.tool.completed" || completedToolCallIds.has(event.payload.toolCallId)) continue;
 
     completedToolCallIds.add(event.payload.toolCallId);
+    const source = event.payload.interfaceSource;
+    if (source !== "orchestration") tracedChannels.add(source);
     const delta = toolCompletionInterfaceUsageDelta(event.payload);
     if (delta === null) continue;
     const current = completed.get(delta.channel) ?? { invoked: 0, succeeded: 0, failed: 0 };
@@ -229,15 +233,30 @@ function projectInterfaceUsage(
 
 function projectRunSnapshot(run: Run, committedEvents: readonly EventEnvelope[]): RunSnapshot {
   const runEvents = committedEvents.filter((event) => event.runId === run.id);
+  const completedToolCallIds = new Set<string>();
   let maxIteration = 0;
   let startedToolCalls = 0;
+  let classifiedBrowserActions = 0;
+  let hasTerminalCompletion = false;
+  let browserActionHistoryClassifiable = true;
   let latestUsage: Run["usage"] | undefined;
 
   for (const event of runEvents) {
     if (event.type === "run.agent.iteration") maxIteration = Math.max(maxIteration, event.payload.iteration);
     if (event.type === "run.tool.started") startedToolCalls += 1;
     if (event.type === "run.usage.updated") latestUsage = event.payload;
+    if (event.type !== "run.tool.completed" || completedToolCallIds.has(event.payload.toolCallId)) continue;
+
+    completedToolCallIds.add(event.payload.toolCallId);
+    hasTerminalCompletion = true;
+    const delta = toolCompletionBrowserActionDelta(event.payload);
+    if (delta === null) browserActionHistoryClassifiable = false;
+    else classifiedBrowserActions += delta;
   }
+
+  const browserActions = hasTerminalCompletion && browserActionHistoryClassifiable
+    ? classifiedBrowserActions
+    : run.browserActions;
 
   const hasPopulatedTerminalUsage = (run.usage.promptTokens ?? 0) > 0
     || (run.usage.completionTokens ?? 0) > 0
@@ -261,7 +280,7 @@ function projectRunSnapshot(run: Run, committedEvents: readonly EventEnvelope[])
     durationMs: run.durationMs,
     iterations: run.iterations > 0 ? run.iterations : maxIteration,
     toolCalls: run.toolCalls > 0 ? run.toolCalls : startedToolCalls,
-    browserActions: run.browserActions,
+    browserActions,
     interfaceUsage: projectInterfaceUsage(run.interfaceUsage, runEvents),
     usage,
     failure: run.failure,

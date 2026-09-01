@@ -163,12 +163,39 @@ function GradingReport({ report }: { readonly report: EvaluationReportProjection
   );
 }
 
+function toolCompletionDisplay(event: Extract<AgentTraceProjection["items"][number]["event"], { readonly type: "run.tool.completed" }>): string {
+  if (event.payload.success) return "Tool completed.";
+  if (!("failure" in event.payload) || event.payload.failure === undefined) {
+    return "Tool did not complete; no safe classification is available for this older event.";
+  }
+
+  const summary = event.payload.failure.code === "unsafe_action_blocked"
+    ? "A safety policy blocked this tool action."
+    : event.payload.failure.code === "provider_protocol_error"
+      ? "The model proposed an action TraceGate could not safely use."
+      : event.payload.failure.code === "stale_element_exhausted"
+        ? "The page changed before the tool action could run."
+        : "The tool action did not complete.";
+  if (event.payload.dispatchDisposition === "rejected_before_dispatch") {
+    return `${summary} It was not dispatched.`;
+  }
+  if (event.payload.failure.phase === "post_dispatch_validation") {
+    return `${summary} The returned result could not be safely verified.`;
+  }
+  return summary;
+}
+
+function traceEventDisplay(event: AgentTraceProjection["items"][number]["event"]): string {
+  if (event.type === "run.tool.completed") return toolCompletionDisplay(event);
+  return "summary" in event.payload ? event.payload.summary : "Execution milestone";
+}
+
 function AgentTrace({ trace }: { readonly trace: AgentTraceProjection }) {
   return trace.items.length === 0 ? <p className="tg-muted">No execution milestones have been committed yet.</p> : <ol className="tg-trace">
     {trace.items.map((item) => <li key={`${item.runId}-${item.runSequence}`}>
       <time>{new Date(item.occurredAt).toLocaleTimeString()}</time>
       <strong>{item.event.type.replaceAll(".", " ")}</strong>
-      <span>{"summary" in item.event.payload ? item.event.payload.summary : "resultSummary" in item.event.payload ? item.event.payload.resultSummary : "Execution milestone"}</span>
+      <span>{traceEventDisplay(item.event)}</span>
     </li>)}
   </ol>;
 }
