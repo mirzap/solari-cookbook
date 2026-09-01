@@ -53,6 +53,11 @@ const SEMANTIC_SELECTOR = [
   "img[alt]",
 ].join(",")
 
+const MAX_INTERNAL_DEADLINE_HEADROOM_MS = 2_000
+const MIN_INTERNAL_DEADLINE_HEADROOM_MS = 250
+const MAX_DOM_CONTENT_LOADED_GRACE_MS = 1_000
+const MAX_DOCUMENT_QUIET_INTERVAL_MS = 150
+
 const ALLOWED_KEYS = new Set([
   "Escape",
   "Tab",
@@ -125,6 +130,7 @@ export interface CurrentOriginWebMcpInvocationResult {
 export interface SolariBrowserControllerOptions {
   readonly allowedOrigins: readonly string[]
   readonly maxObservationBytes?: number
+  /** Outer agent tool deadline; the controller reserves internal completion headroom. */
   readonly actionTimeoutMs?: number
 }
 
@@ -182,6 +188,97 @@ function abortedBrowserOperation(): TraceGateError {
 
 function throwIfAborted(signal: AbortSignal): void {
   if (signal.aborted) throw abortedBrowserOperation()
+}
+
+function browserPhaseFailure(
+  phase: string,
+  message: string,
+  cause?: unknown,
+): TraceGateError {
+  return new TraceGateError(
+    createControlError("service_unavailable", `Browser ${phase} ${message}`, {
+      category: "infrastructure",
+      phase: "browser_action",
+      retryable: false,
+    }),
+    cause,
+  )
+}
+
+function internalOperationTimeoutMs(outerTimeoutMs: number): number {
+  if (!Number.isInteger(outerTimeoutMs) || outerTimeoutMs < 1_000) {
+    throw new Error("Browser action timeout must be an integer of at least 1000ms")
+  }
+  const headroom = Math.min(
+    MAX_INTERNAL_DEADLINE_HEADROOM_MS,
+    Math.max(MIN_INTERNAL_DEADLINE_HEADROOM_MS, Math.floor(outerTimeoutMs * 0.15)),
+  )
+  return outerTimeoutMs - headroom
+}
+
+function remainingPhaseMs(deadline: number, phase: string): number {
+  const remaining = deadline - Date.now()
+  if (remaining <= 0) throw browserPhaseFailure(phase, "exceeded its internal deadline")
+  return remaining
+}
+
+async function runBrowserPhase<T>(
+  phase: string,
+  timeoutMs: number,
+  signal: AbortSignal,
+  operation: (phaseSignal: AbortSignal) => Promise<T>,
+): Promise<T> {
+  throwIfAborted(signal)
+  const deadlineController = new AbortController()
+  const phaseSignal = AbortSignal.any([signal, deadlineController.signal])
+  let timedOut = false
+  const timer = setTimeout(() => {
+    timedOut = true
+    deadlineController.abort(new Error(`Browser ${phase} deadline exceeded`))
+  }, timeoutMs)
+  try {
+    return await raceWithAbort(operation(phaseSignal), phaseSignal)
+  } catch (error) {
+    if (signal.aborted) throw abortedBrowserOperation()
+    if (timedOut) throw browserPhaseFailure(phase, `timed out after ${timeoutMs}ms`, error)
+    if (error instanceof TraceGateError) throw error
+    throw browserPhaseFailure(phase, "failed", error)
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+async function waitForOptionalBrowserPhase(
+  phase: string,
+  timeoutMs: number,
+  signal: AbortSignal,
+  operation: Promise<unknown>,
+): Promise<boolean> {
+  throwIfAborted(signal)
+  let abortHandler: (() => void) | null = null
+  let timeout: ReturnType<typeof setTimeout> | null = null
+  const aborted = new Promise<never>((_resolve, reject) => {
+    abortHandler = () => reject(abortedBrowserOperation())
+    signal.addEventListener("abort", abortHandler, { once: true })
+  })
+  const settled = operation.then(
+    () => true,
+    (error: unknown) => {
+      throw browserPhaseFailure(phase, "failed", error)
+    },
+  )
+  try {
+    return await Promise.race([
+      settled,
+      aborted,
+      new Promise<false>((resolve) => {
+        timeout = setTimeout(() => resolve(false), timeoutMs)
+      }),
+    ])
+  } finally {
+    if (timeout) clearTimeout(timeout)
+    if (abortHandler) signal.removeEventListener("abort", abortHandler)
+  }
 }
 
 async function raceWithAbort<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
@@ -331,7 +428,7 @@ async function readElement(locator: Locator): Promise<ElementSnapshot> {
 export class SolariCdpBrowserController implements BrowserController {
   readonly #allowedOrigins: Set<string>
   readonly #maxObservationBytes: number
-  readonly #actionTimeoutMs: number
+  readonly #internalOperationTimeoutMs: number
   readonly #connectOverCdp: ConnectOverCdp
   #browser: Browser | null = null
   #context: BrowserContext | null = null
@@ -357,7 +454,7 @@ export class SolariCdpBrowserController implements BrowserController {
     if (this.#maxObservationBytes < 2_048 || this.#maxObservationBytes > 65_536) {
       throw new Error("Observation byte budget is out of bounds")
     }
-    this.#actionTimeoutMs = options.actionTimeoutMs ?? 15_000
+    this.#internalOperationTimeoutMs = internalOperationTimeoutMs(options.actionTimeoutMs ?? 15_000)
     this.#connectOverCdp = dependencies.connectOverCdp ?? ((endpoint, connectOptions) =>
       chromium.connectOverCDP(endpoint, connectOptions))
   }
@@ -369,19 +466,38 @@ export class SolariCdpBrowserController implements BrowserController {
 
     let browser: Browser | null = null
     let context: BrowserContext | null = null
+    const deadline = Date.now() + this.#internalOperationTimeoutMs
     try {
-      browser = await this.#connectOverCdp(String(lease.connectEndpoint), {
-        timeout: this.#actionTimeoutMs,
-      })
-      throwIfAborted(signal)
-      context = await browser.newContext({
-        serviceWorkers: "block",
-        acceptDownloads: false,
-      })
-      await this.#installServiceWorkerInitScript(context)
-      throwIfAborted(signal)
-      const page = await context.newPage()
-      page.setDefaultTimeout(this.#actionTimeoutMs)
+      browser = await runBrowserPhase(
+        "CDP connection",
+        remainingPhaseMs(deadline, "CDP connection"),
+        signal,
+        () => this.#connectOverCdp(String(lease.connectEndpoint), {
+          timeout: remainingPhaseMs(deadline, "CDP connection"),
+        }),
+      )
+      context = await runBrowserPhase(
+        "context creation",
+        remainingPhaseMs(deadline, "context creation"),
+        signal,
+        () => browser!.newContext({
+          serviceWorkers: "block",
+          acceptDownloads: false,
+        }),
+      )
+      await runBrowserPhase(
+        "service-worker guard setup",
+        remainingPhaseMs(deadline, "service-worker guard setup"),
+        signal,
+        () => this.#installServiceWorkerInitScript(context!),
+      )
+      const page = await runBrowserPhase(
+        "page creation",
+        remainingPhaseMs(deadline, "page creation"),
+        signal,
+        () => context!.newPage(),
+      )
+      page.setDefaultTimeout(this.#internalOperationTimeoutMs)
 
       this.#browser = browser
       this.#context = context
@@ -393,8 +509,18 @@ export class SolariCdpBrowserController implements BrowserController {
           this.#registry.clear()
         }
       })
-      await this.#installPolicyHandlers(context, page)
-      await this.#enableServiceWorkerBypass(context, page)
+      await runBrowserPhase(
+        "request-policy setup",
+        remainingPhaseMs(deadline, "request-policy setup"),
+        signal,
+        () => this.#installPolicyHandlers(context!, page),
+      )
+      await runBrowserPhase(
+        "service-worker bypass setup",
+        remainingPhaseMs(deadline, "service-worker bypass setup"),
+        signal,
+        () => this.#enableServiceWorkerBypass(context!, page),
+      )
       throwIfAborted(signal)
     } catch (error) {
       this.#browser = null
@@ -433,14 +559,69 @@ export class SolariCdpBrowserController implements BrowserController {
     const target = assertAllowedNavigation(url, this.#allowedOrigins)
     if (this.#initialNavigationCompleted) this.#hasDispatchedAgentAction = true
     const page = this.#requirePage()
-    await page.goto(target.href, {
-      waitUntil: "domcontentloaded",
-      timeout: this.#actionTimeoutMs,
-    })
-    this.#initialNavigationCompleted = true
-    throwIfAborted(signal)
-    this.#assertCurrentOrigin()
-    return this.observe(signal)
+    const deadline = Date.now() + this.#internalOperationTimeoutMs
+    let committed = false
+    try {
+      await runBrowserPhase(
+        "navigation commit",
+        remainingPhaseMs(deadline, "navigation commit"),
+        signal,
+        () => page.goto(target.href, {
+          waitUntil: "commit",
+          timeout: remainingPhaseMs(deadline, "navigation commit"),
+        }),
+      )
+      committed = true
+      this.#initialNavigationCompleted = true
+      throwIfAborted(signal)
+      this.#assertCurrentOrigin()
+
+      // Commit establishes the new main document. DOMContentLoaded is only a
+      // bounded stabilization hint because a committed page may never emit it.
+      const stabilizationBudget = Math.min(
+        MAX_DOM_CONTENT_LOADED_GRACE_MS,
+        Math.max(100, Math.floor(this.#internalOperationTimeoutMs * 0.15)),
+        remainingPhaseMs(deadline, "navigation stabilization"),
+      )
+      // Proceed after the grace period without forcibly stopping the document;
+      // generic sites may still need pending scripts and resources to become usable.
+      await waitForOptionalBrowserPhase(
+        "DOMContentLoaded stabilization",
+        stabilizationBudget,
+        signal,
+        page.waitForLoadState("domcontentloaded"),
+      )
+
+      const quietIntervalMs = Math.min(
+        MAX_DOCUMENT_QUIET_INTERVAL_MS,
+        Math.max(50, Math.floor(this.#internalOperationTimeoutMs * 0.02)),
+        remainingPhaseMs(deadline, "document stabilization"),
+      )
+      const documentSequence = this.#documentSequence
+      await runBrowserPhase(
+        "document stabilization",
+        remainingPhaseMs(deadline, "document stabilization"),
+        signal,
+        (phaseSignal) => raceWithAbort(page.waitForTimeout(quietIntervalMs), phaseSignal),
+      )
+      if (this.#documentSequence !== documentSequence) {
+        throw staleElement("Document changed during navigation stabilization")
+      }
+      this.#assertCurrentOrigin()
+      return await runBrowserPhase(
+        "fresh navigation observation",
+        remainingPhaseMs(deadline, "fresh navigation observation"),
+        signal,
+        (phaseSignal) => this.observe(phaseSignal),
+      )
+    } catch (error) {
+      if (!committed || signal.aborted) {
+        void page.close({ runBeforeUnload: false }).catch(() => {})
+      } else {
+        void page.evaluate(() => window.stop()).catch(() => {})
+      }
+      throw error
+    }
   }
 
   async observe(signal: AbortSignal): Promise<UntrustedAgentObservation> {
@@ -552,7 +733,7 @@ export class SolariCdpBrowserController implements BrowserController {
     const href = entry.snapshot.attributes.href
     if (href) assertAllowedNavigation(new URL(href, this.#requirePage().url()).href, this.#allowedOrigins)
     this.#hasDispatchedAgentAction = true
-    await entry.locator.click({ timeout: this.#actionTimeoutMs })
+    await entry.locator.click({ timeout: this.#internalOperationTimeoutMs })
     return this.observe(signal)
   }
 
