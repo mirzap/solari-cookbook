@@ -1,448 +1,590 @@
-# TraceGate PoC Build: Implementation Plan
+# TraceGate generic-site V2 build plan
+
+**Source of truth:** 2026-09-01
+**Pivot approved:** 2026-09-01
+**Status:** planning rebaseline; implementation remains quarantined until TG-006R passes
+
+---
 
 ## 1. Goal and delivery definition
 
-Build a polished, fully functional, local-first TraceGate proof of concept that proves one thesis: **a website working once for an AI agent is not enough; reliability requires repeated, isolated executions**.
+TraceGate evaluates how reliably a browser-capable AI model can complete a user-authored, safe, anonymous task on a user-submitted public HTTPS site. A user supplies:
 
-A reviewer must be able to configure the controlled store task, launch three independent Solari Browser runs, watch real TanStack AI/OpenRouter tool activity, receive independently graded PASS/FAIL/INCONCLUSIVE outcomes, inspect traces and discovered interfaces, and see an honest aggregate reliability report. The judged source must live under `examples/tracegate/` in a public GitHub fork of `solari-sdk/solari-cookbook`. The implementation may take two focused build days plus an optional polish day; it is not allowed to substitute scripted or fabricated runs for a broken core integration.
+- one public HTTPS start URL;
+- one bounded natural-language prompt;
+- one to twenty bounded declarative assertions describing the expected browser-observable final state;
+- one or more verified model choices and bounded execution settings.
 
-### Definition of done
+TraceGate runs the task in isolated Solari Browser sessions, records a redacted execution trace, captures fresh stable browser evidence after the agent stops acting, evaluates the assertions deterministically, releases every acknowledged provider session, and reports truthful reliability metrics.
 
-The required judged path is:
+A **PASS** proves only that the declared assertions were satisfied in the final browser-observable state captured by TraceGate. It does not prove arbitrary backend business truth, durable server-side effects, legal completion, payment, delivery, message publication, identity, authorization, or any fact outside the admitted evidence model.
+
+### 1.1 Allowed product scope
+
+Submission P0 permits anonymous, public, safe, reversible browsing tasks such as:
+
+- navigating within declared public origins;
+- finding or filtering public information;
+- opening reversible disclosure controls, tabs, menus, and pagination;
+- selecting non-sensitive local presentation or filter state;
+- typing into admitted non-sensitive search/filter controls;
+- verifying URL, visible text, accessibility semantics, and allowlisted control state.
+
+Submission P0 prohibits:
+
+- authentication, login, signup, credentials, passwords, passkeys, one-time codes, or account recovery;
+- financial, purchase, checkout, payment, subscription, booking-confirmation, order, donation, or trading actions;
+- messaging, email, chat sends, comments, reviews, social publication, or public posting;
+- destructive actions, deletion, cancellation with external effect, irreversible submits, or unknown-effect activation;
+- file uploads, downloads, clipboard access, permissions, external protocols, or device APIs;
+- entry, collection, or persistence of sensitive personal, financial, health, authentication, or regulated data;
+- arbitrary JavaScript, selectors, XPath, CDP, headers, cookies, storage, filesystem, network, or provider capabilities exposed to the model;
+- generic WebMCP invocation. Discovery may be recorded, but invocation is disabled.
+
+A task rejected by admission is not scheduled. A prohibited or unverifiable effect discovered during a run yields an honest safe outcome, never a fabricated failure or pass.
+
+### 1.2 Definition of done
+
+Submission P0 is complete only when all of the following are true:
+
+1. The public GitHub repository remains visibly forked from `solari-sdk/solari-cookbook`, with TraceGate under `examples/tracegate/`.
+2. Exact runtime and dependency pins install from the authoritative pnpm 12 lockfile.
+3. A V2 evaluation accepts a public HTTPS target, prompt, and 1–20 valid assertions.
+4. Public-network admission and runtime egress controls reject private/reserved destinations, unsafe redirects, DNS rebinding, and unobservable resolution.
+5. Runtime policy blocks non-idempotent network mutation and every prohibited action category above.
+6. Assertions never enter model context, tool descriptions/results, agent history/trace, or the evaluated target page’s input/content. They remain visible only in TraceGate’s authoring and report control plane.
+7. The grader uses a fresh stable evidence capture after the serialized action queue drains.
+8. PASS/FAIL/INCONCLUSIVE follows the frozen precedence in §7.8.
+9. Missing, truncated, ambiguous, unstable, unsupported, or otherwise unverifiable required evidence produces INCONCLUSIVE.
+10. One fixture evaluation and real multi-site Solari acceptance runs prove the same generic path without privileged grading.
+11. Three repeated runs produce auditable raw counts and correct denominators.
+12. Every acknowledged Solari session has a durable release result; any potential leak blocks acceptance.
+13. Snapshots and SSE recover after refresh/reconnect without treating SSE as authoritative state.
+14. SQLite, logs, events, evidence, exports, and replay handling contain no credentials, CDP URLs, replay URLs, sensitive assertion values, full DOMs, or challenge capabilities.
+15. README, video, evidence, and UI state the observable-state limitation and do not imply backend truth.
+16. No measured result, capability, model support, or safety claim is fabricated or hard-coded.
+
+---
+
+## 2. Historical baseline and pivot status
+
+The generic-site V2 decision supersedes the controlled Demo Store product thesis, but it does not rewrite history.
+
+### 2.1 Historical gates preserved as measured
+
+| Gate | Historical result retained | V2 interpretation |
+|---|---|---|
+| TG-000 | PASS: public fork/workspace established | Unchanged and still valid |
+| TG-001 | PASS: Node `26.1.0`, global pnpm `12.0.0`, exact dependency pins and practical workspace smoke | Unchanged unless a measured build failure requires a recorded deviation |
+| TG-002 | PASS: real Solari connectivity to a production-shaped fixture, Cloudflare Quick Tunnel selected, at least five concurrent sessions observed, recording/replay observed | Proves provider/connectivity capability only; does not prove arbitrary-target SSRF, DNS-rebinding, redirect, or mutation safety |
+| TG-003 | PASS for P0 DeepSeek through pinned TanStack/OpenRouter; optional models unverified | Retained; the V2 safe tool surface must still compile and smoke through the verified adapter |
+| TG-004 | PASS: V1 shared contracts compiled | Superseded for target/grading semantics by TG-004R; reusable lifecycle/redaction contracts remain |
+| TG-005 | PASS: local libSQL/Drizzle snapshot, ordered milestone, publish-after-commit SSE, and refetch recovery feasible | Retained as infrastructure evidence; V2 persistence/privacy requires TG-005R |
+| TG-006 | PASS: V1 architecture freeze and lane ownership | Historical checkpoint, superseded by TG-006R before V2 implementation |
+| TG-007 V1 impact | Demo lifecycle shared-contract correction was committed | Browser close remains useful; Demo administration and cart grading leave the production contract |
+
+Evidence under `docs/evidence/` is append-only in meaning. New evidence may explain supersession; it must not alter a prior measured result to improve the submission.
+
+### 2.2 Dirty-WIP quarantine
+
+At pivot approval, concurrent B/C/D work and an interrupted A shared-contract checkpoint are present but not integrated. Until TG-006R:
+
+- do not blanket reset, stage, format, or commit another lane’s work;
+- do not stage `pnpm-lock.yaml` while manifests are changing;
+- preserve reusable infrastructure hunks and explicitly retire target-specific behavior;
+- do not claim any uncommitted package or test is green merely because files exist;
+- explicitly assigned TG-002R/TG-004R/TG-005R rebaseline work may selectively stage only its owned reviewed gate paths; Wave 1 production implementation and lockfile integration remain blocked until TG-006R is green.
+
+The detailed quarantine record is `docs/evidence/generic-site-pivot.md`.
+
+---
+
+## 3. Resolved V2 architecture
+
+### 3.1 Repository layout
 
 ```text
-TraceGate web app
-  → create evaluation and 3 durable run records
-  → bounded scheduler
-  → 3 independent Solari Browser sessions
-  → semantic observation + TanStack AI tool loop
-  → controlled Demo Store
-  → deterministic cart-state grading
-  → persisted milestones and metrics
-  → resumable SSE live view
-  → truthful report and per-run trace
-  → guaranteed browser cleanup
+examples/tracegate/
+  apps/
+    web/                 # V2 API, composition, snapshot/SSE, generic configure/live/report UX
+    demo/                # deterministic test fixture only; never a production target dependency
+  packages/
+    shared/              # authoritative Zod V2 contracts, states, events, ports, redaction, fakes
+    db/                  # Drizzle/libSQL migrations, repositories, reports
+    solari/              # provider lease, controller, replay, runtime egress/effect enforcement
+    discovery/           # semantic observation, opaque refs, bounded discovery
+    ai/                  # pinned TanStack/OpenRouter adapter and safe-tool mapping
+    agent/               # prompt, budgets, history, policy-bound runner
+    evaluation/          # admission-aware submission, queue, executor, aggregation
+    grading/             # pure assertion grader and outcome authority
+    ui/                  # accessible generic components
+  tests/e2e/             # fixture, policy, and credentialed multi-site Solari acceptance
+  docs/evidence/         # redacted measured evidence and pivot records
 ```
 
-The implementation must preserve these explicit exclusions: no authentication, users, organizations, billing, teams, RBAC, settings, admin, BYOK, API-key UI, CI/cron, notifications, email, GitHub integration, custom workflows, remote MCP/A2A, generic agent frameworks, site crawling/indexing, production secret vault, or arbitrary target credentials.
-
----
-
-## 2. Evaluation of the initial plan
-
-### What the initial plan gets right
-
-- The product thesis, primary user journey, controlled demo, independent grading, and repeated-run aggregation are unusually clear.
-- It correctly makes Solari Browser, TanStack AI structured tools, semantic observation, deterministic grading, SSE, persistence, and trace inspection P0.
-- It correctly treats WebMCP, Sandbox, replay, model comparison, and visual extras as capability-gated enhancements.
-- It separates model self-reported completion from the actual grade.
-- It identifies the main security boundary: website content, discovery metadata, schemas, and tool results are untrusted.
-
-### What must be refined
-
-1. **Eight workers are too fragmented for four concurrent agents.** Shared contracts, integration order, and exclusive path ownership must be frozen before fan-out. The refined plan groups the original responsibilities into four lanes without deleting the requested package boundaries.
-2. **The first critical path is connectivity, not UI.** Solari Browser runs remotely and cannot reach a developer machine’s `localhost`; the demo must be exposed through a verified HTTPS tunnel or a Solari Sandbox preview before the vertical slice can work.
-3. **Account capabilities must drive concurrency.** The current Free limit of three browsers matches the default demo, but the scheduler must start from measured capacity and degrade safely after `429 ConcurrencyLimitExceeded`.
-4. **TanStack AI events are not the product event log.** Raw AG-UI events must be mapped, redacted, coalesced, persisted, and then projected through TraceGate SSE. Token deltas should not become durable rows.
-5. **Run outcomes need an `inconclusive` state.** Solari/provider/grading failures must not be counted as website task failures, and cancelled/inconclusive runs must remain visible in denominators.
-6. **Replay URLs cannot be durable data.** Solari replay finalization is asynchronous and presigned URLs expire; persist stable session/replay status only and request fresh access on demand.
-7. **Version assumptions need a gate.** Node 26 and TypeScript 7 are current, but pnpm 12 is still pre-release as of this plan. Use an exact stable pnpm 11 release unless pnpm 12 is stable and passes the compatibility spike.
-8. **The original build phases are too sequential.** Replace them with parallel waves separated by four integration checkpoints: feasibility, contract freeze, single-run vertical slice, and repeated-run feature completion.
-
----
-
-## 3. Current state and verified constraints
-
-The local workspace was empty at planning start: no code, manifests, Git history, `AGENTS.md`, conventions, or prior plans existed. Before implementation, `TG-000` must establish a public GitHub fork of `solari-sdk/solari-cookbook` and place the complete TraceGate workspace under `examples/tracegate/`. Until that gate passes, paths in this document are relative to the future TraceGate project root; the current planning file is relocated to `examples/tracegate/docs/plans/` during the gate.
-
-### User decisions
-
-- Optimize for reliable **local judging**, not a public serverless deployment.
-- Build a real functional PoC even if it takes a couple of days.
-- Assume **four concurrent implementation agents**.
-- Show only real measured run outcomes; never manufacture a failure or favorable comparison.
-
-### External constraints to design around
-
-- Solari session creation returns `sessionId`, `wsEndpoint`, `cdpEndpoint`, and expiry metadata. `GET /sessions/:id` is not dependable for reconstruction; store the safe create metadata needed for cleanup.
-- Use CDP with `playwright-core.connectOverCDP` by default because it is less tightly coupled than Solari’s native Playwright/Patchright wire version. Treat the credential-bearing endpoint as an in-memory secret.
-- Browser release is asynchronous. Cleanup must be idempotent and replay finalization must be polled after release with backoff.
-- Solari’s current documented Free limits are three browsers, one Sandbox, and one-hour sessions. The actual account entitlement is an implementation-time fact, not an assumption.
-- A cloud browser cannot access local `localhost`. A tunnel is the preferred P0 connectivity path; one reusable Sandbox preview is the fallback. Per-run Sandboxes remain P2 and must not block Browser-only P0.
-- TanStack AI currently exposes `chat()`, Zod-backed `toolDefinition(...).server(...)`, `maxIterations()`, AG-UI events, structured output, usage hooks, and SSE helpers. It is pre-1.0, so pin `@tanstack/ai`, `@tanstack/ai-react`, and `@tanstack/ai-openrouter` as a tested compatible set.
-- `maxIterations()` counts model turns, not tool calls. TraceGate must separately enforce wall-clock, tool-call, browser-action, navigation-policy, and cancellation budgets.
-- The requested OpenRouter model slugs exist and advertise tools and structured output: `deepseek/deepseek-v4-flash-0731`, `mistralai/mistral-small-2603`, and `openai/gpt-5-mini`. Each is enabled only after a production-shaped compatibility probe.
-- WebMCP remains experimental, Chromium/secure-context dependent, and API-unstable. The current draft entry point is `document.modelContext`. Semantic HTML is the required execution baseline; WebMCP is a non-blocking P1 gate.
-
----
-
-## 4. Resolved architecture
-
-### 4.1 Repository layout
-
-Retain the brief’s package boundaries so product responsibilities stay legible, and add one `evaluation` package because orchestration needs an exclusive owner and must not live inside UI routes.
-
-```text
-solari-cookbook/
-└── examples/
-    └── tracegate/
-        ├── apps/
-        │   ├── web/                 # TanStack Start configure/live/report + server routes
-        │   └── demo/                # controlled Demo Store target
-        ├── packages/
-        │   ├── shared/              # Zod contracts, IDs, states, events, ports
-        │   ├── db/                  # Drizzle/libSQL schema and repositories
-        │   ├── solari/              # session lifecycle, CDP controller, replay
-        │   ├── discovery/           # semantic refs, llms.txt, JSON-LD, WebMCP
-        │   ├── ai/                  # TanStack AI/OpenRouter, models, tools, events
-        │   ├── agent/               # run context, budgets, prompt/policy
-        │   ├── grading/             # deterministic grader and failure explanation
-        │   ├── evaluation/          # queue, orchestrator, aggregation
-        │   └── ui/                  # shadcn/Base UI primitives and tokens
-        ├── tests/e2e/
-        ├── docs/
-        │   ├── plans/
-        │   └── evidence/
-        ├── turbo.json
-        ├── pnpm-workspace.yaml
-        ├── package.json
-        └── README.md
-```
-
-### 4.2 Dependency direction
+### 3.2 Dependency direction
 
 ```text
 shared
-  ↑
-  ├── db
-  ├── solari
-  ├── discovery
-  ├── ai
-  ├── agent
-  ├── grading
-  ├── evaluation
-  ├── ui
-  └── demo
+  ↑ db, solari, discovery, ai, agent, grading
+  ↑ evaluation
+  ↑ apps/web
 
-apps/web (composition root)
-  └── imports all server packages and ui
-
-tests/e2e
-  └── imports public package entry points and app test harnesses
+apps/demo is a test target; production packages do not import it.
 ```
 
 Rules:
 
-- `shared` depends only on Zod and platform types.
-- Feature packages depend on `shared`, not on each other’s concrete implementations. Cross-package behavior is expressed through ports.
-- `evaluation` may depend on public ports/types from `shared`; concrete `db`, `solari`, `agent`, and `grading` adapters are injected by `apps/web`.
-- `ai` is the only package that imports TanStack AI/OpenRouter.
-- `solari` is the only package that imports Solari SDK or Playwright/CDP.
-- `db` is the only package that opens libSQL/SQLite.
-- `apps/web` is the production composition root and owns server routes, SSE connections, startup migration, known-lease tracking, and process shutdown.
-- Client code may not import server implementations, provider keys, Solari metadata, CDP endpoints, demo admin secrets, or replay capabilities.
-- Packages import only other packages’ public `src/index.ts` exports.
+- Zod schemas are authoritative; TypeScript types are inferred.
+- Cross-lane contracts live only in `@tracegate/shared`.
+- Concrete DB, Solari, agent, or fixture classes never appear in another lane’s public signature.
+- `apps/web` is the composition root.
+- The model receives only the prompt and safe tool results. It never receives assertions, grader evidence, policy internals, secrets, or raw browser/controller capabilities.
+- The run executor owns the raw browser controller and injects only a policy-enforcing safe tool port into the agent.
 
-### 4.3 Application topology
-
-Use React with TanStack Start/Router for `apps/web`, Tailwind CSS plus shadcn/ui and Base UI through `packages/ui`, and TanStack Query only where persisted snapshot fetching benefits from cache/retry semantics. Use TanStack Start server routes for JSON and SSE. Run it as a long-lived local Node process for judging; do not optimize this PoC for serverless execution. Keep `apps/demo` deliberately smaller: a standalone Node HTTP server rendering semantic HTML and JSON endpoints, with no React hydration requirement. It is independently addressable and only its public browser origin is exposed through the selected tunnel/Sandbox preview.
+### 3.3 Runtime topology
 
 ```text
-Browser reviewer → apps/web on loopback
-                         │
-                         ├── libSQL/SQLite
-                         ├── OpenRouter
-                         ├── Solari API/CDP
-                         └── HTTPS public demo URL → apps/demo
+Browser/client
+  → apps/web V2 API
+      → TargetAdmissionPort
+      → atomic durable evaluation submission
+      → one-evaluation FIFO scheduler
+          → Solari BrowserProvider + BrowserControllerFactory
+          → policy-enforcing action executor
+          → discovery + semantic observation
+          → TanStack/OpenRouter agent
+          → fresh assertion evidence capture
+          → pure assertion grader
+          → transactional terminal result
+      → Drizzle/libSQL snapshot repository
+      → persisted events → publish-after-commit process-local SSE
 ```
 
-Server-only environment is validated once at boot: `OPENROUTER_API_KEY`, `SOLARI_API_KEY`, `DATABASE_URL` (default local file), `DEMO_PUBLIC_URL`, `DEMO_ADMIN_URL`, and `DEMO_ADMIN_SECRET`. No key is accepted from client input.
+`apps/demo` may be served during tests, but production configuration uses `kind: "public-web"` and has no Demo admin URL, challenge token, scenario ID, or privileged grader dependency.
 
 ---
 
-## 5. Shared contract freeze
+## 4. Shared V2 contracts
 
-`packages/shared` is the first integration deliverable. Zod v4 schemas are authoritative and TypeScript types are inferred. After checkpoint `TG-006`, only the integration owner edits shared contracts; changes require an impact note, fixture updates, and a synchronized rebase.
+### 4.1 `PublicEvaluationConfigV2`
 
-### 5.1 Core entities
-
-Define and export:
-
-- `Evaluation`, `EvaluationConfig`, `EvaluationStatus`
-- `Run`, `RunStatus`, `RunOutcome`, `FailureRecord`
-- `RunEvent`, `EventEnvelope`, `RunStep`
-- `AgentAction`, `AgentObservation`, `CompactElement`
-- `DiscoveredInterface`, `DiscoveryEvidence`
-- `GradeResult`, `GradePredicate`, `FailureAnalysis`
-- `ModelDefinition`, `ModelCapabilityCheck`, `RuntimeCapability`
-- API request/response/error schemas and runtime port interfaces
-
-### 5.2 Evaluation configuration
+Conceptual authoritative shape:
 
 ```text
-EvaluationConfigV1
-- schemaVersion: 1
-- target:
-    kind: "tracegate-demo-store"
-    publicBaseUrl: absolute HTTPS URL reachable by Solari Browser
-    adminBaseUrl: server-only URL; loopback for tunnel mode, protected preview origin for Sandbox fallback
-    scenarioId: "classic-tee-size-m-v1"
-- goal: non-empty string, max 1,000
-- successCriterion: non-empty string, max 1,000
-- modelIds: non-empty array of verified ModelId, max 3
-  # P0 UI submits exactly one; the shape avoids a frozen-contract break for P2 comparison
-- requestedRunsPerModel: integer 1...5, default 3
-- requestedConcurrency: integer 1...5, default 3
-- interfaceMode: "auto" | "semantic-only" | "native-allowed"
-- recordingRequested: boolean
-- sampling:
-    temperature: number, default 0.2
-    topP: number, default 1
-    providerRouting: optional allowlisted OpenRouter preference
-- budgets:
-    wallClockMs: 15_000...300_000, default 120_000
-    maxModelTurns: 1...30, default 15
-    maxToolCalls: 1...100, default 40
-    maxBrowserActions: 1...60, default 25
-    toolTimeoutMs: 1_000...30_000, default 15_000
-    maxObservationBytes: 2_048...32_768, default 12_288
-    maxHistoryBytes: 16_384...262_144, default 96_000
-    maxTotalTokens: positive integer, default chosen at TG-003 from measured usage
-- allowedOrigins: exact-origin array containing target.publicBaseUrl origin
+schemaVersion: 2
+
+target:
+  kind: "public-web"
+  startUrl: PublicHttpsUrl
+  allowedNavigationOrigins: PublicHttpsOrigin[1..3]
+
+prompt: trimmed UTF-8 string, 1..1000 characters
+assertions: AssertionV1[1..20], unique IDs
+safetyPolicyVersion: "public-safe-v1"  # server-selected and non-user-tunable
+
+modelIds: unique verified ModelId[1..3]
+requestedRunsPerModel: integer 1..5
+total requested runs: max 15
+requestedConcurrency: integer 1..5
+interfaceMode: "semantic-only" | "auto"
+recordingRequested: boolean
+sampling: exact existing bounded shape
+budgets: exact existing bounded shape
 ```
 
-These are safety defaults to tune with evidence, not claimed benchmarks.
+Validation requirements:
 
-### 5.3 Runtime ports
+- `startUrl` is absolute HTTPS, has no credentials, uses the admitted port policy, and belongs to an exact declared origin.
+- Origins are canonical `https://host[:port]` values with no path, query, fragment, or credentials.
+- Origin values are unique. P0 defaults to the start origin and permits additions only through explicit user configuration and admission.
+- Structural parsing does not claim network safety. `TargetAdmissionPort` performs asynchronous DNS, address, redirect, and reachability checks before durable creation.
+- Assertions define success completely. Human prompt prose is not grading authority.
+- V1 Demo configuration is legacy read-only and cannot be silently parsed as V2.
+
+### 4.2 Declarative assertion schema
+
+Every assertion has:
 
 ```text
-BrowserProvider.acquire(request, signal) → BrowserLease
-BrowserLease.release(reason) → ReleaseResult        # idempotent
-BrowserController.navigate/observe/click/type/select/pressKey/scroll/wait
-DiscoveryController.discover(page, policy, signal) → DiscoveryEvidence
-AgentRunner.run(context, signal) → AgentRunResult    # never a grade
-Grader.grade(context, signal) → GradeResult
-FailureAnalyzer.analyze(context, signal) → FailureAnalysis
-EvaluationRepository / RunRepository
-  - create / get
-  - compareAndSetStatus(expected, next, patch)
-  - listRecoverable
-  - transactionallyFinalize(outcome, grade, event)
-EventRepository
-  - append(input) → persisted EventEnvelope
-  - listAfter(evaluationId, cursor, limit)
-  - earliestCursor(evaluationId)
-  - latestCursor(evaluationId)
-ReplayService.getStatus / requestFreshAccess
+schemaVersion: 1
+id: stable bounded AssertionId, unique within evaluation
+label: optional trimmed string, max 200
+kind: discriminant
 ```
 
-All asynchronous methods accept `AbortSignal`. Cleanup uses a fresh short timeout signal, never the already-aborted run signal.
+All assertions are required and combined with logical AND. Optional assertions, arbitrary expression trees, regular expressions, scripts, selectors, and XPath are deferred.
 
-`packages/shared/src/redaction.ts` owns the pure central redactor and pattern registry used at the repository boundary and by logs/SSE. `packages/shared/src/env.ts` owns the validated environment shape. `packages/shared/src/testing/` owns canonical fake ports, deterministic clock, scripted browser controller, and event fixtures so all four lanes test the same frozen semantics.
+#### URL assertion
+
+```text
+kind: "url"
+operator: "equals" | "origin_and_path_equals"
+expectedUrl: admitted public HTTPS URL
+```
+
+The final main-frame URL is compared after canonical URL parsing. Query and fragment participation is explicit: `equals` includes them; `origin_and_path_equals` excludes them. The expected origin must be declared and admitted.
+
+#### Text assertion
+
+```text
+kind: "text"
+scope: "document_visible_text" | "title"
+operator: "contains" | "not_contains" | "equals"
+expected: 1..500 UTF-8 characters
+caseSensitive: boolean
+```
+
+Evaluation uses fixed Unicode normalization and whitespace folding. The capture may scan only within a frozen byte/time budget. If it cannot prove the condition across the admitted scope, evidence is unverifiable.
+
+#### Semantic assertion
+
+```text
+kind: "semantic"
+locator:
+  role: bounded ARIA/accessibility role
+  accessibleName:
+    operator: "equals" | "contains"
+    value: 1..500 characters
+    caseSensitive: boolean
+count:
+  operator: "equals" | "at_least" | "at_most"
+  value: integer 0..20
+```
+
+Only trusted accessibility semantics are used. CSS, XPath, DOM IDs, and positional indexes are forbidden.
+
+#### State assertion
+
+```text
+kind: "state"
+locator: same semantic locator; must resolve to exactly one element
+property: "checked" | "selected" | "expanded" | "disabled" | "value"
+expected: boolean or bounded string according to property
+```
+
+`value` is allowed only for admitted non-sensitive search/filter controls. It is bounded and centrally redacted; sensitive-control detection makes the assertion unverifiable and blocks interaction. State never means cookies, storage, authentication, server database state, network success, payment, publication, or cross-origin iframe contents.
+
+### 4.3 Evidence contracts
+
+`AgentObservation` remains model-oriented and is not grade evidence. It may be compacted and truncated.
+
+A separate trusted capture contract is required:
+
+```text
+BrowserAssertionEvidenceV1
+  schemaVersion: 1
+  capturedAt: UTC timestamp
+  finalUrl: bounded redacted URL
+  evidenceGenerationBefore: positive EvidenceGenerationRevision
+  evidenceGenerationAfter: positive EvidenceGenerationRevision
+  stabilityAttempts: integer 1..3
+  policyViolation: PolicyViolation | null
+  assertions: AssertionEvidence[1..20]
+  evidenceHash: bounded digest identifier
+```
+
+Each `AssertionEvidence` contains:
+
+```text
+assertionId
+status: "observed" | "unverifiable"
+observedResult: boolean | null
+expectedSummary: bounded/redacted
+actualSummary: bounded/redacted
+reasonCode: null | closed UnverifiableReason
+```
+
+Closed unverifiable reasons include at least:
+
+```text
+capture_timeout
+page_unstable
+observation_truncated
+semantic_match_ambiguous
+semantic_data_unavailable
+unsupported_state
+cross_origin_frame
+sensitive_control
+policy_blocked
+target_unreachable
+evidence_invalid
+```
+
+`EvidenceGenerationRevision` is a trusted browser-adapter counter distinct from model-oriented `ObservationRevision` and legacy `DemoMutationRevision`. It advances on main-frame navigation/document replacement and on every observed mutation that can change URL, visible text, accessibility semantics, or allowlisted control state. The capture is stable only when main-frame identity is unchanged and the before/after evidence-generation revisions are equal. If the adapter cannot observe relevant changes or guarantee counter coverage, affected evidence is unverifiable.
+
+The evidence schema never contains a full DOM, arbitrary HTML, raw network response, credentials, sensitive entered data, CDP/replay capability, or page-provided script result.
+
+### 4.4 Grade result
+
+```text
+GradeAssertionResult
+  assertionId
+  status: "passed" | "failed" | "unverifiable"
+  expectedSummary
+  actualSummary
+  reasonCode
+
+GradeResultV2
+  schemaVersion: 2
+  evidenceHash
+  safetyPolicyVersion: "public-safe-v1"
+  outcome: "passed" | "failed" | "inconclusive"
+  assertions: GradeAssertionResult[1..20]
+  failure: FailureRecord | null
+  gradedAt
+```
+
+The assertion result set must match the submitted assertion IDs exactly once. The grader is pure, deterministic, and ignores model summaries, beliefs, and hidden conversation content.
+
+### 4.5 Runtime ports
+
+Required cross-lane ports:
+
+- `TargetAdmissionPort.assess(target, signal)` returns an admitted canonical target or a safe rejection; it never returns raw DNS/provider material to the client.
+- `EvaluationSubmissionRepository.transactionallyCreate(...)` atomically creates the evaluation, all run rows, and all `run.queued` events with exact-retry idempotency.
+- `RunTransitionRepository.transactionallyApply(...)` atomically applies an intermediate legal transition and its matching milestone.
+- `BrowserProvider.acquire(...)` returns a lease or a typed safe error.
+- `BrowserControllerFactory.create(lease, signal)` returns a fresh controller bound to that lease.
+- `BrowserController` owns reviewed browser operations and explicit idempotent `close`.
+- `SafeAgentToolPort` exposes only policy-reviewed actions to the agent.
+- `AssertionEvidenceCapture.capture(assertions, signal)` runs after the action queue drains on the same controller and returns trusted evidence.
+- `Grader.grade(assertions, evidence, signal)` returns `GradeResultV2`.
+- Existing event, snapshot, repository, replay, clock, ID, failure-analysis, and terminal-finalization ports remain AbortSignal-aware.
+
+`AgentRunContext` contains the prompt, public configuration without assertions, initial observation, discovery, and `SafeAgentToolPort`. It does not contain assertions or a raw `BrowserController`.
+
+### 4.6 Typed provider capacity error
+
+Acquisition-time provider concurrency limits use a strict safe error:
+
+```text
+code: "concurrency_limit_exceeded"
+category: "infrastructure"
+phase: "browser_acquire"
+retryable: true
+retryAfterMs: integer 0..300000 | null
+```
+
+`retryAfterMs` is normalized scheduler metadata, never a raw header. Provider bodies, headers, URLs, request IDs, capabilities, and arbitrary messages are forbidden from the safe value.
 
 ---
 
-## 6. State, outcome, and event semantics
+## 5. Public-network admission and runtime safety
 
-### 6.1 Evaluation state machine
+### 5.1 Admission gate
 
-| From | Legal next states |
-|---|---|
-| `queued` | `running`, `cancelling`, `failed` |
-| `running` | `cancelling`, `completed`, `failed` |
-| `cancelling` | `cancelled`, `completed`, `failed` |
-| `completed`, `cancelled`, `failed` | none |
+Before durable evaluation creation, admission must:
 
-- `completed`: every run is terminal, regardless of pass/fail/inconclusive.
-- `cancelled`: cancellation prevented at least one run from completing normally.
-- `failed`: evaluation-level orchestration failed; crash/startup recovery semantics are deferred.
-- `cancelling → completed` is legal when all run terminal commits won before cancellation.
-- Terminal states are immutable.
+1. Parse canonical HTTPS start URL and origins.
+2. Reject credentials, unsupported ports, IP-literal hosts, localhost, `.local`, and malformed internationalized names.
+3. Resolve A and AAAA records through an audited resolver.
+4. Reject any private, loopback, link-local, carrier-grade NAT, multicast, documentation, benchmark, reserved, unspecified, or cloud-metadata address.
+5. Reject mixed public/private answer sets.
+6. Perform a bounded reachability probe without credentials or body mutation.
+7. Validate every redirect hop against the same scheme, origin, DNS, and address rules.
+8. Return only canonical safe admission metadata and an expiry/recheck time.
 
-### 6.2 Run state machine
+Admission is necessary but insufficient: runtime must enforce the actual resolved destination used by the remote browser.
 
-| From | Legal next states |
-|---|---|
-| `queued` | `acquiring_browser`, `cancelled`, `completed` (recovery only) |
-| `acquiring_browser` | `connecting_browser`, `releasing_browser`, `cancelled`, `completed` (no acknowledged lease/recovery) |
-| `connecting_browser` | `discovering`, `releasing_browser`, `cancelled`, `completed` (recovery only) |
-| `discovering` | `running_agent`, `releasing_browser`, `cancelled`, `completed` (recovery only) |
-| `running_agent` | `grading`, `releasing_browser`, `cancelled`, `completed` (recovery only) |
-| `grading` | `releasing_browser`, `cancelled`, `completed` (only without lease or recovery) |
-| `releasing_browser` | `completed`, `cancelled` |
-| `completed`, `cancelled` | none |
+### 5.2 DNS rebinding and destination enforcement
 
-Normal execution follows the linear happy path. Recovery-only edges are schema-reserved for post-submission work, are not implemented in Submission P0, and must be rejected from ordinary orchestration. Any state may enter `releasing_browser` only when a lease may exist.
+P0 is blocked unless Solari or a TraceGate-controlled outbound enforcement layer can observe and deny the actual destination of **every browser request context** before connection. This includes main-frame and subframe navigation, redirects, fetch/XHR, scripts, styles, images, fonts, media, prefetch/preload, dedicated/shared workers, and any browser-generated request. Runtime must:
 
-A completed run has one outcome:
+- validate the resolved IP and HTTPS scheme before every connection and redirect hop;
+- reject any request class whose destination or resolution cannot be observed and enforced;
+- revalidate after DNS changes and admission expiry;
+- block private/reserved/metadata destinations even if the hostname passed preflight;
+- disable service-worker registration and block service-worker-controlled requests in P0;
+- prevent alternate protocols, proxy bypass, off-policy navigation, and unresolved worker/subresource egress;
+- record only bounded safe policy codes rather than raw network details.
 
-- `passed`: deterministic cart predicates all pass.
-- `failed`: trusted evidence proves the goal was not achieved, including a valid budget exhaustion or wrong cart state.
-- `inconclusive`: infrastructure, provider protocol, target availability, or grading evidence prevented a trustworthy result.
+DNS preflight alone must never be presented as DNS-rebinding protection. TG-002R is green only when request-level tests cover every supported context and demonstrate default-deny behavior for an unobservable context.
 
-A cancelled run has no outcome. Cleanup failure never overwrites a grade; it adds a warning and `potentialSessionLeak`.
+### 5.3 Network mutation and subresource policy
 
-### 6.3 Failure classification
+For `public-safe-v1`, all browser egress is default-deny:
 
-Use stable categories plus a code, phase, retryability, redacted message, and optional redacted cause chain:
+- Main-frame navigation is limited to declared admitted origins and HTTPS `GET`/`HEAD`.
+- Third-party static subresources may use HTTPS `GET`/`HEAD` only when their actual destination is public and enforceable; permitted resource classes are script, style, image, font, and media under bounded size/time/count budgets.
+- Cross-origin fetch/XHR, frames, prefetch/preload, and workers are blocked unless a TG-002R-tested deterministic rule explicitly permits the request class. Service workers remain disabled.
+- `OPTIONS` is allowed only as an empty-body public-destination preflight for an otherwise permitted safe request.
+- POST, PUT, PATCH, DELETE, CONNECT, unknown methods, request bodies, beacons, WebSocket connections/sends, form mutation, downloads, and external protocols are blocked.
+- Every redirect repeats method, origin, DNS, address, destination, and resource-class checks.
+- Runs start with no preloaded cookies, HTTP authentication, client certificates, or authorization. Ephemeral anonymous cookies created during the run may accompany permitted GET/HEAD requests but never certify authentication or broaden policy; authorization headers and explicit credentials are always blocked.
 
-- `navigation`
-- `ambiguity`
-- `tool_error`
-- `timeout`
-- `incorrect_state`
-- `unsupported_interface`
-- `infrastructure`
-- `model_provider`
-- `grading`
-- `policy`
-- `cancellation`
-- `unknown`
+A request is denied when its method, body, initiator, resource class, redirect, actual destination, or credential state cannot be classified. A blocked mutation/request yields `run.policy.blocked` and makes the run INCONCLUSIVE even if optimistic DOM state appears successful.
 
-Outcome mapping is frozen with the taxonomy:
+### 5.4 Trusted action/effect policy
 
-| Condition | Outcome | Category/code |
+The browser adapter, not the prompt or model, is authoritative. Before executing an action it evaluates element semantics, control type, form method, target origin, predicted network effect, sensitivity, popup/download behavior, and current policy state.
+
+Allowed actions include inspect, wait, bounded scroll, admitted GET navigation, reversible disclosure/tab/menu/filter/select controls, and typing into non-sensitive search/filter controls.
+
+Blocked actions include every prohibited category in §1.1, unknown-effect controls, submit buttons, sensitive inputs, file controls, popup/new-window activation, cross-origin frames, permission prompts, and generic native tools.
+
+A versioned deterministic prompt screen may reject only explicit, unambiguous prohibited intent as a pre-creation control error and may warn on ambiguity. Model-based prompt classification is never admission authority, and a screen pass never certifies safety. Runtime action/request enforcement remains authoritative; unknown or ambiguous effects are blocked and classified INCONCLUSIVE.
+
+### 5.5 Anonymous isolation
+
+Each run uses a fresh anonymous browser session with no user credentials or reused profile. Authentication discovered through ambient site state is unsupported. Cookies created during public browsing are not treated as permission to authenticate or mutate. Run isolation, storage teardown, controller close, and provider release are required on all paths.
+
+---
+
+## 6. State, failure, and event semantics
+
+### 6.1 Evaluation states
+
+```text
+queued → running → completed
+queued/running → cancelling → cancelled
+queued/running/cancelling → failed
+```
+
+Terminal states are closed. Submission rejection before durable creation is an API control error, not a failed evaluation.
+
+### 6.2 Run states
+
+```text
+queued
+→ acquiring_browser
+→ connecting_browser
+→ discovering
+→ running_agent
+→ grading
+→ releasing_browser
+→ completed
+```
+
+Cancellation and recovery edges remain governed by the frozen lease-disposition rules. No terminal transition may bypass a possibly live lease. Evidence capture occurs within the grading phase after action drain and before controller close.
+
+### 6.3 Universal outcome and failure precedence
+
+One precedence applies to cancellation, safety, execution errors, and grading:
+
+1. A committed user/system cancellation produces `cancelled`; no grade is fabricated.
+2. Any unsafe/prohibited action or request attempt produces `inconclusive` with `unsafe_action_blocked`, regardless of visible state.
+3. If fresh trusted evidence cannot be captured/validated, or any required assertion is unverifiable, the outcome is `inconclusive`.
+4. When complete trusted evidence exists and no higher-precedence condition applies, all assertions true produces `passed`; any false assertion produces `failed`.
+5. Provider, model, budget, or agent-loop errors are terminal failure codes only when they prevent complete trusted evidence. If complete evidence is captured afterward, PASS/FAIL remains authoritative and the execution error is retained only as a bounded warning/trace fact.
+
+Authoritative codes include:
+
+| Code | Category | Outcome/behavior |
 |---|---|---|
-| correct cart predicates | `passed` | none |
-| wrong/missing cart state | `failed` | `incorrect_state/task_incorrect` |
-| model finishes before cart mutation | `failed` | `incorrect_state/task_not_completed` |
-| off-origin or forbidden action blocked | `failed` | `policy/navigation_blocked` |
-| wall/action/tool budget exhausted after at least one successful browser mutation | `failed` | `timeout/budget_exhausted` |
-| wall clock expires before any successful browser action because provider/CDP latency consumed the budget | `inconclusive` | `infrastructure/latency_budget_exhausted` |
-| stale-element retries exhausted | `failed` | `tool_error/stale_element_exhausted` |
-| WebMCP absent/schema drift with semantic fallback available | no terminal outcome | `unsupported_interface/webmcp_degraded` warning |
-| Solari acquisition/CDP connection unavailable | `inconclusive` | `infrastructure/solari_unavailable` |
-| OpenRouter malformed/protocol failure | `inconclusive` | `model_provider/provider_protocol_error` |
-| demo challenge provisioning or repeatable target 5xx | `inconclusive` | `infrastructure/target_unavailable` |
-| grade evidence missing, corrupt, stale, or revision-mismatched | `inconclusive` | `grading/invalid_evidence` |
-| user cancellation | no outcome | `cancellation/user_requested` |
+| `assertion_failed` | `incorrect_state` | failed under rule 4 |
+| `assertion_unverifiable` | `grading` | inconclusive under rule 3 |
+| `unsafe_action_blocked` | `policy` | inconclusive under rule 2 |
+| `target_admission_failed` | control rejection before creation; infrastructure/inconclusive only if discovered after scheduling |
+| `target_unavailable` / `target_evidence_lost` | `infrastructure` | inconclusive when complete evidence is unavailable |
+| `invalid_evidence` | `grading` | inconclusive |
+| `solari_unavailable` | `infrastructure` | inconclusive because capture cannot occur |
+| `provider_protocol_error` | `model_provider` | inconclusive only when it prevents complete capture; otherwise warning |
+| `budget_exhausted` | `timeout` | inconclusive only when it prevents complete capture; otherwise warning plus rule-4 grade |
+| user/system cancellation | `cancellation` | cancelled |
 
-Every category/code pair has exactly one permitted outcome in tests. Recoverable conditions such as one stale ref do not terminalize a run. The deterministic causal classifier is P0. The separate structured model explanation from the original brief is P1 and uses cautious language; it cannot change the outcome/category.
+The V1 `navigation_blocked → failed` rule is retired. A safety or instrumentation boundary must never manufacture a task failure.
 
-### 6.4 Submission cancellation and shutdown scope
+### 6.4 Persisted event envelope
 
-P0 does not expose cancellation as a judged-path requirement. Run timeouts and process shutdown use one evaluation-level `AbortController`: stop starting work, abort provider/browser operations where supported, then execute each known lease’s `finally` cleanup with an independent timeout. If a simple cancel button fits after the repeated-run slice, it triggers the same mechanism without promising transactional race semantics.
-
-Complex cancel linearization, queued-versus-grading race resolution, clone/recovery behavior, and automatic startup reconciliation are post-submission hardening. The plan retains `cancelling`/`cancelled` contract values so later work does not require a schema break, but these paths cannot delay Submission P0.
-
-### 6.5 Persisted event envelope
+Existing cursor ordering remains authoritative:
 
 ```text
-EventEnvelopeV1
-- schemaVersion: 1
-- eventId: UUIDv7
-- cursor: decimal string backed by SQLite integer primary key
-- evaluationId: UUIDv7
-- runId: UUIDv7 | null
-- runSequence: non-negative integer | null
-- type: closed EventType
-- occurredAt: producer UTC timestamp
-- recordedAt: persistence UTC timestamp
-- payload: event-specific validated, redacted object
+schemaVersion, eventId, evaluationId,
+runId/runSequence pair or null,
+type, payload, occurredAt, recordedAt, cursor
 ```
 
-Ordering and delivery:
+`cursor` orders evaluation streams; `runSequence` orders a run. `occurredAt` is display metadata. Event IDs and `(runId, runSequence)` remain unique.
 
-- `cursor` is the authoritative total persisted order; `runSequence` is monotonic per run.
-- `eventId` is unique and duplicate appends are idempotent.
-- State transition plus matching event append occurs in one DB transaction.
-- The P0 UI loads an authoritative snapshot, remembers its latest cursor, then applies new SSE milestones idempotently by `eventId`; full durable cursor replay is deferred.
-- `occurredAt` is display metadata, not ordering authority.
-
-P0 event types preserve the brief’s product vocabulary; cancellation/recovery event variants are reserved for later hardening:
+V2 adds or generalizes:
 
 ```text
-evaluation.created / started / cancel_requested / completed / cancelled / failed
-run.queued / started / status_changed / browser.ready
-run.discovery.completed / agent.iteration / agent.message
-run.tool.started / tool.completed / usage.updated
-run.grade.started / grade.completed
-run.passed / failed / inconclusive / cancelled
-run.replay.ready / replay.status_changed / warning
-system.capability.changed / recovery.performed (reserved, hardening only)
+run.policy.blocked
+run.evidence.capture_started
+run.evidence.captured
+run.grade.started
+run.grade.completed
 ```
 
-### 6.6 TanStack AI event mapping
+Persist only bounded policy codes, evidence hashes, assertion IDs/statuses, and safe summaries. Never persist assertions in agent/model events or full captured page content.
 
-Do not expose `toServerSentEventsResponse(chatStream)` directly to the reviewer UI. Consume the stream server-side and map it:
+### 6.5 TanStack event mapping
 
-| TanStack/AG-UI source | TraceGate behavior |
-|---|---|
-| `RUN_STARTED` | enter `running_agent` if not already emitted |
-| message deltas | keep ephemeral for optional live text; persist only the bounded final/iteration summary, never token deltas |
-| `TOOL_CALL_START` + complete args | validate/redact and append one `run.tool.started` |
-| tool result/end | append one summarized `run.tool.completed` |
-| usage callback | accumulate and emit throttled `run.usage.updated` |
-| `RUN_FINISHED` | flush summary and move to grading |
-| `RUN_ERROR`/malformed event | classify, preserve safe diagnostic, then cleanup |
-| unknown event | emit bounded warning, never persist the raw object |
+The existing server-side mapping remains: consume AG-UI/TanStack streams, persist bounded milestones, validate/redact tool arguments and results, throttle usage, classify malformed events, and never expose raw provider streams directly as product SSE.
+
+Assertions and grader evidence are absent from model context and TanStack events. Unknown provider events produce warnings, not raw persistence.
 
 ---
 
 ## 7. Execution design
 
-### 7.1 Durable run expansion and queue
+### 7.1 Submission and durable expansion
 
-On `POST /api/evaluations`:
+`POST /api/evaluations`:
 
-1. Validate configuration and capability gates.
-2. Create the evaluation, N run rows, and `run.queued` milestones in one repository operation.
-3. Assign stable `runIndex`, denormalized `modelId`, and opaque demo challenge token hash. The fixed store is identical across repetitions; variance comes from persisted sampling/provider configuration, not hidden layout changes.
-4. Enqueue only after durable creation. HTTP idempotency-key semantics are post-submission hardening.
+1. Parse `PublicEvaluationConfigV2`.
+2. Validate assertion shapes and run the versioned deterministic prompt screen; reject only explicit unambiguous prohibited intent and treat all other screening as advisory.
+3. Run authoritative target/origin admission; runtime action/request enforcement remains authoritative even after admission.
+4. Validate current model and browser safety capabilities.
+5. Create the evaluation, N run rows, and sequence-zero `run.queued` events atomically.
+6. Enqueue only after commit.
 
-P0 accepts one active evaluation at a time, so the scheduler uses one process-global FIFO queue in durable creation order; no unused cross-evaluation fairness mechanism is built. A run consumes a permit immediately before Solari session creation. Effective capacity is:
+Exact submission retry is idempotent. A conflict or abort leaves no partial graph and consumes no event cursors.
 
-```text
-min(requested concurrency, configured maximum, measured Solari capacity)
-```
+### 7.2 One-evaluation queue and capacity
 
-Start at one until the Solari spike records a safe cap. On `429 ConcurrencyLimitExceeded`, release the local permit, lower capacity by one (floor one), honor `Retry-After` or use capped exponential backoff with jitter, and requeue the same run. After three acquisition attempts or its deadline, mark it inconclusive. After a limit error, effective capacity never increases again in the same process; only an explicit capability refresh or restart may reset it. Never create a duplicate run row.
-
-### 7.2 Solari lifecycle
-
-For every run:
+P0 allows one active evaluation and a process-global FIFO run queue. Effective Solari capacity is:
 
 ```text
-persist acquiring_browser
-  → create Solari Browser through the verified SDK path (recording only if capability-verified)
-  → validate create response
-  → immediately persist safe session ID/region/timestamps, never CDP capability URL
-  → connect over CDP with timeout
-  → provision run challenge through DemoAdminPort on adminBaseUrl
-  → install popup/dialog/download/navigation policy handlers
-  → navigate to run-specific publicBaseUrl challenge URL
-  → discover interfaces and observe
-  → execute TanStack AI loop
-  → deterministic grade
-  → close CDP client
-  → release Solari session
-  → free queue permit
-  → poll replay status briefly
-  → persist terminal outcome + cleanup/replay status
+min(requested concurrency, configured maximum, measured safe provider capacity)
 ```
 
-All paths after receiving a provider session ID run release in `finally`: connection failure, model error, timeout, shutdown, grading failure, or persistence error. Release is idempotent; already released/not found is success. Every successfully acknowledged session must have a release result before final acceptance. Ambiguous create-response reconciliation and provider-side session sweeping remain post-submission hardening.
+Start from the measured safe cap recorded by TG-002, but do not exceed five. On typed concurrency-limit error:
 
-### 7.3 Connectivity gate
+- release the local permit;
+- lower process capacity by one, floor one;
+- honor normalized bounded `retryAfterMs` or capped exponential backoff with jitter;
+- requeue the same durable run without creating a duplicate;
+- never raise capacity again without explicit capability refresh/restart;
+- after three acquisition attempts or deadline, classify the run inconclusive.
 
-Before the vertical slice:
+### 7.3 Per-run lifecycle
 
-1. Start the production-shaped `apps/demo` locally.
-2. Expose it through the available HTTPS tunnel.
-3. From a real Solari Browser, prove DNS/TLS, render a temporary semantic connectivity form, submit one server-state mutation, and verify it through a server-to-server admin read.
-4. Record tunnel command, origin shape, latency, teardown, and redacted evidence. Full Classic Tee/cart proof occurs at the single-run checkpoint.
-5. If the tunnel is unavailable/unreliable, run one reusable Demo Store process in a Solari Sandbox and expose `sandbox.previewUrl(port)`; repeat the proof.
-6. Freeze the selected `DemoConnectivityProvider` and allowed origin.
+```text
+persist acquiring_browser + milestone atomically
+→ acquire Solari lease
+→ immediately persist safe session identity
+→ construct a fresh lease-bound controller
+→ connect with timeout
+→ install navigation/request/popup/dialog/download/policy handlers
+→ navigate to admitted start URL
+→ discover and observe
+→ run agent through SafeAgentToolPort only
+→ drain serialized action queue
+→ capture fresh stable assertion evidence
+→ pure deterministic grade
+→ close controller
+→ release Solari lease with fresh bounded signal
+→ free permit
+→ optionally poll replay status
+→ transactionally persist terminal result and cleanup state
+```
 
-If both paths fail, P0 is blocked. Do not use local Playwright or scripted results as a judged-path substitute. A per-run Sandbox remains optional P2; a single reusable Sandbox used only to host the demo is a connectivity fallback, not the agent runtime.
+After any provider session ID is acknowledged, lease release is attempted in `finally` regardless of connection, model, policy, persistence, evidence, timeout, shutdown, or grading failure. Controller close is attempted before lease release, but close failure cannot suppress release.
 
-### 7.4 TanStack AI agent loop
+### 7.4 Safe agent loop
 
-`packages/ai` owns adapter construction, model registry, Zod-backed TanStack tool definitions, structured output, AG-UI consumption, and usage normalization. `packages/agent` owns trusted prompt layering, `AgentRunContext`, budgets, action policy, and loop completion semantics.
+The model receives:
 
-Use `openRouterText(modelId)` first; the Responses adapter is enabled only if the spike proves equivalent tools/stream behavior. The compatibility probe must exercise the production-shaped path: multiple and provider-proposed parallel tool calls, tool errors, strict structured output, streaming event order, socket-level cancellation propagation, usage callbacks, provider routing, and malformed responses. P0 serializes tool execution through a per-run mutex and forces a fresh observation after each mutating action; parallel model proposals never execute browser mutations concurrently. Only verified models appear in the selector; at least DeepSeek must pass for P0.
+- the user prompt;
+- admitted start URL/origin policy in bounded form;
+- current semantic observations and safe tool results;
+- budgets and explicit safety limitations.
 
-The model can call only:
+It does not receive assertions, assertion IDs/labels, expected state, grader evidence, policy secrets, admin endpoints, or provider capabilities.
+
+The only model tools are policy-bound forms of:
 
 ```text
 navigate
@@ -453,106 +595,60 @@ select
 pressKey
 scroll
 wait
-callNativeTool     # only for normalized, policy-allowed WebMCP tools
-finish             # belief only, never a grade
+finish
 ```
 
-No arbitrary JavaScript, CSS selectors, XPath, CDP, HTTP headers, network requests, filesystem paths, session IDs, or replay capabilities are model-visible.
+`callNativeTool` is removed from the generic production path. Every tool call increments limits, validates Zod input, checks cancellation/deadline/origin/effect policy, executes under timeout and per-run serialization, forces a fresh observation after mutation, returns bounded untrusted output, and emits redacted milestones.
 
-`packages/agent` owns the single executor wrapper over `BrowserController`; `packages/ai` only adapts that executor into TanStack `toolDefinition(...).server(...)` definitions.
+`finish` is a belief only. It never grades the run.
 
-Every tool call:
+### 7.5 Semantic observation and discovery
 
-1. increments the tool-call count, including invalid calls;
-2. validates Zod input;
-3. checks cancellation and monotonic wall-clock deadline;
-4. enforces exact-origin/action policy;
-5. increments browser-action count where applicable;
-6. runs under a per-tool timeout;
-7. returns a bounded structured result explicitly labeled untrusted;
-8. emits redacted start/completion milestones.
+Opaque refs, deterministic DOM order, stale-revision rejection, semantic identity recheck, bounded visible text, and safe attributes remain.
 
-`finish({ completed, summary })` ends acting intent but grading always follows. The agent runner compacts conversation history before each model turn: keep the latest observation verbatim, replace superseded observation results with a one-line revision/element-count stub, retain tool calls and short results, and refuse a new turn if `maxHistoryBytes` or `maxTotalTokens` is exhausted. Persist sampling parameters and the resolved OpenRouter provider per run so repeated results are auditable. On cancellation, wait only a short spike-verified grace period for the provider stream; then detach the consumer, emit a warning, mark cancelled, and release the browser even if the upstream socket does not close.
+Discovery may inspect same-origin `/llms.txt`, current-page JSON-LD, and WebMCP presence under strict size/redirect limits. All discovery is untrusted. Generic WebMCP is `unavailable`, `available_disabled`, or `discover_only`; it cannot broaden origins, actions, policy, or assertions.
 
-### 7.5 Compact semantic observation and refs
+Cross-origin iframe content is unavailable for action and grading in P0.
 
-`inspect` returns `AgentObservationV1`:
+### 7.6 Fresh stable evidence capture
 
-```text
-revision, redacted URL, title, bounded visibleText,
-nativeTools[], elements[], discoverySummary, truncated
-```
+After acting stops:
 
-Each element includes an opaque ref such as `e:7:12`, role, accessible name, disabled/checked/selected/expanded state, and allowlisted attributes. It never contains a raw selector.
+1. No model/tool action remains queued.
+2. Wait a bounded quiet/stability interval.
+3. Capture trusted main-frame identity and `EvidenceGenerationRevision` before evaluation.
+4. Evaluate every assertion through fixed reviewed browser-adapter logic while the adapter tracks relevant URL/DOM/accessibility/state mutations.
+5. Capture main-frame identity and `EvidenceGenerationRevision` again.
+6. Accept only when main-frame identity is unchanged, before/after evidence-generation revisions are equal, and the adapter can prove coverage of relevant changes; otherwise evidence is unverifiable.
+7. Retry at most twice within the grading deadline.
+8. Persistent instability, truncation, ambiguity, policy violation, or unsupported state becomes unverifiable.
 
-The run-scoped `ElementRegistry`:
+The fixed capture implementation may use reviewed CDP/Playwright primitives internally. The model cannot invoke or parameterize arbitrary script.
 
-- increments revision on each observation;
-- orders elements deterministically by DOM order and prioritizes visible enabled controls;
-- retains internal handles/locator recipes only in memory;
-- accepts actions only against the latest revision;
-- rechecks connected/visible/semantic identity before acting;
-- returns recoverable `stale_element` or `ambiguous_element` errors and requires a new observation;
-- never fuzzy-resolves a stale ref to a different control;
-- supports the main frame in P0 and reports cross-origin iframe controls as unavailable.
+### 7.7 Demo fixture placement
 
-Normalize whitespace, redact query/challenge tokens, cap interactive elements (initially 100), and truncate UTF-8 observations at field boundaries within `maxObservationBytes`.
+`apps/demo` remains only to provide deterministic tests for:
 
-### 7.6 Discovery and trust policy
+- URL/text/semantic/state assertions;
+- stable and intentionally unstable pages;
+- stale refs and ambiguous semantics;
+- safe GET search/filter interactions;
+- prohibited auth, purchase, messaging, upload/download, submit, popup, redirect, private-address, and mutation attempts;
+- prompt-injection content.
 
-At initial navigation and meaningful URL/state changes:
+Production evaluation configuration never selects `tracegate-demo-store`, calls `DemoAdminPort`, uses challenge tokens, or reads privileged cart evidence. Legacy challenge/admin code may remain only behind test/legacy boundaries and cannot be composed into V2.
 
-- always build semantic controls;
-- fetch only same-origin `/llms.txt`, max 64 KiB, no cross-origin redirect; persist status/hash/size/bounded preview;
-- parse current-page `application/ld+json`, max 64 KiB combined; persist discovered schema types and safe metadata;
-- probe WebMCP only when capability/configuration allows it.
+### 7.8 Deterministic grade application
 
-WebMCP gate states:
+Apply the universal §6.3 precedence. For required assertions combined with AND, after cancellation and policy checks:
 
-```text
-unavailable | available_disabled | discover_only | allowlisted_demo_tools
-```
+1. Missing/invalid capture or any assertion status `unverifiable` → INCONCLUSIVE.
+2. Otherwise, all observed results true → PASS.
+3. Otherwise → FAIL.
 
-Invocation additionally requires a secure context, current confirmed API, exact controlled-demo origin, supported bounded JSON Schema, exact allowlisted tool names (`search_products`, `get_product`, `add_to_cart`, `view_cart`), and the same time/count/redaction budgets as semantic tools.
+A definitive false result does not override another required unverifiable result. Provider/model/budget errors do not override a later complete trusted grade unless they also caused a higher-precedence policy violation. The model summary is always ignored.
 
-| `interfaceMode` | Discovery/invocation behavior |
-|---|---|
-| `semantic-only` | WebMCP gate is `available_disabled`; `callNativeTool` returns structured `unsupported_interface` |
-| `auto` | discover; invoke only when runtime gate reaches `allowlisted_demo_tools`, otherwise semantic fallback |
-| `native-allowed` | require `allowlisted_demo_tools` at config validation or reject the evaluation |
-
-`packages/discovery` owns the per-run gate and `apps/web` publishes its capability summary. `callNativeTool` remains in the frozen P0 tool schema so the model-facing contract does not change; it fails safely unless invocation is allowed. Descriptions, schemas, arguments, and results remain untrusted. Absence or schema drift emits a warning and falls back to semantic UI without changing the P0 path.
-
-### 7.7 Controlled Demo Store and grading
-
-Implement exactly the brief’s scenario: **find Classic Tee, choose size M, and add it to the cart**.
-
-Each run receives an opaque challenge URL:
-
-```text
-{publicBaseUrl}/runs/{opaqueChallengeToken}
-```
-
-The Demo Store exposes Classic Tee, Performance Tee, and Running Shorts; a Classic Tee product page with S/M/L controls; add-to-cart; and cart view. It uses semantic HTML, associated labels, status announcements, JSON-LD Product/Offer metadata, `/llms.txt`, and gated WebMCP registration when supported.
-
-Server-side demo state is explicitly provisioned before browser navigation through `DemoAdminPort.createChallenge` and isolated by hashed challenge token. It contains the cart, mutation revision, run ID, creation/expiry timestamps, and scenario ID. For P0 it may be an in-memory bounded store, but it must cap live challenges, sweep expired entries, and classify a demo restart during an active run as `infrastructure/target_evidence_lost` → inconclusive.
-
-The browser never receives the demo admin secret. The grader calls `adminBaseUrl` server-to-server; in preferred tunnel mode this is loopback while only `publicBaseUrl` is tunneled. In Sandbox fallback it is a protected preview URL. Admin routes reject requests with navigation-shaped `Origin`/`Referer`/`Sec-Fetch-Mode`, return 404 without the bearer, and never appear in navigation links. The grader validates the shared response schema, run ID, challenge hash, freshness, and revision.
-
-Deterministic grade predicates:
-
-```text
-cart contains exactly one line item
-that line item is product "Classic Tee"
-variant/size is exactly "M"
-quantity is exactly 1
-```
-
-All must pass. Valid evidence with wrong/missing state is `failed`; unavailable or invalid evidence is `inconclusive`. The model’s summary is ignored. Store per-predicate results and bounded expected/actual summaries atomically with the terminal outcome.
-
-P1 failure analysis uses a separate TanStack AI structured-output call with the brief’s cautious categories and cannot modify the deterministic result.
-
-### 7.8 Reliability aggregation
+### 7.9 Reliability aggregation
 
 Always show raw counts:
 
@@ -563,344 +659,319 @@ requested, started, passed, failed, inconclusive, cancelled, potential leaks
 Primary metric:
 
 ```text
-end-to-end pass rate = passed / requested runs
+end-to-end pass rate = passed / requested
 ```
 
-Also show, clearly labeled:
+Secondary labeled metric:
 
 ```text
-gradeable task success = passed / (passed + failed)
+gradeable observable-state success = passed / (passed + failed)
 ```
 
-Display numerator and denominator next to every percentage and state that the result is conditional on the persisted model, sampling, and resolved provider configuration. A zero denominator is “Not available.” Inconclusive/cancelled runs are never silently omitted. Three-run results are labeled descriptive, not statistically significant. Median duration/steps use terminal measured runs and state their included statuses. Tool/interface counts come from persisted run steps, never hard-coded values.
+Zero denominator is “Not available.” Inconclusive/cancelled runs are never silently omitted. Percentages display numerator and denominator. Three-run results are descriptive, not statistically significant. Median durations/steps name included statuses. Reports repeat that PASS covers declared browser-observable assertions only.
 
 ---
 
-## 8. Persistence, API, and streaming
+## 8. Persistence, API, streaming, and UI
 
-### 8.1 Drizzle/libSQL design
+### 8.1 Persistence
 
-Use `@libsql/client`, Drizzle ORM, and Drizzle Kit with local `file:` SQLite for development. Enable WAL, foreign keys, and bounded busy timeout. Serialize writes through one process-local writer queue and use short-lived read transactions; three concurrent runs must not compete through ad hoc writers. Keep the schema compatible with remote libSQL/Turso but do not introduce a remote DB in P0.
+Retain local libSQL/Drizzle, WAL, foreign keys, bounded busy timeout, short transactions, and the process-local writer queue. The historical initial migration is immutable evidence; add a V2 pivot migration.
 
-Initial tables:
+Persist:
 
-- Drizzle migration journal/files generated by Drizzle Kit; no custom migration hash system in Submission P0.
-- `capability_checks`: kind, subject, status, bounded details JSON, checked timestamp.
-- `evaluations`: brief fields plus schema version, config JSON, status, start/finish timestamps, failure JSON.
-- `runs`: evaluation ID, unique `run_index` within evaluation, denormalized model ID, resolved provider, status/outcome, timing, iterations/tool calls/browser actions, token usage, grader/failure fields, replay status, potential leak.
-- `run_steps`: run sequence, event/action type, redacted payload JSON, interaction mode, observation summary, duration, timestamp.
-- `events`: autoincrement cursor, event ID, evaluation/run IDs, run sequence, type/version/timestamps, redacted payload JSON.
-- `discovered_interfaces`: run, kind (`webmcp`, `llms_txt`, `semantic`, `json_ld`), name, bounded metadata JSON, timestamp.
-- `browser_sessions`: run ID, provider session ID after successful creation, region, recording/release/replay status, safe metadata, acquire/release timestamps. Never store CDP endpoints or presigned replay URLs. Ambiguous-create attempt reconciliation is deferred; Submission P0 must still release every session whose ID was successfully received.
-- `grade_results`: run, scenario, evidence revision, predicates JSON, outcome, timestamp.
+- V2 config JSON and schema version;
+- admitted canonical target/origin metadata and admission expiry/status;
+- safety policy version and bounded policy violations;
+- runs, usage, cleanup, replay status, warnings;
+- assertion specification hash and assertion IDs/types needed for reporting;
+- evidence hash, capture status/attempt count, bounded per-assertion evidence summaries;
+- generalized grade results and terminal failure;
+- ordered redacted events and steps.
 
-Constraints/indexes are explicit: unique `(evaluation_id, run_index)` on runs; unique `event_id`; indexes on `(evaluation_id, cursor)` and `(run_id, run_sequence)` for events; indexes on `run_id` for browser sessions and discovered interfaces. Unknown usage/cost remains `NULL`, never zero. Use Drizzle repositories for atomic run/result writes, milestone append, report queries, and snapshot reads.
+Do not persist:
 
-Apply the initial Drizzle migration before accepting requests. Migration hash verification, rollback automation, recovery scans, and event-retention/pruning policies are post-submission hardening.
+- full DOM/HTML, screenshots by default, arbitrary visible text dumps;
+- credentials, sensitive typed values, authorization, cookies, storage;
+- raw DNS/provider headers/bodies or private-address details returned to clients;
+- CDP endpoints, challenge URLs/tokens, replay URLs;
+- assertions in model conversation/history events.
 
-### 8.2 Server API
+V1 rows are legacy read-only and are not rescheduled or converted to V2. Privileged Demo evidence is not equivalent to observable browser evidence.
 
-TanStack Start server routes:
+### 8.2 API
 
-| Route | Responsibility |
-|---|---|
-| `GET /api/capabilities` | runtime, model, connectivity, Solari, recording/replay, WebMCP gates |
-| `POST /api/evaluations` | validate, create run rows, enqueue |
-| `GET /api/evaluations/:id` | authoritative snapshot/report plus latest event cursor |
-| `GET /api/evaluations/:id/events` | live TraceGate milestone SSE after snapshot |
-| `POST /api/runs/:id/replay-access` | P1: request current short-lived replay access without persistence |
-| `GET /api/health` | liveness, migration, and scheduling health |
-
-All bodies/responses use shared Zod schemas. Errors contain stable code, safe message, request ID, retryability, and field issues.
-
-### 8.3 Submission P0 SSE
-
-Use a deliberately small transport:
+P0 endpoints:
 
 ```text
-persist product milestone/run step
-  → publish it through process-local pub/sub
-  → SSE to the live page
+GET  /api/health
+GET  /api/capabilities
+POST /api/targets/admit          # bounded admission preview, rate limited
+POST /api/evaluations            # V2 only
+GET  /api/evaluations/:id        # authoritative snapshot
+GET  /api/evaluations/:id/events # new persisted milestones via SSE
 ```
 
-The live route first fetches `GET /api/evaluations/:id` for the authoritative snapshot and latest cursor, then opens SSE for new events. On disconnect it refetches the snapshot and reconnects with capped backoff. Send a 15-second heartbeat, dispose subscriptions on disconnect, bound each serialized milestone, and never stream/persist raw token deltas.
+The server revalidates all client input. Admission responses expose canonical safe status/reasons, not DNS internals. Snapshot schemas expose assertion outcomes and policy limitations without model/private evidence.
 
-Durable arbitrary-cursor replay, `410 CursorExpired`, query/subscribe race elimination, retained-event catch-up, sophisticated slow-consumer backpressure, and event pruning are post-submission hardening. SQLite remains the trace/report source of truth; it is not used as a distributed event broker in Submission P0.
+### 8.3 SSE
+
+SSE remains a process-local notification/projection channel:
+
+- DB commit precedes publish;
+- only persisted redacted events are published;
+- clients load/refetch the authoritative snapshot on start/reconnect/gap;
+- event IDs/cursors make projection idempotent;
+- no public publish bypass exists.
+
+### 8.4 Configure UX
+
+The landing page provides:
+
+- public HTTPS start URL;
+- exact allowed origins, with safe defaults and explanation;
+- prompt editor with prohibited-task guidance;
+- accessible assertion builder for URL/text/semantic/state assertions, max twenty;
+- model/runs/concurrency/recording controls gated by measured capability;
+- admission status and clear unsupported reason;
+- explicit acknowledgment that assertions are hidden from the model and PASS is browser-observable only.
+
+### 8.5 Live UX
+
+Show evaluation/run states, redacted milestones, policy blocks, evidence-capture status, cleanup/replay state, and reconnect status. Never show CDP, raw provider payloads, assertions inside agent messages, or full page evidence.
+
+### 8.6 Report UX
+
+Show:
+
+- prompt and admitted target/origins;
+- assertion definitions separately from the agent trace;
+- per-run assertion result/status and bounded evidence summary;
+- PASS/FAIL/INCONCLUSIVE reason and safety-policy version;
+- raw counts, denominators, medians, usage, interface evidence, execution environment;
+- cleanup reconciliation and potential leaks;
+- prominent observable-state limitation.
 
 ---
 
-## 9. Security and replay
+## 9. Security, privacy, replay, and non-fabrication
 
 ### 9.1 Trust hierarchy
 
-```text
-TraceGate policy
-  → user goal and budgets
-    ---------------- untrusted boundary ----------------
-    → page content, semantic observation, llms.txt, JSON-LD
-    → WebMCP metadata/schemas/results
-    → model-proposed arguments and provider errors
-```
+From most trusted to least trusted:
 
-Required controls:
+1. frozen server policy and Zod contracts;
+2. repository transactions and trusted browser evidence capture;
+3. normalized provider/session metadata;
+4. user target/prompt/assertions;
+5. website DOM, text, structured data, native-tool descriptions;
+6. model/provider output.
 
-- exact-origin allowlist before and after navigation;
-- allow only HTTP(S); reject credentials in URLs and `file:`, `data:`, `javascript:`, `blob:`, browser-internal schemes, unexpected ports/origins;
-- block downloads, off-origin popups, permissions, clipboard reads, and file chooser interactions;
-- no arbitrary page JavaScript, network, filesystem, shell, or secrets tools;
-- central redactor removes known secrets, authorization headers, CDP capabilities, challenge tokens, replay URLs, and suspicious query values before persistence/logging/SSE;
-- bound every observation, discovery document, tool schema/result, provider error, and trace payload;
-- system prompt explicitly labels website/discovery content untrusted and unable to change policy;
-- `apps/web/src/server/lifecycle.ts` owns idempotent boot and shutdown around TanStack Start: migrate → create one DB/queue/SSE/abort-controller instance → mark healthy;
-- judged runs use the built server, not HMR dev mode;
-- `SIGINT`/`SIGTERM` stop dispatch, abort active runs, release known leases with a bounded independent timeout, flush terminal warnings/events, then close the DB;
-- local control plane binds to loopback, rejects unexpected `Origin`/`Host` on mutations, and requires explicit unsupported configuration to bind publicly.
+User assertions are authoritative grade specifications after validation, but they are still untrusted input for storage/rendering and never enter model context.
 
-### 9.2 Replay lifecycle
+### 9.2 SSRF and egress
 
-Replay state is independent of run outcome:
+Admission plus runtime destination enforcement is mandatory. Any path that cannot prove actual public destination enforcement blocks V2 P0. Redirects, subresources, service workers, alternate protocols, DNS changes, and network mutation receive explicit tests.
 
-```text
-not_requested | unsupported | recording | pending | ready | failed
-```
+### 9.3 Redaction and sensitive data
 
-- Request recording only when capability-verified and configured.
-- Persist stable Solari session/replay reference and status, never the presigned URL.
-- Release the browser permit before background replay reconciliation.
-- P1 polls for a bounded spike-verified window after release; show `ready`, `pending`, `unsupported`, or `failed` honestly.
-- When ready, request/open replay access without persisting the presigned URL and return `Cache-Control: no-store` plus `Referrer-Policy: no-referrer`.
-- Background/startup reconciliation, automatic expired-URL refresh, and durable replay lifecycle recovery are post-submission hardening.
-- Keep the URL only in component memory and clear it when playback closes.
-- Never put it in DB, SSE, logs, analytics, exports, clipboard defaults, or TraceGate-controlled browser history.
-- Refresh once on expiry; continued failure is an actionable replay error and never changes the run outcome.
+Central redaction applies before persistence, logging, events, UI, evidence, and exports. It removes known secrets and patterned authorization, credential, signed URL, challenge, CDP, replay, and sensitive query values. String/array/object sizes and cause chains remain bounded.
+
+The product refuses tasks that require sensitive data. Redaction is defense in depth, not permission to collect it.
+
+### 9.4 Replay
+
+Replay remains optional P1 and capability-gated. Only provider session ID and safe replay status are durable. Fresh presigned replay access is requested server-side, returned only to an authorized local reviewer surface, never logged/persisted/SSE-published, and discarded immediately. Replay absence never changes deterministic grading.
+
+### 9.5 Cleanup and truthfulness
+
+Every acknowledged provider session must reconcile to a release record. Any unknown/unreleased acknowledged session blocks acceptance. Cancellation and shutdown use fresh bounded cleanup signals.
+
+Never:
+
+- hard-code a PASS/FAIL result;
+- present fixture/local Playwright output as a real Solari run;
+- present old V1 evidence as V2 safety proof;
+- list an optional model or feature as verified without measured evidence;
+- edit measured evidence to improve a result;
+- splice prior success into a claimed live run.
 
 ---
 
-## 10. UX specification
+## 10. Scope cut line
 
-### Configure/landing
+### Submission P0 — mandatory
 
-Keep a short hero and immediately show the prefilled evaluation form. Display capability status without turning the page into a settings screen. DeepSeek is selected when verified; other models appear only after their probes pass. Runs default to three/max five. Start is disabled only for P0 blockers (no demo connectivity, no verified model, or unhealthy DB), with an explicit explanation.
+- Generic V2 public target/prompt/assertions.
+- TG-002R runtime public-network and mutation-safety proof.
+- One verified DeepSeek path through TanStack/OpenRouter.
+- One active evaluation, bounded Solari capacity and typed 429 degradation.
+- Safe semantic tool loop with assertions excluded from context.
+- Fresh stable browser evidence and pure deterministic grader.
+- Fixture tests plus multi-site real Solari acceptance.
+- Drizzle persistence, authoritative snapshot, simple SSE refetch/reconnect.
+- Generic configure/live/report UX.
+- Cleanup reconciliation, redaction, policy/admission evidence.
 
-### Live execution
+### TG-014 non-blocking P1
 
-Show all run cards simultaneously with:
+- Replay UX when capability remains verified.
+- Optional verified models.
+- Richer assertion authoring that preserves deterministic safety.
+- Improved discovery display and evidence diagnostics.
+- Accessibility and report export polish beyond P0 minimum.
 
-- run number/model/status and elapsed time;
-- explicit Solari Browser → Discovery → LLM → Tool pipeline;
-- interface mode (WebMCP/Semantic UI);
-- current safe action summary;
-- step/tool count against budget;
-- queued/running/terminal counts;
-- replay/cleanup warning state;
-- reconnect status while retaining/refetching the last snapshot;
-- optional simple cancel action only if it does not delay the judged run path.
+TG-014 is not on the P0 critical path and cannot delay an otherwise honest submission.
 
-Do not add live video. Screenshot thumbnails are P2 unless Solari makes capture trivial.
+### Deferred/post-submission
 
-### Report
-
-Top-level report includes raw counts, end-to-end pass rate with denominator, gradeable success, median time/steps, native calls, UI actions, model, and capability evidence timestamp. Add a prominent `EXECUTION ENVIRONMENT` card showing Solari Browser, acknowledged independent-session count, model/resolved provider, active interface mode, recording/replay status, WebMCP availability, `llms.txt`, and JSON-LD types from measured data. Run rows show deterministic predicates, failure category/explanation, interaction chain, usage when known, cleanup status, trace, and replay action. Inconclusive/cancelled runs stay beside PASS/FAIL. Agent interfaces (`WebMCP`, `llms.txt`, Semantic UI, JSON-LD, vision fallback) are a first-class section, not buried logs.
-
-Use the requested developer-tool visual direction: compact cards, strong typography, subtle borders, monospace traces, clear status text/icons, light theme first with robust dark mode, reduced motion, keyboard operation, visible focus, semantic headings/tables, and status communicated by more than color. Avoid generic AI gradients, glowing blobs, robot art, and excessive glass.
-
-### Submission assets
-
-The README opens with the thesis and local/deployed demo URL, then a short real GIF/video, repeated-reliability rationale, architecture diagram, agent-interface explanation, TanStack AI responsibilities, Solari Browser/Sandbox/Recording roles, exact setup/probe commands, capability limitations, and truthful sample traces. The 30–60 second video follows configure → three visible Solari runs → measured report → failed/inconclusive trace and replay when available → optional measured native-vs-UI result. If all runs pass, show that real outcome; a separate previously captured real failure may be labeled as an example but never edited into the live evaluation. Finish with “Built with Solari.”
-
----
-
-## 11. Scope cut line
-
-### Submission P0 — must work before enhancements
-
-- public cookbook fork with TraceGate under `examples/tracegate/`;
-- controlled Demo Store and hardened deterministic cart evidence;
-- TanStack Start configure/live/report UI;
-- OpenRouter + verified DeepSeek through TanStack AI tools;
-- one acknowledged, independently isolated Solari Browser per run;
-- semantic observation, opaque refs, bounded tool vocabulary and budgets;
-- one real end-to-end vertical slice, then three repeated executions;
-- basic measured concurrency limiter;
-- PASS / FAIL / INCONCLUSIVE with explicit denominators;
-- persisted run/result/trace milestones in Drizzle/libSQL;
-- simple snapshot + live SSE progress;
-- semantic interface count plus cheap `llms.txt` and JSON-LD detection/display;
-- guaranteed `finally` cleanup for every acknowledged browser session;
-- polished report including execution-environment evidence;
-- README, architecture diagram, real GIF/video, and submission checklist.
-
-### High-value P1 — implement in this order after repeated P0
-
-1. Solari recording/replay when the spike proves entitlement and API behavior.
-2. Interface-report polish for `llms.txt`/JSON-LD and WebMCP detection.
-3. Model selector, Mistral/GPT-5 Mini, and usage accounting for probe-verified models.
-4. Allowlisted WebMCP invocation if supported.
-5. Structured failure explanation in a separate non-authoritative model call.
-
-Replay/WebMCP/model-option absence never blocks Submission P0.
-
-### P2 — optional comparison and visual polish
-
-Per-run Solari Sandbox; native-vs-UI comparison using measured values; screenshots; cost calculation; cross-model reliability matrix; polished animations. Exclude arbitrary external URLs unless a separate SSRF/security design is completed.
-
-### Post-submission hardening — specified but not on the build critical path
-
-Durable arbitrary-cursor SSE replay; cursor expiration/retention; advanced backpressure; HTTP idempotency semantics; complex cancellation races; crash/startup recovery; ambiguous browser-create reconciliation/provider sweeps; replay URL refresh/reconciliation; migration hash/rollback automation; event retention/pruning; cross-evaluation fairness; production deployment/tenancy.
+- Authentication or user accounts.
+- Credentialed sites or private networks.
+- Financial, messaging, publication, destructive, upload/download, or irreversible workflows.
+- Generic WebMCP invocation.
+- Arbitrary scripts/selectors/assertion expressions.
+- Distributed queues, multi-process SSE, durable replay fan-out.
+- Remote DB, billing/cost estimates, retention automation, migration rollback automation.
+- Automated claim of backend business truth.
 
 ### Never cut
 
-Deterministic grading, Solari-backed judged runs, cleanup of acknowledged sessions, bounded/redacted persisted traces, result denominators, server-only secrets, URL/action policy, and honest capability/outcome reporting.
+Safety admission, assertion/model separation, fresh evidence, INCONCLUSIVE semantics, release-in-finally, redaction, truthful denominators, exact pins, and non-fabrication requirements are never optional.
 
 ---
 
-## 12. Four-agent collaboration model
+## 11. Four-agent ownership and waves
 
-### Exclusive ownership
+### 11.1 Exclusive lanes
 
-| Agent | Exclusive paths | Responsibilities |
-|---|---|---|
-| **A — Integration/evaluation** | root configs, `packages/shared`, `packages/evaluation`, `packages/grading`, `tests/e2e`, final lockfile | contracts, state/event semantics, queue/orchestrator, grader, aggregation, merge owner |
-| **B — Solari/target/discovery** | `packages/solari`, `packages/discovery`, `apps/demo` | connectivity spike, Demo Store, CDP/ref observation, lifecycle, cleanup, replay, WebMCP discovery |
-| **C — AI/agent runtime** | `packages/ai`, `packages/agent` | TanStack/OpenRouter probe, models, prompts, tools, budgets, event mapping, failure-analysis call |
-| **D — Data/product UI** | `packages/db`, `packages/ui`, `apps/web` | Drizzle/libSQL, repositories, TanStack Start API/SSE, configure/live/report UI |
+| Agent | Exclusive paths/responsibility |
+|---|---|
+| A — integration/evaluation | root TraceGate configs, `AGENTS.md`, `packages/shared`, `packages/evaluation`, `packages/grading`, `tests/e2e`, lockfile, checkpoint/final evidence |
+| B — browser/target/discovery | `packages/solari`, `packages/discovery`, `apps/demo`, Solari/target-safety evidence |
+| C — AI/agent | `packages/ai`, `packages/agent`, model/tool-confinement evidence |
+| D — persistence/product UI | `packages/db`, `packages/ui`, `apps/web`, persistence/UI evidence |
 
-Only Agent A edits `packages/shared`, root workspace config, or `pnpm-lock.yaml` after contract freeze. Agent C may finish earlier than other lanes; after its owned acceptance criteria pass, it supports integration through tests or reviewed change requests rather than editing another owner’s files directly.
+No agent edits, stages, restores, or formats another lane’s exclusive paths. Agent A integrates completed handoffs unchanged only at an explicit checkpoint.
 
-### Conflict and merge discipline
+### 11.2 Pivot waves
 
-- No agent edits another lane’s paths or performs drive-by formatting.
-- Cross-lane needs use frozen ports; temporary concrete imports are rejected.
-- Contract changes name affected schemas/events, compatibility impact, and fixtures; they land only at checkpoints.
-- Agents omit independent lockfile edits; Agent A regenerates it after manifest merge.
-- Every merge includes commands/evidence and redaction review.
-- Red verification, an unmatched browser session, or a secret-shaped fixture in persistence blocks the next wave.
-- Measured result rows are immutable; no manual editing to improve the submission.
+```text
+Historical: TG-000, TG-001, TG-002, TG-003, TG-005, TG-006 retained
 
-### Parallel waves
+Rebaseline:
+  TG-002R target-safety feasibility
+  TG-004R V2 contracts
+  TG-005R V2 persistence/privacy refresh
+  TG-006R pivot freeze
 
-**Wave 0 — feasibility and contracts (all four in parallel after runtime preflight)**
+Wave 1 after TG-006R:
+  A TG-007 evaluator/grader
+  B TG-008 safe browser/evidence
+  C TG-009 safe agent
+  D TG-010 V2 DB/API/UI
 
-- A: draft shared Zod contracts/state machines.
-- B: Solari/CDP/connectivity/concurrency/replay spike against a minimal real Demo Store page.
-- C: TanStack/OpenRouter streaming tool-loop probes for all three models.
-- D: Drizzle/libSQL milestone persistence, authoritative snapshot, and simple TanStack Start pub/sub SSE feasibility.
+Integration:
+  TG-011 single run
+  TG-012 repeated orchestration
+  TG-013 policy/cleanup evidence
+  TG-015 complete UX
+  TG-016 P0 checkpoint
+  TG-017A–D lane verification
+  TG-018 final acceptance
+```
 
-**Checkpoint 1 (`TG-006`)**: select connectivity, record account/model capabilities, pin dependencies, freeze contracts, create `AGENTS.md`, and acknowledge ownership.
+TG-014 remains non-blocking P1.
 
-**Wave 1 — single-run vertical slice**
+### 11.3 Contract and lock discipline
 
-- A: transitions, queue shell, run executor, deterministic cart grader.
-- B: Demo Store, Solari lease, semantic controller/refs.
-- C: DeepSeek agent loop/tools/budgets/event mapper.
-- D: migrations/repositories, API/SSE, minimal configure/live UI.
+A shared change after TG-006R must name affected schemas/events/ports/lanes, document compatibility/migration, update canonical fixtures/negative tests, pass downstream compile checks, and receive affected-lane acknowledgement.
 
-**Checkpoint 2 (`TG-011`)**: merge shared → DB → demo/Solari/discovery → AI/agent → evaluation/grading → app composition; regenerate lockfile; prove one real run end-to-end.
-
-**Wave 2 — repeated reliability and report**
-
-- A: N-run orchestration, aggregation, outcome/failure classifier, and only minimal abort/finally cleanup semantics.
-- B: three-session acknowledged cleanup plus semantic/llms.txt/JSON-LD/WebMCP-availability evidence; begin replay only after P0 lane acceptance.
-- C: required provider failure handling and security; optional models/usage/failure explanation are non-blocking P1.
-- D: simple snapshot/SSE projection and complete configure/live/report/environment-evidence UI.
-
-**Checkpoint 3 (`TG-016`)**: prove a real three-run evaluation at measured safe concurrency, truthful denominators, trace visibility, and zero unaccounted sessions.
-
-**Wave 3 — verification and submission polish**
-
-Each agent hardens its lane in parallel; A performs final merge, full suite, leak/security review, README, screenshots/video evidence, and explicit P1/P2 omissions.
+Only Agent A updates `pnpm-lock.yaml`. Regenerate with Node `26.1.0` and global pnpm `12.0.0` after all intended manifests are present; never stage a lockfile generated against partial concurrent manifests.
 
 ---
 
-## 13. Error and edge-case matrix
+## 12. Error and edge-case matrix
 
 | Case | Required behavior |
 |---|---|
-| No verified model | disable start and show probe evidence |
-| No Solari-to-demo route | mark P0 blocked; never substitute local results |
-| Empty/invalid run count | reject before durable creation |
-| DB busy/full/corrupt | stop new scheduling, preserve active cleanup, surface evaluation failure |
-| Solari 429 | reduce capacity and bounded requeue without duplicate run |
-| Missing/invalid CDP endpoint | release session, mark inconclusive |
-| Demo challenge provisioning fails | do not navigate; mark target unavailable/inconclusive and cleanup |
-| Demo process restarts/evidence disappears | target evidence lost/inconclusive; expiry sweep bounds stale state |
-| Disconnect after possible cart mutation | attempt deterministic grade only if trusted evidence is available; always cleanup |
-| Popup/dialog/download | dismiss/block per policy and emit warning |
-| Cross-origin redirect | abort action and classify policy failure |
-| Stale/ambiguous ref | recoverable tool error; require fresh inspect |
-| Oversized observation/schema/result | deterministic truncation plus `truncated` flag |
-| Provider malformed event | abort agent, classify protocol error, keep raw data ephemeral only |
-| Usage absent | persist NULL, display unavailable |
-| Model claims success but cart is wrong | deterministic fail |
-| Grader evidence missing/corrupt | inconclusive, not fail |
-| Refresh/SSE disconnect | refetch authoritative snapshot and reconnect live stream |
-| Replay never finalizes | pending/failed replay only; grade unchanged |
-| Zero gradeable runs | no gradeable percentage; show raw statuses |
-| WebMCP unavailable/changed | warning and semantic fallback |
-| Synthetic fault tests | isolated DB/evidence; never normal report pipeline |
-
-Deferred error cases—duplicate HTTP create/idempotency, ambiguous Solari create acknowledgement, cancellation races, cursor expiry/slow-consumer recovery, and process-crash reconciliation—belong to post-submission hardening and must not expand Submission P0.
+| Invalid URL/origin/assertion | Reject before durable creation with safe field issues |
+| Private/reserved/mixed DNS answer | Reject admission; expose no sensitive DNS detail |
+| Runtime DNS differs/rebinds | Block navigation/request; evaluation/run inconclusive |
+| Unsafe redirect | Block before connection; inconclusive if run started |
+| Actual destination cannot be enforced | Capability blocked; do not schedule generic targets |
+| POST/body/WebSocket/beacon attempt | Block, emit safe policy event, inconclusive |
+| Auth/password/file/payment/message/submit control | Block before interaction, inconclusive |
+| Unknown-effect click/Enter | Block; never guess |
+| Target unavailable | Inconclusive |
+| Solari 429 | Lower capacity, retry same run, no duplicate |
+| Provider session acknowledged then connect fails | Close if created, release in finally, persist cleanup result |
+| Agent asks to finish | Drain actions and capture evidence; belief ignored |
+| Assertion not found on complete stable evidence | Observed false → failed if all other assertions verifiable |
+| Assertion not found on truncated/unsupported evidence | Unverifiable → inconclusive |
+| Ambiguous state locator | Unverifiable → inconclusive |
+| Page changes during capture | Retry twice; then inconclusive |
+| Policy violation plus apparently passing DOM | Inconclusive; policy precedence wins |
+| One false and one unverifiable assertion | Inconclusive |
+| All assertions observed true | Passed, limited to observable state |
+| Cancellation | Cancelled; cleanup mandatory; no silent grade |
+| SSE disconnect | Refetch snapshot and reconnect for new events |
+| DB unhealthy | Stop scheduling, cleanup active runs, report unavailable |
+| Replay pending/unavailable | Honest status; grade unaffected |
+| Potential session leak | Block acceptance |
 
 ---
 
-## 14. Tradeoffs and rejected alternatives
+## 13. Tradeoffs and rejected alternatives
 
-| Decision | Rejected alternative and rationale |
+- **Observable assertions instead of backend truth:** generic sites provide no trusted admin evidence. The limitation is explicit and testable.
+- **Assertions hidden from the model:** prevents the model from targeting or parroting grader details; may reduce success but improves evaluation integrity.
+- **Conservative effects over broad task coverage:** unknown actions are blocked. Safety outweighs convenience.
+- **No generic WebMCP invocation:** arbitrary page-described tools cannot be proven safe. Discovery-only retains evidence without granting authority.
+- **Fresh capture instead of last agent observation:** costs latency but prevents stale/compacted/model-shaped evidence.
+- **INCONCLUSIVE for unverifiable evidence:** avoids converting instrumentation limitations into site/model failure.
+- **Exact bounded assertion DSL instead of scripts/regex/selectors:** less expressive, far safer and more reproducible.
+- **Single-origin default:** reduces redirect/SSRF surface. Up to three origins require explicit admission.
+- **Fixture-only Demo Store:** preserves deterministic CI and adversarial cases without making the product depend on privileged target state.
+- **Process-local queue/SSE:** sufficient for P0; distributed systems would add failure modes without improving judged truth.
+
+---
+
+## 14. File-by-file impact
+
+| Path | V2 responsibility |
 |---|---|
-| TanStack Start long-lived local process | Fastify/Vite split would violate the requested application stack and add an unnecessary framework |
-| Requested packages grouped under four owners | Eight independent workers create contract churn; collapsing everything into five packages would obscure explicit brief responsibilities |
-| CDP default | native wire may be faster but is more version-sensitive |
-| Persisted TraceGate events before SSE | direct TanStack SSE bypasses durable ordering, redaction, reconnect, and reporting vocabulary |
-| SSE | WebSockets add bidirectional complexity; cancellation is ordinary HTTP |
-| Drizzle/libSQL | raw SQLite migrations would violate the required persistence stack |
-| Server challenge state | browser-only localStorage is simpler but gives the grader a weaker and less auditable source of truth |
-| Deterministic store grader | model self-grading cannot prove correctness |
-| Opaque semantic refs | selectors/arbitrary JS are brittle and unsafe |
-| Explicit inconclusive outcome | folding infrastructure errors into FAIL corrupts website reliability measurements |
-| Fresh replay access | durable presigned URLs expire and are bearer capabilities |
-| No automatic interrupted retry | reruns can duplicate side effects and change denominators |
-| Tunnel first, one Sandbox fallback | per-run Sandbox conflicts with account limits and is P2 |
-| Semantic baseline | WebMCP is still experimental and cannot be the critical path |
+| root configs / lockfile | exact runtime/pins and frozen installation; no pivot dependency churn without measured need |
+| `AGENTS.md` | pivot quarantine, ownership, contract and lock rules |
+| `packages/shared/src/config.ts` | V2 target, origins, prompt, assertions, policy version |
+| `packages/shared/src/grading.ts` | assertion evidence/results and deterministic outcomes |
+| `packages/shared/src/agent.ts` | safe semantic action contracts; no production native tool |
+| `packages/shared/src/errors.ts` | policy/admission/assertion/provider safe errors |
+| `packages/shared/src/events.ts` | policy/evidence/generalized grading milestones |
+| `packages/shared/src/ports.ts` | admission, atomic persistence, factory, safe action, capture, grader ports |
+| `packages/shared/src/demo.ts` | removed from production exports; fixture/legacy only if retained |
+| `packages/shared/testing/*` | atomic fakes, policy/evidence fixtures and negative cases |
+| `packages/solari` | lease/controller/replay plus enforceable destination, request, and effect policy |
+| `packages/discovery` | bounded semantic observation/refs and discovery-only metadata |
+| `packages/ai` | pinned adapter and tools bound only to safe executor |
+| `packages/agent` | assertion-blind prompt, budgets, serialized safe runner |
+| `packages/grading` | pure generic assertion grader |
+| `packages/evaluation` | admission-aware submission, queue, executor, aggregation, cleanup |
+| `packages/db` | V2 migration, generalized evidence/grade/policy persistence |
+| `apps/web` | V2 composition, API, snapshot/SSE, generic UX |
+| `apps/demo` | deterministic positive/adversarial fixture only |
+| `tests/e2e` | fixture and real multi-site Solari/policy/cleanup acceptance |
+| `docs/evidence` | historical evidence plus pivot/safety/acceptance records |
 
 ---
 
-## 15. File-by-file impact
+## 15. Verification strategy
 
-After TG-000, all paths in this section are relative to `solari-cookbook/examples/tracegate/`; the planning-stage file is moved into that subtree.
-
-| Path | Planned responsibility |
-|---|---|
-| root `package.json`, `pnpm-workspace.yaml`, `turbo.json`, `tsconfig.base.json`, `.node-version`, `.npmrc` | exact toolchain pins, Turbo tasks, frozen lockfile policy |
-| `AGENTS.md` | four-lane ownership, commands, contract-change/merge rules |
-| `.env.example` | server-only OpenRouter/Solari/DB/demo/tunnel variables without values |
-| `packages/shared/src/{ids,config,env,states,events,api,ports,redaction}.ts`, `testing/*` | frozen Zod/type source, central redactor/env schema, canonical fake ports/fixtures |
-| `packages/db/src/{schema,client,migrate,repositories}.ts` and `drizzle.config.ts` | Drizzle/libSQL schema, initial migration, evaluation/run/step/report repositories |
-| `packages/solari/src/{client,browser-provider,browser-controller,replay}.ts` | create/connect/release/replay and safe browser action adapter |
-| `packages/discovery/src/{observation,element-registry,semantic,llms-txt,json-ld,webmcp,policy}.ts` | bounded discovery and untrusted-interface normalization |
-| `packages/ai/src/{provider,models,compatibility,event-mapper,tools,failure-analyzer}.ts` | TanStack/OpenRouter-only integration, tool adapters, usage/events, explanation model call |
-| `packages/agent/src/{run-context,runtime-budget,prompt,runner,policy,trace}.ts` | product-owned execution semantics around AI/browser ports |
-| `packages/grading/src/{demo-grader,failure-classifier,explanation}.ts` | deterministic evidence/outcome authority plus display-only wrapper over AI explanation; explanation cannot write run/grade outcomes |
-| `packages/evaluation/src/{transitions,queue,orchestrator,run-executor,aggregation}.ts` | submission run lifecycle, bounded scheduling, outcomes, truthful report math |
-| `packages/ui/src/*` | shadcn/Base UI primitives, status/trace/metric components, tokens |
-| `apps/demo/src/{server,html,challenge-store,scenario,webmcp}.ts` | plain semantic store, isolated bounded cart state, hardened admin provisioning/evidence routes, discovery assets |
-| `apps/web/src/routes/{index,evaluations.$id,runs.$id}.tsx` | configure/live/report route states |
-| `apps/web/src/routes/api/*` | capabilities/evaluations/snapshot/events/health routes; P1 replay route only when enabled |
-| `apps/web/src/server/{composition,sse,config,lifecycle}.ts` | concrete wiring, simple pub/sub stream, startup migration, known-lease signals/shutdown |
-| `apps/web/src/lib/{api-client,event-projection}.ts` | typed client and idempotent event reducer/reconnect |
-| `tests/e2e/*` | local and credentialed Solari vertical, repeated-run, snapshot/SSE, grading, interface-evidence, known-session cleanup tests |
-| `docs/evidence/*` | redacted spike and acceptance evidence only |
-| `README.md` | deployed/local URL, video/GIF, thesis, architecture, Solari/TanStack explanation, setup |
-
-Each package also gets a manifest, TypeScript config, public `index.ts`, and colocated tests owned by its lane.
-
----
-
-## 16. Verification strategy
-
-### Commands
+### 15.1 Commands
 
 ```bash
-corepack enable
+cd examples/tracegate
+node --version
+pnpm --version
 pnpm install --frozen-lockfile
 pnpm lint
 pnpm typecheck
@@ -914,284 +985,254 @@ pnpm db:check
 pnpm probe:runtime
 pnpm probe:models
 pnpm probe:solari
+pnpm probe:target-safety
 pnpm test:e2e:solari
 pnpm verify
 ```
 
-Credentialed probes may report “not configured” during normal development, but the final P0 evidence must include successful configured runs. `pnpm verify` must not silently skip a configured suite.
+Configured credentialed suites must not silently skip. Unconfigured probes report “not configured” honestly, but final P0 evidence requires successful configured acceptance.
 
-### Automated coverage required before Submission P0
+### 15.2 Required automated coverage
 
-- Zod accept/reject fixtures for frozen API/config/action/result schemas.
-- Submission state transitions, bounded queue capacity/retry/permit release, and no duplicate run IDs.
-- Element-ref invalidation, observation truncation, exact-origin URL policy.
-- TanStack event mapping, malformed provider events, and absent usage handling.
-- Demo grader truth table, including exact-one-line-item and model-self-report irrelevance.
-- PASS/FAIL/INCONCLUSIVE mapping and zero-denominator aggregation.
-- Initial Drizzle migration plus evaluation/run/step snapshot queries.
-- Snapshot load, new SSE milestone projection, refresh/refetch/reconnect.
-- Redaction seeded with fake API keys, CDP URLs, challenge tokens, and replay URLs.
-- Fifteen-turn history compaction and serialized parallel tool proposals.
-- Admin-route navigation rejection and challenge provisioning/expiry.
+- V2 target/origin/assertion accept/reject fixtures, bounds, unique IDs, and schema version separation.
+- Public/private/reserved/mixed DNS, redirect hop, rebinding, unresolved destination, and alternate-protocol cases.
+- Network method/body/beacon/WebSocket mutation blocking.
+- Auth, payment, messaging, upload/download, permission, submit, popup, iframe, and unknown-effect policy cases.
+- Assertion/model-context separation tests.
+- URL/text/semantic/state truth tables and normalization.
+- Fresh capture stability/retry, truncation, ambiguity, unsupported state, and evidence-hash validation.
+- Exact outcome precedence, including false plus unverifiable → inconclusive.
+- Atomic evaluation/run/queued-event creation and atomic intermediate transition/event append.
+- Bounded queue/429 capacity degradation, no duplicate runs, and permit release.
+- Finally cleanup after every acknowledged provider session ID.
+- Generic aggregation and zero denominators.
+- Redaction seeded with fake keys, CDP/replay URLs, sensitive values, and hostile page content.
+- V2 migration, snapshots, persisted events, publish-after-commit, reconnect/refetch.
+- Prompt injection and attempts to discover assertions or policy internals.
+- Demo fixture proves the same public V2 assertion path with no privileged grader.
 
-Advanced cancellation races, startup recovery, idempotency, arbitrary cursor replay/expiration, slow-consumer backpressure, migration hashes, and retention are explicitly excluded from Submission P0 tests.
+### 15.3 Manual/credentialed acceptance
 
-### Manual acceptance
-
-1. Confirm the public GitHub repository is visibly a fork of `solari-sdk/solari-cookbook` and TraceGate is under `examples/tracegate/`.
-2. Prove Solari can load and mutate the selected public demo route.
-3. Run one DeepSeek execution and inspect real tool calls, deterministic grade, persisted trace, and release.
-4. Run three repetitions; confirm unique acknowledged sessions/challenge state and no cross-run cart leakage.
-5. Confirm observed concurrency never exceeds the measured cap and 429 degradation does not duplicate runs.
-6. Close/reopen the live UI; confirm it refetches the authoritative snapshot and reconnects to new milestones.
-7. Put hostile instructions in Demo Store content; confirm no off-origin navigation or secret access.
-8. Mutate DOM between inspect and action; confirm stale ref fails safely.
-9. Disable WebMCP; confirm semantic execution and interface evidence still work.
-10. If replay is enabled, open it and verify no replay URL appears in SQLite, SSE, logs, history, or export.
-11. Recalculate every displayed numerator, denominator, median, step count, interface count, and execution-environment field from DB/capability data.
-12. Compare every acknowledged provider session to release records; any unreleased acknowledged session blocks acceptance.
-13. Attempt browser navigation to public `/admin/*`; confirm it exposes no grading evidence while server-to-server grading works.
-14. Send Ctrl-C/SIGTERM during active runs; confirm known leases receive bounded abort/release attempts before exit.
-15. Record the video using only a real evaluation. A previously captured real failure may be shown separately only when clearly labeled; never splice it into the live result.
-
-Spike and final evidence under `docs/evidence/` records exact versions/lockfile hash, timestamp/environment, connectivity route, Solari capacity/recording/replay behavior, per-model compatibility, WebMCP result, commands, and exit status. It must omit capabilities and secrets.
+1. Verify public fork relationship, branch, visibility, and workspace placement.
+2. Prove TG-002R destination enforcement with real Solari, including a denied private/reserved/rebinding case.
+3. Run a safe fixture task through the full generic path without Demo admin evidence.
+4. Run at least two materially different admitted public HTTPS sites through real Solari using safe read-only/reversible tasks and different assertion kinds.
+5. Confirm assertions never appear in prompts, tool schemas/results, model history, agent trace, or the evaluated target page’s input/content; confirm they remain visible only in TraceGate authoring/report UI.
+6. Attempt every prohibited action category; confirm block + INCONCLUSIVE + cleanup.
+7. Force unstable/truncated/ambiguous evidence; confirm INCONCLUSIVE.
+8. Run three repetitions; recalculate all counts/denominators from DB.
+9. Refresh/reconnect during live execution; confirm authoritative snapshot recovery.
+10. Compare acknowledged provider session IDs with release records; any mismatch blocks acceptance.
+11. Confirm no private addresses, credentials, CDP/replay URLs, full DOMs, or sensitive assertion values in DB/logs/SSE/export.
+12. Verify report and video state that PASS proves browser-observable assertions only.
+13. Send SIGINT/SIGTERM during active work; confirm bounded cleanup.
+14. Use only real measured results in submission assets.
 
 ---
 
-## 17. Risks and capability gates
+## 16. Risks and capability gates
 
-| Risk | Gate/mitigation | Allowed degradation |
+| Risk | Required gate/mitigation | Allowed degradation |
 |---|---|---|
-| Solari cannot reach demo | tunnel then Sandbox preview spike | none for P0; block honestly |
-| account cap below 3 | measure and configure queue | sequential/lower-concurrency real runs |
-| recording unavailable | capability probe | runs work; replay labeled unsupported |
-| one optional model incompatible | per-model probe | hide that model |
-| DeepSeek/all models incompatible | production-shaped probe | P0 blocked until one passes |
-| TanStack API drift | exact compatible pins and adapter boundary | atomic upgrade only |
-| CDP incompatibility | remote smoke test before fan-out | P0 blocked until adapter works |
-| WebMCP absent/drifts | discover-only gate and normalization | semantic UI continues |
-| SQLite unhealthy | single writer/short transactions/health gate | stop scheduling, cleanup active runs |
-| replay finalization delayed | bounded P1 poll and honest pending state | evaluation completes, replay pending/omitted |
-| prompt injection | restricted refs/tools/origins/redaction | unsafe action returns policy error |
-| contract churn | freeze and sole owner | checkpointed change only |
-| schedule pressure | explicit cut line | drop P2, then unstarted P1; never weaken P0 truth |
+| Actual remote destination cannot be inspected/enforced | TG-002R Solari/proxy proof | None; V2 P0 blocked |
+| DNS rebinding or unsafe redirect | Per-hop runtime destination enforcement | None; block target/run |
+| Generic action has hidden side effect | Conservative effect + network mutation policy | Block/INCONCLUSIVE |
+| GET endpoint has hostile side effect | Anonymous isolated scope and explicit limitation | Site/task unsupported; never claim absolute business safety |
+| Dynamic page never stabilizes | Bounded revision-consistent capture retries | INCONCLUSIVE |
+| Poor accessibility/canvas/shadow/cross-frame target | Semantic evidence reason codes | INCONCLUSIVE |
+| Prompt requests prohibited action | Admission UX plus authoritative runtime block | Reject or INCONCLUSIVE |
+| Assertions expose sensitive values | Schema limits, sensitive-control block, redaction | Reject/unverifiable |
+| Solari capacity below requested | Typed 429 degradation | Lower real concurrency |
+| Recording unavailable | Capability gate | Runs continue; replay unsupported |
+| DeepSeek incompatible with safe surface | Production-shaped recheck | P0 blocked until one verified model works |
+| DB unhealthy | Health gate and cleanup | Stop scheduling |
+| Cleanup uncertainty | Durable session/release reconciliation | Acceptance blocked |
+| Contract churn | TG-006R freeze and sole shared owner | Checkpointed changes only |
 
 ---
 
-## 18. Implementation order and execution index
+## 17. Revised implementation gates
 
-Size: **S** focused task, **M** roughly half an agent-day, **L** roughly one agent-day. Estimates are planning guidance, not measured outcomes.
+### TG-000 — Public cookbook fork and placement — retained PASS
+- **Goal:** Keep the compliant public fork and TraceGate placement.
+- **Done when:** Existing repository/fork/branch/visibility evidence remains valid.
+- **Mutation:** None for pivot.
 
-### TG-000 — Public cookbook fork and project placement
-- **Goal:** Establish the compliant judged repository before implementation begins.
-- **Done when:** GitHub identifies the public repository as a fork of `solari-sdk/solari-cookbook`; the complete TraceGate workspace and this plan live under `examples/tracegate/`; the fork URL, upstream remote, submission branch, and visibility are recorded. If the current workspace is not that fork, stop and ask the user for the fork URL or permission to create it before coding.
-- **Key files:** cookbook Git metadata, `examples/tracegate/docs/plans/tracegate-poc-build-2026-09-01.md`
-- **Dependencies:** None
-- **Size:** S
+### TG-001 — Runtime/workspace preflight — retained PASS
+- **Goal:** Preserve exact measured runtime and dependency pins.
+- **Done when:** Existing pins still install/build; deviations require measured evidence.
 
-### TG-001 — Runtime/workspace preflight
-- **Goal:** Verify exact Node, stable pnpm, TypeScript, Turbo, TanStack Start/AI, React, Zod, Drizzle/libSQL, Solari, and Playwright versions.
-- **Done when:** Exact compatible pins, Corepack command, workspace scripts, and version evidence are approved; no dependency uses a floating range. TypeScript 7 is used when the full toolchain passes; if its native compiler/plugin compatibility blocks the vertical slice, pin the latest TypeScript 6 release, record the deviation, and do not mix compiler versions across packages.
-- **Key files:** root configs, `docs/evidence/runtime.md`
-- **Dependencies:** TG-000
-- **Size:** S
+### TG-002 — Historical Solari/connectivity spike — retained PASS
+- **Goal:** Preserve the real provider/connectivity/capacity/recording/replay result.
+- **Limitation:** Not generic-site safety evidence.
 
-### TG-002 — Solari/connectivity/entitlement spike
-- **Goal:** Prove real Solari reachability to a minimal production-shaped demo fixture and measure create/CDP/release/concurrency/recording/replay plus tunnel/Sandbox connectivity.
-- **Done when:** A temporary `__connectivity` semantic form is loaded from a real Solari Browser, its POST mutates server state, a server-to-server admin read verifies the mutation, one connectivity provider is selected, and cleanup/limit evidence exists—or P0 is explicitly blocked. Full Classic Tee/cart behavior belongs to TG-008.
-- **Key files:** `apps/demo/src/__connectivity.ts`, `packages/solari`, `docs/evidence/solari-connectivity.md`
-- **Dependencies:** TG-001
-- **Size:** M
+### TG-002R — Generic-target safety feasibility
+- **Goal:** Prove enforceable public destination, redirect, DNS-rebinding, private-address, egress, request-method, and effect blocking in real Solari.
+- **Done when:** Actual connection destinations are observable/enforceable; private/reserved and mutation probes are blocked; cleanup is reconciled; redacted evidence exists.
+- **Stop rule:** If runtime destination enforcement is unavailable, V2 P0 is blocked rather than weakened.
+- **Owner:** B with A acceptance.
 
-### TG-003 — TanStack/OpenRouter compatibility spike
-- **Goal:** Test the pinned TanStack package family and all three exact model slugs with the production-shaped streaming tool loop.
-- **Done when:** Each model has verified/failed evidence for tools, strict schema, usage, cancellation, error mapping, and at least DeepSeek or one declared P0 model passes.
-- **Key files:** `packages/ai/src/compatibility.ts`, `docs/evidence/models.md`
-- **Dependencies:** TG-001
-- **Size:** M
+### TG-003 — TanStack/OpenRouter compatibility — retained PASS
+- **Goal:** Preserve DeepSeek verification.
+- **Done when for V2:** The safe reduced tool surface compiles and one production-shaped smoke remains green; optional models stay unverified unless remeasured.
 
-### TG-004 — Shared contracts draft
-- **Goal:** Define Zod entities, API/event envelopes, states, typed errors, and runtime ports.
-- **Done when:** Closed variants and legal transitions have fixtures and all downstream lanes can compile against public surfaces.
-- **Key files:** `packages/shared/src/*`
-- **Dependencies:** TG-001
-- **Size:** M
+### TG-004R — V2 shared contracts
+- **Goal:** Replace Demo target/grading production contracts with V2 target, assertion, evidence, policy, error, event, and port schemas.
+- **Done when:** Closed fixtures and negative tests cover bounds, assertion isolation, outcome precedence, atomic ports, factory, and typed 429; downstream lanes compile.
+- **Owner:** A.
 
-### TG-005 — Drizzle snapshot/milestone/SSE feasibility
-- **Goal:** Prove Drizzle/libSQL writes, authoritative evaluation snapshots, persisted trace milestones, and simple process-local pub/sub SSE in TanStack Start.
-- **Done when:** A spike creates and reads an evaluation snapshot, persists ordered run steps, publishes a new milestone live, and refresh/reconnect recovers through a fresh snapshot.
-- **Key files:** `packages/db`, `apps/web/src/server/sse.ts`, `docs/evidence/persistence.md`
-- **Dependencies:** TG-001, TG-004
-- **Size:** S
+### TG-005 — Historical persistence/SSE feasibility — retained PASS
+- **Goal:** Preserve measured libSQL/Drizzle/snapshot/SSE facts.
+- **Limitation:** Does not prove V2 privacy/schema.
 
-### TG-006 — Contract and architecture freeze
-- **Goal:** Incorporate spike facts, freeze contracts, select connectivity, pin dependencies, and authorize four-way fan-out.
-- **Done when:** Fixtures pass, lockfile is generated, `AGENTS.md` records ownership, every gate has an explicit result, and all agents acknowledge interfaces.
-- **Key files:** root configs, `AGENTS.md`, `packages/shared`, `pnpm-lock.yaml`, `docs/evidence`
-- **Dependencies:** TG-002, TG-003, TG-004, TG-005
-- **Size:** S
+### TG-005R — V2 persistence/privacy refresh
+- **Goal:** Prove V2 config/assertion/evidence/policy persistence and projection without DOM/sensitive leakage.
+- **Done when:** Pivot migration, snapshot, event publication, reconnect/refetch, redaction, and legacy-row handling pass.
+- **Owner:** D with A acceptance.
 
-### TG-007 — Evaluation runtime and grader shell
-- **Goal:** Implement the bounded one-evaluation queue, run executor, deterministic cart grader, outcome mapping, and fake-port tests.
-- **Done when:** Submission state/queue/aggregation tests pass and the executor guarantees `finally` cleanup on every path after receiving a provider session ID.
-- **Key files:** `packages/evaluation`, `packages/grading`
-- **Dependencies:** TG-006
-- **Size:** L
+### TG-006 — Historical V1 freeze — retained as superseded checkpoint
+- **Goal:** Preserve ownership/evidence history.
+- **Limitation:** V1 Demo contracts are not V2 production authority.
 
-### TG-008 — Demo/Solari/discovery vertical slice
-- **Goal:** Implement isolated Demo Store state, Solari lease/CDP controller, semantic observations, opaque refs, and safe actions.
-- **Done when:** A real Solari Browser opens an isolated challenge, selects M, adds Classic Tee, exposes grade evidence, and releases without capability leakage.
-- **Key files:** `apps/demo`, `packages/solari`, `packages/discovery`
-- **Dependencies:** TG-006
-- **Size:** L
+### TG-006R — Generic-site V2 pivot freeze
+- **Goal:** Integrate TG-002R/TG-004R/TG-005R, regenerate the sole lockfile after manifests settle, update ownership/interfaces, and authorize Wave 1.
+- **Done when:** Full frozen install/typecheck/test/build, redaction/ownership audit, lane acknowledgements, exact shared tree/lock hash, and explicit gate evidence are green.
+- **Owner:** A.
 
-### TG-009 — AI/agent vertical slice
-- **Goal:** Implement DeepSeek `chat()` loop, prompts, Zod tools, independent budgets, finish semantics, and event mapping.
-- **Done when:** Fake and real browser ports complete the loop; budget/timeout, malformed stream, bounded-history, serialized-tool, and redaction tests pass.
-- **Key files:** `packages/ai`, `packages/agent`
-- **Dependencies:** TG-006
-- **Size:** L
+### TG-007 — Generic evaluator and grader
+- **Goal:** Implement bounded one-evaluation queue, atomic submission/transitions, run executor, pure assertion grader, outcome precedence, aggregation, and fake-port tests.
+- **Done when:** Queue/state/assertion/aggregation tests pass and every acknowledged provider session releases in `finally`.
+- **Owner:** A.
 
-### TG-010 — DB/API/simple SSE/minimal UI
-- **Goal:** Implement the initial Drizzle migration/repositories, TanStack Start APIs, snapshot + process-local SSE, and minimal configure/live projection.
-- **Done when:** An evaluation is durably created, rendered from its snapshot, receives live persisted milestones, and refetches/reconnects after refresh.
-- **Key files:** `packages/db`, `apps/web`, `packages/ui`
-- **Dependencies:** TG-006
-- **Size:** L
+### TG-008 — Safe browser, admission, discovery, and fixture slice
+- **Goal:** Implement public admission, runtime destination/egress/effect enforcement, semantic observations, stable evidence capture, and fixture-only Demo coverage.
+- **Done when:** Real Solari safely observes an admitted site, blocks prohibited probes, captures stable assertion evidence, and releases without capability leakage.
+- **Owner:** B.
 
-### TG-011 — Single-run vertical checkpoint
-- **Goal:** Compose Wave 1 into one real DeepSeek/Solari evaluation.
-- **Done when:** One run performs real browser actions, persists trace/events, grades independently, renders live/report state, and confirms release.
-- **Key files:** `apps/web/src/server/composition.ts`, `tests/e2e/single-run.test.ts`, lockfile
-- **Dependencies:** TG-007, TG-008, TG-009, TG-010
-- **Size:** M
+### TG-009 — Assertion-blind safe agent slice
+- **Goal:** Implement DeepSeek loop, prompt, budgets, serialized safe tools, cancellation, history bounds, and event mapping without assertions/native tools.
+- **Done when:** Agent sees only prompt/safe observations, cannot access assertions or raw controller, and provider/tool failures map safely.
+- **Owner:** C.
 
-### TG-012 — Repeated orchestration and truthful reporting
-- **Goal:** Expand to three isolated runs, aggregate measured outcomes, classify PASS/FAIL/INCONCLUSIVE, and compute report metrics.
-- **Done when:** Mixed/pass/inconclusive fixtures reconcile exactly and a real three-run evaluation completes at safe measured capacity with good 3/3 and mixed-result presentation.
-- **Key files:** `packages/evaluation`, `packages/grading`, `tests/e2e/repeated-runs.test.ts`
-- **Dependencies:** TG-011
-- **Size:** M
+### TG-010 — V2 DB/API/minimal UI
+- **Goal:** Implement pivot migration, repositories, V2 API/snapshot/SSE, target/prompt/assertion form, and minimal report.
+- **Done when:** V2 create/live/report flow persists and reconnects without Demo-admin or sensitive evidence dependency.
+- **Owner:** D.
 
-### TG-013 — Submission cleanup and interface evidence
-- **Goal:** Verify cleanup of every acknowledged session and surface semantic control count, `llms.txt`, JSON-LD, and WebMCP availability in the report.
-- **Done when:** acknowledged sessions all have release results, interface evidence is measured/persisted/displayed, and unavailable WebMCP leaves semantic execution unchanged.
-- **Key files:** `packages/solari`, `packages/discovery`, `apps/demo`
-- **Dependencies:** TG-011
-- **Size:** M
+### TG-011 — Single-run generic checkpoint
+- **Goal:** Integrate one full fixture run and one approved external read-only canary through the same V2 path.
+- **Done when:** Real Solari, safe agent, fresh evidence, grade, persistence, UI, and cleanup are truthful and green.
+- **Dependencies:** TG-007–TG-010.
 
-### TG-014 — High-value P1 enhancements (non-blocking)
-- **Goal:** First add capability-verified Solari recording/replay, then interface-report polish, optional models/usage, allowlisted WebMCP invocation, and structured failure explanation as time permits.
-- **Done when:** each started enhancement is either verified end-to-end or honestly labeled unsupported/omitted; replay URLs remain ephemeral and no enhancement changes deterministic outcomes. This item is not a dependency of Submission P0.
-- **Key files:** `packages/solari`, `packages/discovery`, `packages/ai`, `packages/agent`, `apps/web`
-- **Dependencies:** TG-011
-- **Size:** M
+### TG-012 — Repeated generic orchestration/reporting
+- **Goal:** Run three isolated repetitions with bounded capacity and truthful aggregation.
+- **Done when:** No duplicate runs/state leakage, all denominators recalculate, and capacity never exceeds measured safe limits.
+
+### TG-013 — Policy, security, and cleanup evidence
+- **Goal:** Prove prohibited actions, SSRF/redirect/rebinding, mutation blocking, prompt injection, evidence privacy, shutdown, and session reconciliation.
+- **Done when:** Every adversarial case blocks safely and all acknowledged sessions reconcile.
+
+### TG-014 — Non-blocking P1
+- **Goal:** Add only high-value capability-gated replay, optional models, richer safe assertions, or discovery polish.
+- **Critical path:** No. Skip without weakening P0 truth.
 
 ### TG-015 — Complete product UX
-- **Goal:** Finish capability-aware configure, simultaneous live run cards, report/traces/interfaces, snapshot reconnect, execution-environment evidence, 3/3/mixed-result states, and visual/accessibility polish.
-- **Done when:** every P0 state and degradation is understandable, keyboard-accessible, responsive, and driven only by persisted data.
-- **Key files:** `apps/web`, `packages/ui`
-- **Dependencies:** TG-011
-- **Size:** L
+- **Goal:** Finish accessible configure/live/report states, admission feedback, assertion builder, policy/evidence explanations, and degraded/empty/error states.
+- **Done when:** UX is usable and accurately communicates scope/limitations.
 
 ### TG-016 — P0 feature-complete checkpoint
-- **Goal:** Merge the required TG-012/TG-013/TG-015 lanes and establish a real repeated-run candidate; TG-014 remains non-blocking.
-- **Done when:** full local suite passes, a real three-run Solari evaluation completes, counts/denominators reconcile, and all sessions are accounted for.
-- **Key files:** composition root, `tests/e2e`, lockfile, `docs/evidence`
-- **Dependencies:** TG-012, TG-013, TG-015
-- **Size:** M
+- **Goal:** Freeze a real repeated generic evaluation and all acceptance evidence.
+- **Done when:** Full suite, real multi-site Solari acceptance, zero unaccounted sessions, truthful metrics, safety gates, and privacy audit pass.
 
 ### TG-017A — Evaluation/grading verification
-- **Goal:** Verify submission state transitions, deterministic predicates, failure mapping, and report arithmetic.
-- **Done when:** every category/code maps to one outcome, all displayed counts reconcile to rows, and cleanup warnings never rewrite grades.
-- **Key files:** `packages/evaluation/**/*.test.ts`, `packages/grading/**/*.test.ts`, `docs/evidence/evaluation-verification.md`
-- **Dependencies:** TG-016
-- **Size:** M
+- Assertion truth tables, evidence precedence, atomicity, queue, aggregation, cleanup.
 
-### TG-017B — Solari/discovery verification
-- **Goal:** Validate measured concurrency, acknowledged-session cleanup, ref safety, interface evidence/fallback, and replay only when enabled.
-- **Done when:** every acknowledged session is released, no capability leaks remain, and semantic execution survives unavailable WebMCP.
-- **Key files:** `packages/solari/**/*.test.ts`, `packages/discovery/**/*.test.ts`, `docs/evidence/solari-verification.md`
-- **Dependencies:** TG-016
-- **Size:** M
+### TG-017B — Browser/target verification
+- Public-network enforcement, redirects/rebinding, effect policy, stable evidence, fixture isolation, release/replay.
 
 ### TG-017C — AI/agent verification
-- **Goal:** Re-run enabled-model probes and validate history/token bounds, serialized tools, timeout/shutdown signal propagation, prompt injection, provider errors, and redaction.
-- **Done when:** enabled models still pass, request history remains bounded across 15 turns, and unsafe/malformed inputs fail closed without leaking data.
-- **Key files:** `packages/ai/**/*.test.ts`, `packages/agent/**/*.test.ts`, `docs/evidence/agent-verification.md`
-- **Dependencies:** TG-016
-- **Size:** M
+- Assertion blindness, prompt injection, tool confinement, provider errors, budgets/history/cancellation.
 
 ### TG-017D — DB/SSE/UI verification
-- **Goal:** Validate the initial migration, snapshot/milestone persistence, refresh/reconnect, known-lease shutdown cleanup, accessibility, environment evidence, and report/degraded states.
-- **Done when:** local E2E passes across normal refresh/reconnect, Ctrl-C cleanup of known leases, 3/3, mixed outcomes, and zero-denominator cases.
-- **Key files:** `packages/db/**/*.test.ts`, `apps/web/**/*.test.tsx`, `docs/evidence/product-verification.md`
-- **Dependencies:** TG-016
-- **Size:** M
+- Migration, redaction, snapshots/SSE, assertion UX, report math, degraded and zero-denominator states.
 
 ### TG-018 — Submission acceptance and polish
-- **Goal:** Produce the reproducible judged candidate, README, architecture diagram, real screenshots/video, and explicit capability/cut-line disclosure.
-- **Done when:** `pnpm verify` and configured probes pass; manual acceptance and leak audit are signed off; README accurately describes measured Solari/WebMCP/replay/model support; no P1/P2 omission is misrepresented.
-- **Key files:** `README.md`, `AGENTS.md`, `docs/evidence`, this plan
-- **Dependencies:** TG-017A, TG-017B, TG-017C, TG-017D
-- **Size:** M
+- **Goal:** Produce final README/video/evidence and run the submission checklist.
+- **Done when:** Repository and measured results are public, links/assets are accurate, limitations are explicit, all sessions reconcile, and no P1 omission is presented as P0.
+- **Important:** Do not submit a PR; submission is the user’s task.
 
-Critical path: `TG-000 → TG-001 → (TG-002, TG-003, TG-004 → TG-005) → TG-006 → (TG-007..TG-010) → TG-011 → (TG-012, TG-013, TG-015) → TG-016 → (TG-017A..TG-017D) → TG-018`. `TG-014` begins only after the single-run slice and must never block this path.
+### Critical path
+
+```text
+TG-000 → TG-001
+  → (TG-002R, TG-003, TG-004R)
+  → TG-005R
+  → TG-006R
+  → (TG-007, TG-008, TG-009, TG-010)
+  → TG-011
+  → (TG-012, TG-013, TG-015)
+  → TG-016
+  → TG-017A/B/C/D
+  → TG-018
+```
+
+TG-014 is explicitly off the critical path.
 
 ---
 
-## 19. Challenge Submission Checklist
+## 18. Submission checklist
 
-The submission is not complete until every applicable item is checked with a link or redacted evidence:
-
-- [ ] Public GitHub repository is visibly a fork of `solari-sdk/solari-cookbook`.
-- [ ] TraceGate source, plan, README, and evidence live under `examples/tracegate/`.
-- [ ] Submission branch/repository is public and reproducibly installable.
-- [ ] README includes thesis, architecture, setup, exact run/probe commands, and measured capability limitations.
-- [ ] Real GIF/video shows configuration, three Solari runs, report, and trace/replay when available.
-- [ ] Execution Environment card and evidence prove real Solari Browser sessions and selected model/interface.
-- [ ] Every acknowledged Solari session used for acceptance has a release result.
-- [ ] No fabricated, edited, or hard-coded evaluation result is presented as measured.
+- [ ] Public repository is visibly a fork of `solari-sdk/solari-cookbook`.
+- [ ] TraceGate remains under `examples/tracegate/`.
+- [ ] Exact runtime/dependency pins and final lock hash are recorded.
+- [ ] TG-002R proves actual public destination/egress/mutation enforcement in real Solari.
+- [ ] DeepSeek or another declared P0 model is currently verified through the production-shaped safe tool path.
+- [ ] Assertions are absent from model context/history/tools/agent trace and the evaluated target page’s input/content; TraceGate authoring/report UI may display them.
+- [ ] PASS/FAIL/INCONCLUSIVE truth tables and fresh evidence tests are green.
+- [ ] PASS is described only as declared browser-observable assertion success.
+- [ ] At least two materially different real public HTTPS sites have safe Solari acceptance evidence.
+- [ ] Demo Store is fixture-only and no production grader/admin dependency remains.
+- [ ] All prohibited action categories block safely.
+- [ ] All acknowledged provider sessions reconcile to release results.
+- [ ] No secret, sensitive data, private address detail, CDP/replay URL, or full DOM is durable or public.
+- [ ] Snapshot/SSE refresh and reconnect are verified.
+- [ ] Raw counts, denominators, medians, usage, interface, and environment claims recalculate from persisted data.
+- [ ] No fabricated, edited, scripted, or hard-coded result is presented as measured.
+- [ ] README/video show a real evaluation and state limitations honestly.
 - [ ] AI-assisted development is disclosed accurately.
-- [ ] X or LinkedIn post is published; immediately before posting, re-open the original challenge instructions and verify required wording, links, handles, and tags (expected `@harrychow_` and `@getsolari`).
-- [ ] Public repository URL, demo/video URL, and social-post URL are recorded in the README/submission.
-- [ ] P1/P2/post-submission omissions are stated honestly.
+- [ ] Public repository URL, demo/video URL, and social-post URL are recorded in README/submission.
+- [ ] Do not submit a PR; that is the user’s task.
+- [ ] P1/P2/deferred omissions are stated honestly.
 
 ---
 
-## 20. Remaining open questions
+## 19. Remaining resolved blockers and questions
 
-These require credentials/runtime access and are intentionally assigned to spikes rather than left as design ambiguity:
+### Blocking before V2 implementation
 
-1. Which available HTTPS tunnel passes the Solari-to-demo proof, or must the plan select a Sandbox preview?
-2. What browser concurrency and recording/replay entitlement does the supplied Solari account expose?
-3. Which stable Solari replay reference/fresh-access APIs work after release in the installed SDK version?
-4. Which exact OpenRouter provider routes pass streaming multi-tool and strict-schema behavior for each curated model?
-5. Does the Solari Chromium build expose current WebMCP without flags/origin-trial configuration?
-6. Which exact package versions form the passing Node 26/TypeScript 7/stable-pnpm/TanStack Start/AI/Drizzle/Solari set?
+1. **Actual destination enforcement:** Can Solari/CDP or a controlled proxy expose and deny the resolved IP before each connection, redirect, and re-resolution? TG-002R must answer with measured evidence.
+2. **Network mutation enforcement:** Can the runtime reliably block agent-caused non-idempotent requests, beacons, WebSocket sends, downloads, and service-worker bypass? If not, generic V2 is blocked.
 
-No other design decision should block implementation.
+### Frozen product decisions
+
+- Generic user-submitted public HTTPS targets and prompts: approved.
+- Assertions: 1–20 required bounded URL/text/semantic/state assertions.
+- Assertion secrecy: kept out of model context.
+- Evidence: fresh stable browser capture only.
+- Unverifiable required evidence: INCONCLUSIVE.
+- Safe anonymous reversible tasks only; prohibited categories are closed above.
+- Demo Store: fixture only.
+- Generic WebMCP invocation: disabled.
+- PASS meaning: browser-observable assertion satisfaction, not arbitrary backend truth.
+
+Any relaxation requires a new explicit plan checkpoint; it cannot be introduced as an implementation shortcut.
 
 ---
 
-## 21. References
+## 20. References
 
-- [Solari cookbook](https://github.com/solari-sdk/solari-cookbook)
-- [Solari Browser API](https://docs.getsolari.com/api-reference/browser)
-- [Solari Sessions](https://docs.getsolari.com/sessions)
-- [Solari Sandboxes](https://docs.getsolari.com/sandboxes)
-- [Solari pricing and limits](https://docs.getsolari.com/pricing)
-- [TanStack AI OpenRouter adapter](https://tanstack.com/ai/latest/docs/adapters/openrouter)
-- [TanStack AI agentic cycle](https://tanstack.com/ai/latest/docs/chat/agentic-cycle)
-- [TanStack AI stream events](https://tanstack.com/ai/latest/docs/chat/stream-events)
-- [TanStack AI SSE response](https://tanstack.com/ai/latest/docs/reference/functions/toServerSentEventsResponse)
-- [OpenRouter DeepSeek V4 Flash 0731](https://openrouter.ai/deepseek/deepseek-v4-flash-0731)
-- [OpenRouter Mistral Small 4](https://openrouter.ai/mistralai/mistral-small-2603)
-- [OpenRouter GPT-5 Mini](https://openrouter.ai/openai/gpt-5-mini)
-- [WebMCP draft](https://github.com/webmachinelearning/webmcp)
-- [Chrome WebMCP documentation](https://developer.chrome.com/docs/ai/webmcp)
-- [llms.txt proposal](https://github.com/AnswerDotAI/llms-txt)
-- [JSON-LD 1.1](https://www.w3.org/TR/json-ld11/)
-- [Node.js 26 release](https://nodejs.org/en/blog/release/v26.0.0)
-- [TypeScript 7 announcement](https://devblogs.microsoft.com/typescript/)
-- [pnpm releases](https://github.com/pnpm/pnpm/releases)
+- Existing TraceGate evidence under `docs/evidence/`.
+- Solari SDK/cookbook and measured TG-002 connectivity evidence.
+- TanStack AI/OpenRouter measured TG-003 compatibility evidence.
+- Zod v4, Drizzle/libSQL, TanStack Start, React, Turbo, pnpm and Playwright versions recorded in `docs/evidence/runtime.md`.
+- OWASP SSRF Prevention guidance and public/reserved IP registries must be consulted during TG-002R implementation and evidence review.

@@ -1,27 +1,41 @@
 # TraceGate agent ownership and integration rules
 
-This file records the green TG-006 contract and architecture checkpoint. Paths are relative to `examples/tracegate/`.
+This file records ownership and integration rules. The green TG-006 checkpoint is historical; the approved generic-site V2 pivot plan is now authoritative, but no V2 implementation contract is frozen until TG-006R passes. Paths are relative to `examples/tracegate/`.
 
-## Frozen checkpoint
+## Historical checkpoint and V2 rebaseline
 
-- Base checkpoint: `TG-006`, 2026-09-01.
-- Exceptional shared-contract checkpoint: TG-007 impact note `docs/evidence/tg-007-shared-contract-impact.md`, 2026-09-01.
-- `packages/shared` Zod v4 schemas and inferred TypeScript types are the authoritative cross-lane contract.
-- Frozen shared Git tree: `63cb741672f75f39884788c2fd59fb0f58185591`.
+- Historical base checkpoint: `TG-006`, 2026-09-01.
+- Historical exceptional shared-contract checkpoint: TG-007 impact note `docs/evidence/tg-007-shared-contract-impact.md`, 2026-09-01.
+- Historical shared Git tree: `63cb741672f75f39884788c2fd59fb0f58185591`.
+- Approved V2 source plan: `docs/plans/tracegate-poc-build-2026-09-01.md`.
+- Pivot decision/quarantine record: `docs/evidence/generic-site-pivot.md`.
+- V1 Demo target/grading contracts are superseded for V2 production use. They remain historical/fixture contracts until TG-004R replaces public surfaces.
+- Assigned TG-002R/TG-004R/TG-005R rebaseline work may selectively stage only its owned gate paths. No Wave 1 production implementation may resume and no agent may claim a V2 freeze until TG-006R is green.
+- After TG-006R, `packages/shared` Zod v4 schemas and inferred TypeScript types are again the authoritative cross-lane contract.
 - Public consumers import only `@tracegate/shared` or `@tracegate/shared/testing`; they do not import another lane's concrete internals.
 - After this checkpoint, only Agent A may edit `packages/shared`, TraceGate root workspace configuration, or `pnpm-lock.yaml`.
-- TG-006 authorizes the planned Wave 1 fan-out under these ownership rules; it does not claim TG-007+ features are already implemented.
+- TG-006 historically authorized V1 fan-out. The pivot revokes that authorization for V2; only TG-006R may authorize the revised Wave 1.
 
 ## Exclusive lanes
 
 | Agent | Exclusive paths | Responsibilities |
 |---|---|---|
-| **A — integration/evaluation** | root configs and `AGENTS.md`, `packages/shared`, `packages/evaluation`, `packages/grading`, `tests/e2e`, `pnpm-lock.yaml`, checkpoint/final evidence | contracts, state/outcome semantics, evaluation runtime, deterministic grading, integration, evaluation tests, final lockfile |
-| **B — Solari/target/discovery** | `packages/solari`, `packages/discovery`, `apps/demo`, `docs/evidence/solari-*.md` | connectivity, Demo Store, Solari lifecycle/CDP, semantic refs/discovery, cleanup and replay |
-| **C — AI/agent runtime** | `packages/ai`, `packages/agent`, `docs/evidence/models.md` | TanStack/OpenRouter model capabilities, prompts, tools, budgets, event mapping, failure-analysis calls |
-| **D — data/product UI** | `packages/db`, `packages/ui`, `apps/web`, `docs/evidence/persistence.md` | Drizzle/libSQL, repositories, TanStack Start API/SSE, snapshot projection and product UI |
+| **A — integration/evaluation** | root configs and `AGENTS.md`, `packages/shared`, `packages/evaluation`, `packages/grading`, `tests/e2e`, `pnpm-lock.yaml`, checkpoint/final evidence | V2 contracts, assertion/outcome semantics, evaluation runtime, deterministic grading, integration, final lockfile |
+| **B — browser/target/discovery** | `packages/solari`, `packages/discovery`, `apps/demo`, target/Solari evidence | public-network admission and runtime egress/effect safety, Solari lifecycle/CDP, stable evidence capture, semantic refs/discovery, fixture-only Demo, cleanup/replay |
+| **C — AI/agent runtime** | `packages/ai`, `packages/agent`, model/tool-confinement evidence | TanStack/OpenRouter capability, assertion-blind prompts, safe tools, budgets, history, cancellation and event mapping |
+| **D — data/product UI** | `packages/db`, `packages/ui`, `apps/web`, persistence/UI evidence | V2 migration/repositories, API/SSE, snapshots, generic target/assertion UX and reports |
 
 Do not edit, rename, format, stage, or revert another lane's exclusive paths. Ask the owning lane to fix a concrete defect. Agent A may stage an owner's completed handoff unchanged at an integration checkpoint.
+
+## Pivot WIP quarantine
+
+- Current dirty B/C/D source and the interrupted A shared checkpoint remain unstaged and unintegrated.
+- Explicitly assigned rebaseline gates may selectively stage only their owned reviewed paths; all unrelated dirty paths remain quarantined.
+- Do not blanket-reset, stage, format, or commit unrelated quarantined work.
+- Do not stage `pnpm-lock.yaml` while concurrent manifests are changing.
+- Preserve reusable infrastructure, but production Demo administration/cart grading, assertion exposure to the model, raw controller access from the agent, and generic native-tool invocation are superseded.
+- Demo Store is a test fixture only and never a V2 production target or grader dependency.
+- PASS means declared browser-observable assertions passed from fresh stable evidence; it never claims arbitrary backend business truth.
 
 ## Runtime and commands
 
@@ -41,20 +55,23 @@ pnpm build
 
 Use `pnpm --filter <workspace-name> <script>` for a lane-local check. A green package-local run does not replace checkpoint-wide verification.
 
-## Current cross-lane interfaces
+## Cross-lane interface status
 
-- Zod schemas are authoritative; exported TypeScript types are inferred from them.
-- IDs, timestamps, cursors, JSON values, configuration, entities, actions/observations, discovery, grading, capabilities, API snapshots, events, safe errors, and lifecycle states come from `@tracegate/shared`.
-- `EvaluationConfig` retains the server-only admin target. Public API snapshots and `AgentRunContext` use the public configuration and must not expose `adminBaseUrl`.
-- The closed evaluation/run transition tables, lease guards, terminal failure mapping, and event vocabulary are fixed at this checkpoint.
-- Persisted ordering uses `EventEnvelope.cursor`; run scope requires paired `runId` and `runSequence`.
-- Runtime operations use the exported AbortSignal-aware ports. Cleanup receives a fresh bounded signal rather than a previously aborted run signal.
-- Repository, log, and SSE boundaries use the shared redactor. Replay URLs, CDP endpoints, credentials, challenge tokens, and authorization values are never durable data.
-- Canonical downstream fakes and fixtures come from `@tracegate/shared/testing`.
+### Historical V1 surface
+
+- The current committed shared tree remains the historical V1 authority for evidence/rebase purposes only.
+- Its server-only Demo admin target, Demo grading, fixed terminal mapping, and event vocabulary are superseded for V2 production and must not guide new implementation.
+
+### V2 rules pending TG-004R/TG-006R
+
+- Zod schemas and inferred TypeScript types will be authoritative after TG-006R.
+- IDs, cursors, lifecycle/lease guards, persisted ordering, AbortSignal-aware ports, cleanup with a fresh bounded signal, central redaction, and canonical fakes remain architectural invariants.
+- V2 replaces Demo target/grading with admitted public HTTPS targets, assertion-blind agent context, trusted fresh evidence, generic assertion results, and revised policy/outcome events.
+- Public consumers import only `@tracegate/shared` or `@tracegate/shared/testing`; concrete cross-lane types remain forbidden.
 
 ## Measured checkpoint capabilities
 
-- Connectivity: Cloudflare Quick Tunnel over HTTPS is selected. Public and admin origins remain separate.
+- Historical connectivity: Cloudflare Quick Tunnel over HTTPS was selected for the V1 fixture; public/admin separation remains historical fixture evidence, not a V2 production dependency.
 - Solari: at least five simultaneous Browser sessions were observed without a limit response; the safe cap is five, while the P0 requested default remains three. A future real `429` must reduce scheduling honestly.
 - Recording/replay: recording was accepted and replay reached `ready`; presigned replay access was discarded after validation.
 - Models: `deepseek/deepseek-v4-flash-0731` is the sole verified P0 model through pinned TanStack AI/OpenRouter. Mistral Small and GPT-5 Mini remain optional and unverified, and must not appear as verified.
@@ -62,7 +79,7 @@ Use `pnpm --filter <workspace-name> <script>` for a lane-local check. A green pa
 
 ## Contract-change discipline
 
-After TG-006, a shared-contract change is exceptional and may land only through Agent A at an explicit integration checkpoint. The change must:
+TG-004R replaces the V1 target/grading production contracts and TG-006R freezes V2. Shared changes may land only through Agent A at explicit impact checkpoints. The change must:
 
 1. name every affected schema, event, port, and downstream lane;
 2. describe compatibility and migration impact;
@@ -81,6 +98,6 @@ Temporary concrete cross-lane imports, duplicate local contract types, and drive
 - A red verification, secret-shaped persisted fixture, unmatched acknowledged browser session, fabricated capability result, or ownership violation blocks the next wave.
 - Measured evidence is append-only in meaning: correct errors with an explicit note; never rewrite a result to improve the submission.
 
-## TG-006 acknowledgement
+## Historical acknowledgement and V2 stop rule
 
-The TG-002 through TG-005 lane deliverables and evidence compile against the frozen public surfaces at this checkpoint. Subsequent work in every lane is subject to this ownership map and these interfaces.
+TG-002 through TG-005 evidence remains truthful for the historical V1 checkpoint. It does not prove generic-site runtime safety or V2 evidence privacy. Until TG-006R, the current shared tree is historical rather than V2 production authority, and all implementation lanes remain stopped except for explicitly assigned rebaseline gates.
