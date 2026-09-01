@@ -185,14 +185,54 @@ importers:
         specifier: 7.0.2
         version: 7.0.2
 
+  apps/web:
+    dependencies:
+      '@tanstack/react-router':
+        specifier: 1.170.32
+        version: 1.170.32(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      '@tanstack/react-start':
+        specifier: 1.168.49
+        version: 1.168.49(esbuild@0.28.2)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(rolldown@1.2.6)(vite@8.2.2(@types/node@26.4.0)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.13))
+      '@tracegate/db':
+        specifier: workspace:*
+        version: link:../../packages/db
+      '@tracegate/shared':
+        specifier: workspace:*
+        version: link:../../packages/shared
+      react:
+        specifier: 19.2.8
+        version: 19.2.8
+      react-dom:
+        specifier: 19.2.8
+        version: 19.2.8(react@19.2.8)
+    devDependencies:
+      '@types/node':
+        specifier: 26.4.0
+        version: 26.4.0
+      '@types/react':
+        specifier: 19.2.18
+        version: 19.2.18
+      '@types/react-dom':
+        specifier: 19.2.5
+        version: 19.2.5(@types/react@19.2.18)
+      '@vitejs/plugin-react':
+        specifier: 6.1.1
+        version: 6.1.1(vite@8.2.2(@types/node@26.4.0)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.13))
+      typescript:
+        specifier: 7.0.2
+        version: 7.0.2
+      vite:
+        specifier: 8.2.2
+        version: 8.2.2(@types/node@26.4.0)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.13)
+
   packages/ai:
     dependencies:
       '@tanstack/ai':
         specifier: 0.52.0
-        version: 0.52.0
+        version: 0.52.0(zod@4.5.4)
       '@tanstack/ai-openrouter':
         specifier: 0.19.5
-        version: 0.19.5
+        version: 0.19.5(@tanstack/ai@0.52.0(zod@4.5.4))
       zod:
         specifier: 4.5.4
         version: 4.5.4
@@ -203,6 +243,25 @@ importers:
       tsx:
         specifier: 4.23.13
         version: 4.23.13
+      typescript:
+        specifier: 7.0.2
+        version: 7.0.2
+
+  packages/db:
+    dependencies:
+      '@libsql/client':
+        specifier: 0.17.4
+        version: 0.17.4
+      '@tracegate/shared':
+        specifier: workspace:*
+        version: link:../shared
+      drizzle-orm:
+        specifier: 0.45.2
+        version: 0.45.2(@libsql/client@0.17.4)
+    devDependencies:
+      '@types/node':
+        specifier: 26.4.0
+        version: 26.4.0
       typescript:
         specifier: 7.0.2
         version: 7.0.2
