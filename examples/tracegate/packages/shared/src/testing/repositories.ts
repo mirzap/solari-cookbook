@@ -1,17 +1,32 @@
-import { EventCursorSchema, type EventCursor, type EvaluationId, type RunId } from "../ids.ts";
+import { EventCursorSchema, type CreateAttemptCorrelationId, type EventCursor, type EvaluationId, type RunId } from "../ids.ts";
 import type { Evaluation, Run } from "../entities.ts";
 import { EventAppendInputSchema, EventEnvelopeSchema, type EventAppendInput, type EventEnvelope } from "../events.ts";
 import type {
   Clock,
   EvaluationRepository,
   EvaluationStatusPatch,
+  EvaluationSubmissionRepository,
+  EvaluationSubmissionResult,
   EventRepository,
   FinalizeRunInput,
   FinalizeRunResult,
+  IntermediateRunTransitionInput,
+  IntermediateRunTransitionResult,
+  ProviderCreateAttemptRecord,
+  ProviderCreateAttemptRepository,
+  ProviderCreateAttemptStatus,
   RunRepository,
   RunStatusPatch,
+  RunTransitionRepository,
 } from "../ports.ts";
-import { FinalizeRunInputSchema } from "../ports.ts";
+import {
+  EvaluationSubmissionInputSchema,
+  EvaluationSubmissionResultSchema,
+  FinalizeRunInputSchema,
+  IntermediateRunTransitionInputSchema,
+  IntermediateRunTransitionResultSchema,
+  ProviderCreateAttemptRecordSchema,
+} from "../ports.ts";
 import { EvaluationSchema, RunSchema } from "../entities.ts";
 import type { EvaluationStatus, RunStatus } from "../states.ts";
 
@@ -96,7 +111,7 @@ export class InMemoryEvaluationRepository implements EvaluationRepository {
   }
 }
 
-export class InMemoryRunRepository implements RunRepository {
+export class InMemoryRunRepository implements RunRepository, RunTransitionRepository {
   #records = new Map<string, Run>();
   #events: EventRepository;
   #transactionTail: Promise<void> = Promise.resolve();
@@ -130,6 +145,27 @@ export class InMemoryRunRepository implements RunRepository {
     return [...this.#records.values()].filter((value) => value.status !== "completed" && value.status !== "cancelled").map(clone);
   }
 
+  async transactionallyApply(input: IntermediateRunTransitionInput, signal: AbortSignal): Promise<IntermediateRunTransitionResult> {
+    const validated = IntermediateRunTransitionInputSchema.parse(input);
+    let unlock!: () => void;
+    const prior = this.#transactionTail;
+    this.#transactionTail = new Promise<void>((resolve) => { unlock = resolve; });
+    await prior;
+    try {
+      throwIfAborted(signal);
+      const current = this.#records.get(validated.runId);
+      if (!current || current.status !== validated.expectedStatus) {
+        return IntermediateRunTransitionResultSchema.parse({ applied: false, run: current ?? null, event: null });
+      }
+      const run = RunSchema.parse({ ...current, ...validated.patch, status: validated.nextStatus });
+      const event = await this.#events.append(validated.event, signal);
+      this.#records.set(run.id, run);
+      return IntermediateRunTransitionResultSchema.parse({ applied: true, run, event });
+    } finally {
+      unlock();
+    }
+  }
+
   async transactionallyFinalize(input: FinalizeRunInput, signal: AbortSignal): Promise<FinalizeRunResult> {
     const validated = FinalizeRunInputSchema.parse(input);
     let unlock!: () => void;
@@ -156,5 +192,96 @@ export class InMemoryRunRepository implements RunRepository {
     } finally {
       unlock();
     }
+  }
+}
+
+export class InMemoryEvaluationSubmissionRepository implements EvaluationSubmissionRepository {
+  #evaluations = new Map<string, Evaluation>();
+  #runs = new Map<string, Run>();
+  #queuedEvents = new Map<string, EventEnvelope>();
+  #clock: Clock;
+  #transactionTail: Promise<void> = Promise.resolve();
+
+  constructor(clock: Clock) { this.#clock = clock; }
+
+  async transactionallyCreate(input: Parameters<EvaluationSubmissionRepository["transactionallyCreate"]>[0], signal: AbortSignal): Promise<EvaluationSubmissionResult> {
+    const validated = EvaluationSubmissionInputSchema.parse(input);
+    let unlock!: () => void;
+    const prior = this.#transactionTail;
+    this.#transactionTail = new Promise<void>((resolve) => { unlock = resolve; });
+    await prior;
+    try {
+      throwIfAborted(signal);
+      const existing = this.#evaluations.get(validated.evaluation.id);
+      if (existing) {
+        const runs = validated.runs.map((run) => this.#runs.get(run.id));
+        const queuedEvents = validated.queuedEvents.map((event) => this.#queuedEvents.get(event.eventId));
+        if (runs.some((run) => run === undefined) || queuedEvents.some((event) => event === undefined)) {
+          throw new Error("atomic submission identity collides with incomplete stored data");
+        }
+        const storedInputs = queuedEvents.map((event) => EventAppendInputSchema.parse(event));
+        if (JSON.stringify(existing) !== JSON.stringify(validated.evaluation)
+          || JSON.stringify(runs) !== JSON.stringify(validated.runs)
+          || JSON.stringify(storedInputs) !== JSON.stringify(validated.queuedEvents)) {
+          throw new Error("atomic submission identity conflicts with different content");
+        }
+        return EvaluationSubmissionResultSchema.parse({ created: false, evaluation: existing, runs, queuedEvents });
+      }
+      if (validated.runs.some((run) => this.#runs.has(run.id)) || validated.queuedEvents.some((event) => this.#queuedEvents.has(event.eventId))) {
+        throw new Error("atomic submission contains a colliding run or event identity");
+      }
+      const envelopes = validated.queuedEvents.map((event, index) => EventEnvelopeSchema.parse({
+        ...event,
+        cursor: String(this.#queuedEvents.size + index + 1),
+        recordedAt: this.#clock.nowIso(),
+      }));
+      this.#evaluations.set(validated.evaluation.id, clone(validated.evaluation));
+      validated.runs.forEach((run) => this.#runs.set(run.id, clone(run)));
+      envelopes.forEach((event) => this.#queuedEvents.set(event.eventId, clone(event)));
+      return EvaluationSubmissionResultSchema.parse({ created: true, evaluation: validated.evaluation, runs: validated.runs, queuedEvents: envelopes });
+    } finally {
+      unlock();
+    }
+  }
+
+  evaluation(id: EvaluationId): Evaluation | null { const value = this.#evaluations.get(id); return value ? clone(value) : null; }
+  run(id: RunId): Run | null { const value = this.#runs.get(id); return value ? clone(value) : null; }
+  events(): readonly EventEnvelope[] { return [...this.#queuedEvents.values()].map(clone); }
+}
+
+export class InMemoryProviderCreateAttemptRepository implements ProviderCreateAttemptRepository {
+  #records = new Map<string, ProviderCreateAttemptRecord>();
+  #key(runId: RunId, attemptCorrelationId: CreateAttemptCorrelationId): string { return `${runId}:${attemptCorrelationId}`; }
+
+  async recordStarted(record: ProviderCreateAttemptRecord, signal: AbortSignal): Promise<ProviderCreateAttemptRecord> {
+    throwIfAborted(signal);
+    const parsed = ProviderCreateAttemptRecordSchema.parse(record);
+    if (parsed.status !== "started") throw new Error("initial provider create-attempt record must be started");
+    const key = this.#key(parsed.runId, parsed.attemptCorrelationId);
+    if (this.#records.has(key)) throw new Error("provider create attempt already exists");
+    this.#records.set(key, clone(parsed));
+    return clone(parsed);
+  }
+
+  async transition(runId: RunId, attemptCorrelationId: CreateAttemptCorrelationId, expected: ProviderCreateAttemptStatus, next: ProviderCreateAttemptRecord, signal: AbortSignal): Promise<boolean> {
+    throwIfAborted(signal);
+    const key = this.#key(runId, attemptCorrelationId);
+    const current = this.#records.get(key);
+    if (!current || current.status !== expected) return false;
+    const parsed = ProviderCreateAttemptRecordSchema.parse(next);
+    if (parsed.runId !== runId || parsed.attemptCorrelationId !== attemptCorrelationId || parsed.createdAt !== current.createdAt) throw new Error("provider create-attempt transition identity is immutable");
+    this.#records.set(key, clone(parsed));
+    return true;
+  }
+
+  async get(runId: RunId, attemptCorrelationId: CreateAttemptCorrelationId, signal: AbortSignal): Promise<ProviderCreateAttemptRecord | null> {
+    throwIfAborted(signal);
+    const value = this.#records.get(this.#key(runId, attemptCorrelationId));
+    return value ? clone(value) : null;
+  }
+
+  async listUnresolved(signal: AbortSignal): Promise<readonly ProviderCreateAttemptRecord[]> {
+    throwIfAborted(signal);
+    return [...this.#records.values()].filter((record) => ["started", "unresolved", "session_found", "release_failed"].includes(record.status)).map(clone);
   }
 }

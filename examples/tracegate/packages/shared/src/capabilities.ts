@@ -6,7 +6,8 @@ import { JsonObjectSchema } from "./json.ts";
 export const CapabilityKindSchema = z.enum([
   "runtime",
   "database",
-  "demo_connectivity",
+  "target_safety",
+  "session_reconciliation",
   "solari",
   "model",
   "recording",

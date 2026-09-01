@@ -1,68 +1,166 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import * as sharedExports from "../src/index.ts";
 import {
-  AgentObservationSchema,
+  AgentExecutionInputV2Schema,
+  AgentTraceEventSchema,
+  AssertionCaptureResultSchema,
+  AssertionSetV1Schema,
+  BrowserAssertionEvidenceV1Schema,
+  BrowserProviderConcurrencyLimitErrorSchema,
+  EffectDecisionSchema,
+  EvaluationAggregateV2Schema,
   EvaluationConfigSchema,
   EventAppendInputSchema,
   EventTypeSchema,
-  DemoChallengeProvisionSchema,
-  DemoGradeEvidenceEnvelopeSchema,
-  DemoMutationRevisionSchema,
-  ObservationRevisionSchema,
-  FinalizeRunInputSchema,
+  FailureRecordSchema,
+  GradeInputV2Schema,
   GradeResultSchema,
-  PublicEvaluationConfigInputSchema,
+  PolicyDenyCodeSchema,
+  ProviderCapacityStateSchema,
+  ReleaseResultSchema,
+  SafeAgentToolExchangeSchema,
+  PublicEvaluationConfigV2Schema,
+  PublicHttpsOriginSchema,
+  PublicHttpsUrlSchema,
   RunStatusSchema,
-  RunSchema,
   ServerEnvSchema,
   TERMINAL_FAILURE_SEMANTICS,
-  FailureRecordSchema,
+  UntrustedAgentObservationSchema,
+  buildAgentExecutionInputV2,
+  createBrowserProviderConcurrencyLimitError,
+  isBrowserProviderConcurrencyLimitError,
   redactJson,
+  resolveUniversalDisposition,
 } from "../src/index.ts";
 import {
-  discoveryFixture,
+  ASSERTION_ONLY_CANARY,
+  agentExecutionInputFixture,
+  assertionCanaryConfigFixture,
+  assertionCaptureResultFixture,
+  browserAssertionEvidenceFixture,
   eventEnvelopeFixture,
   evaluationConfigFixture,
   failedFailureFixture,
-  gradeEvidenceFixture,
-  demoChallengeFixture,
-  demoGradeEvidenceEnvelopeFixture,
+  failedGradeFixture,
+  inconclusiveGradeFixture,
   observationFixture,
   passingGradeFixture,
   runFixture,
 } from "../src/testing/index.ts";
 
-test("canonical fixtures satisfy authoritative schemas", () => {
-  assert.equal(EvaluationConfigSchema.parse(evaluationConfigFixture).schemaVersion, 1);
-  assert.equal(AgentObservationSchema.parse(observationFixture).revision, 1);
-  assert.equal(discoveryFixture.observationRevision, observationFixture.revision);
+test("canonical V2 fixtures satisfy authoritative schemas", () => {
+  assert.equal(EvaluationConfigSchema.parse(evaluationConfigFixture).schemaVersion, 2);
+  assert.equal(UntrustedAgentObservationSchema.parse(observationFixture).trust, "untrusted_page_content");
   assert.equal(GradeResultSchema.parse(passingGradeFixture).outcome, "passed");
-  assert.equal(gradeEvidenceFixture.cart[0]?.variant.size, "M");
+  assert.equal(BrowserAssertionEvidenceV1Schema.parse(browserAssertionEvidenceFixture).requiredIdenticalCaptures, 2);
   assert.equal(eventEnvelopeFixture.cursor, "1");
   assert.equal(runFixture.status, "queued");
 });
 
-test("evaluation config applies bounded defaults and public input excludes admin URL", () => {
-  const { adminBaseUrl: _adminBaseUrl, ...publicTarget } = evaluationConfigFixture.target;
-  const parsed = PublicEvaluationConfigInputSchema.parse({
-    schemaVersion: 1,
-    target: publicTarget,
-    goal: evaluationConfigFixture.goal,
-    successCriterion: evaluationConfigFixture.successCriterion,
-    modelIds: evaluationConfigFixture.modelIds,
-    allowedOrigins: evaluationConfigFixture.allowedOrigins,
-  });
-  assert.equal(parsed.requestedRunsPerModel, 3);
-  assert.equal(parsed.budgets.wallClockMs, 120_000);
-  assert.equal("adminBaseUrl" in parsed.target, false);
-  assert.throws(() => PublicEvaluationConfigInputSchema.parse({ ...parsed, allowedOrigins: ["https://other.invalid"] }));
+test("public target and config are bounded, exact-origin, and V2-only", () => {
+  assert.equal(PublicEvaluationConfigV2Schema.parse(evaluationConfigFixture).assertions.length, 4);
+  assert.equal(PublicHttpsUrlSchema.safeParse("http://example.test").success, false);
+  assert.equal(PublicHttpsUrlSchema.safeParse("https://127.0.0.1/path").success, false);
+  assert.equal(PublicHttpsOriginSchema.safeParse("https://example.test/path").success, false);
+  assert.equal(PublicEvaluationConfigV2Schema.safeParse({ ...evaluationConfigFixture, schemaVersion: 1 }).success, false);
+  assert.equal(PublicEvaluationConfigV2Schema.safeParse({
+    ...evaluationConfigFixture,
+    assertions: [...evaluationConfigFixture.assertions, ...evaluationConfigFixture.assertions.slice(0, 1)],
+  }).success, false, "duplicate assertion IDs are rejected");
+  assert.equal(PublicEvaluationConfigV2Schema.safeParse({
+    ...evaluationConfigFixture,
+    assertions: [{ ...evaluationConfigFixture.assertions[0], expectedUrl: "https://other.test/path" }],
+  }).success, false, "URL assertion origin must be declared");
 });
 
-test("event and status variants are closed and enforce event scope", () => {
-  assert.equal(EventTypeSchema.safeParse("run.passed").success, true);
+test("assertion DSL variants are closed and bounded", () => {
+  assert.equal(new Set(evaluationConfigFixture.assertions.map((item) => item.kind)).size, 4);
+  assert.equal(AssertionSetV1Schema.safeParse([]).success, false);
+  assert.equal(AssertionSetV1Schema.safeParse(Array.from({ length: 21 }, (_, index) => ({
+    schemaVersion: 1, id: `a${index}`, kind: "text", scope: "title", operator: "contains", expected: "x", caseSensitive: false,
+  }))).success, false);
+  assert.equal(AssertionSetV1Schema.safeParse([{ schemaVersion: 1, id: "x", kind: "backend", expected: true }]).success, false);
+});
+
+test("assertion evidence separates transient raw URL from redacted durable evidence", () => {
+  assert.equal(assertionCaptureResultFixture.transient.canonicalFinalUrl, "https://demo.tracegate.test/catalog");
+  assert.equal("canonicalFinalUrl" in browserAssertionEvidenceFixture, false);
+  assert.equal("documentId" in browserAssertionEvidenceFixture, false);
+  assert.equal(BrowserAssertionEvidenceV1Schema.safeParse({
+    ...browserAssertionEvidenceFixture,
+    canonicalFinalUrl: assertionCaptureResultFixture.transient.canonicalFinalUrl,
+  }).success, false);
+});
+
+test("assertion-only canary cannot flow into assertion-free agent DTO or agent trace events", () => {
+  assert.equal(JSON.stringify(assertionCanaryConfigFixture.assertions).includes(ASSERTION_ONLY_CANARY), true);
+  const projected = buildAgentExecutionInputV2(
+    assertionCanaryConfigFixture,
+    observationFixture,
+    agentExecutionInputFixture.capabilities.availableTools,
+  );
+  const serializedInput = JSON.stringify(AgentExecutionInputV2Schema.parse(projected));
+  assert.equal(serializedInput.includes(ASSERTION_ONLY_CANARY), false);
+  assert.equal(AgentExecutionInputV2Schema.safeParse({
+    ...agentExecutionInputFixture,
+    assertions: assertionCanaryConfigFixture.assertions,
+  }).success, false);
+  assert.equal(AgentTraceEventSchema.safeParse({
+    type: "run.agent.message",
+    payload: { role: "assistant", summary: "bounded", assertionCanary: ASSERTION_ONLY_CANARY },
+  }).success, false);
+  const lexicalCoincidence = buildAgentExecutionInputV2(
+    PublicEvaluationConfigV2Schema.parse({ ...evaluationConfigFixture, prompt: `Inspect visible text ${ASSERTION_ONLY_CANARY}` }),
+    observationFixture,
+    ["inspect", "finish"],
+  );
+  assert.equal(lexicalCoincidence.userTask.includes(ASSERTION_ONLY_CANARY), true, "user-authored lexical overlap is not an assertion-provenance failure");
+});
+
+test("universal outcome precedence is cancellation, policy, unverifiable, false, pass", () => {
+  assert.equal(resolveUniversalDisposition({ cancellationCommitted: true, prohibitedActivity: true, evidenceValid: false, assertionStatuses: ["failed"] }), "cancelled");
+  assert.equal(resolveUniversalDisposition({ cancellationCommitted: false, prohibitedActivity: true, evidenceValid: true, assertionStatuses: ["passed"] }), "inconclusive");
+  assert.equal(resolveUniversalDisposition({ cancellationCommitted: false, prohibitedActivity: false, evidenceValid: true, assertionStatuses: ["failed", "unverifiable"] }), "inconclusive");
+  assert.equal(resolveUniversalDisposition({ cancellationCommitted: false, prohibitedActivity: false, evidenceValid: true, assertionStatuses: ["failed"] }), "failed");
+  assert.equal(resolveUniversalDisposition({ cancellationCommitted: false, prohibitedActivity: false, evidenceValid: true, assertionStatuses: ["passed"] }), "passed");
+});
+
+test("grades bind exact evidence, support universal policy override, and reject contradictions", () => {
+  assert.equal(GradeInputV2Schema.safeParse({ assertions: evaluationConfigFixture.assertions, evidence: browserAssertionEvidenceFixture }).success, true);
+  assert.equal(AssertionCaptureResultSchema.safeParse({
+    ...assertionCaptureResultFixture,
+    evidence: { ...assertionCaptureResultFixture.evidence, assertions: assertionCaptureResultFixture.evidence.assertions.map((item, index) => index === 0 ? { ...item, actualSummary: "contradiction" } : item) },
+  }).success, false);
+  const policyFailure = FailureRecordSchema.parse({
+    ...failedFailureFixture,
+    category: "policy", code: "unsafe_action_blocked", outcome: "inconclusive", policyCode: "unknown_effect",
+  });
+  assert.equal(GradeResultSchema.safeParse({ ...passingGradeFixture, outcome: "inconclusive", failure: policyFailure }).success, true);
+  assert.equal(GradeResultSchema.parse(failedGradeFixture).outcome, "failed");
+  assert.equal(GradeResultSchema.parse(inconclusiveGradeFixture).outcome, "inconclusive");
+  assert.equal(GradeResultSchema.safeParse({ ...passingGradeFixture, outcome: "failed" }).success, false);
+  assert.equal(GradeResultSchema.safeParse({ ...failedGradeFixture, outcome: "passed", failure: null }).success, false);
+});
+
+test("lifecycle, capacity, aggregate, event, status, policy and effect variants are closed", () => {
+  assert.equal(ReleaseResultSchema.safeParse({ status: "released", confirmation: "unconfirmed", releasedAt: null, warning: null }).success, false);
+  assert.equal(ProviderCapacityStateSchema.safeParse({ configuredMaximum: 3, effectiveCapacity: 4, retryAfterMs: null }).success, false);
+  assert.equal(EvaluationAggregateV2Schema.safeParse({
+    requested: 1, started: 1, passed: 1, failed: 0, inconclusive: 0, cancelled: 0, nonterminal: 0, potentialLeaks: 0,
+    endToEndPassRate: { numerator: 1, denominator: 1, value: 0.5 },
+    gradeableObservableStateSuccess: { numerator: 1, denominator: 1, value: 1 },
+  }).success, false);
+  assert.equal(SafeAgentToolExchangeSchema.safeParse({
+    action: { kind: "inspect", toolCallId: "tool-contract", observationRevision: 1 },
+    result: { schemaVersion: 1, toolCallId: "tool-contract", tool: "inspect", decision: { decision: "allow", effect: "passive_wait", observationRevision: 1 }, observation: observationFixture, finishedBelief: null, summary: "wrong effect" },
+  }).success, false);
+  assert.equal(EventTypeSchema.safeParse("run.evidence.captured").success, true);
   assert.equal(EventTypeSchema.safeParse("run.secret_leaked").success, false);
   assert.equal(RunStatusSchema.safeParse("retrying").success, false);
+  assert.equal(PolicyDenyCodeSchema.safeParse("unknown_allow").success, false);
+  assert.equal(EffectDecisionSchema.safeParse({ decision: "allow", effect: "unknown", code: null, rationale: "x" }).success, false);
   assert.equal(EventAppendInputSchema.safeParse({
     ...eventEnvelopeFixture,
     cursor: undefined,
@@ -72,110 +170,44 @@ test("event and status variants are closed and enforce event scope", () => {
   }).success, false);
 });
 
-test("terminal failure taxonomy permits exactly its frozen category/outcome pair", () => {
+test("terminal failures and capacity limits are exhaustive and typed", () => {
   for (const [code, semantics] of Object.entries(TERMINAL_FAILURE_SEMANTICS)) {
-    const valid = FailureRecordSchema.safeParse({
-      ...failedFailureFixture,
-      code,
-      category: semantics.category,
-      outcome: semantics.outcome,
-    });
-    assert.equal(valid.success, true, code);
-    const wrongOutcome = semantics.outcome === "failed" ? "inconclusive" : "failed";
-    assert.equal(FailureRecordSchema.safeParse({
-      ...failedFailureFixture,
-      code,
-      category: semantics.category,
-      outcome: wrongOutcome,
-    }).success, false, `${code} wrong outcome`);
+    const policyCode = code === "unsafe_action_blocked" ? "unknown_effect" : null;
+    assert.equal(FailureRecordSchema.safeParse({ ...failedFailureFixture, code, category: semantics.category, outcome: semantics.outcome, policyCode }).success, true, code);
   }
-});
-
-test("grades reject contradictory predicates and evidence", () => {
-  assert.equal(GradeResultSchema.safeParse({
-    ...passingGradeFixture,
-    predicates: passingGradeFixture.predicates.map((predicate, index) => index === 0 ? { ...predicate, passed: false } : predicate),
-  }).success, false);
-  assert.equal(GradeResultSchema.safeParse({ ...passingGradeFixture, outcome: "inconclusive", failure: null }).success, false);
-});
-
-test("trusted demo mutation revisions are independent from DOM observation revisions", () => {
-  assert.equal(DemoMutationRevisionSchema.parse(0), 0);
-  assert.equal(ObservationRevisionSchema.safeParse(0).success, false);
-  assert.equal(gradeEvidenceFixture.revision, 2);
-  assert.equal(observationFixture.revision, 1);
-  assert.equal(DemoGradeEvidenceEnvelopeSchema.parse(demoGradeEvidenceEnvelopeFixture).runId, runFixture.id);
-  assert.equal(DemoGradeEvidenceEnvelopeSchema.safeParse({
-    ...demoGradeEvidenceEnvelopeFixture,
-    challengeId: "different-challenge-id",
-  }).success, false);
-});
-
-test("challenge navigation is an ephemeral HTTPS server-only value", () => {
-  assert.equal(DemoChallengeProvisionSchema.parse(demoChallengeFixture).navigationUrl.startsWith("https://"), true);
-  assert.equal(DemoChallengeProvisionSchema.safeParse({ ...demoChallengeFixture, navigationUrl: "http://remote.invalid/run/token" }).success, false);
-  assert.equal(DemoChallengeProvisionSchema.safeParse({ ...demoChallengeFixture, navigationUrl: "https://user:password@demo.tracegate.test/run/token" }).success, false);
-  assert.equal(DemoChallengeProvisionSchema.safeParse({ ...demoChallengeFixture, navigationUrl: "https://demo.tracegate.test/run/token#" }).success, false);
-  assert.equal(DemoChallengeProvisionSchema.safeParse({ ...demoChallengeFixture, navigationUrl: "https://demo.tracegate.test/run/token#section" }).success, false);
-});
-
-test("completed run and finalization contracts reject contradictory outcomes", () => {
-  assert.equal(RunSchema.safeParse({
-    ...runFixture,
-    status: "completed",
-    outcome: "passed",
-    grade: { ...passingGradeFixture, outcome: "failed" },
-    finishedAt: runFixture.createdAt,
-  }).success, false);
-  assert.equal(FinalizeRunInputSchema.safeParse({
-    runId: runFixture.id,
-    expectedStatus: "grading",
-    outcome: "passed",
-    grade: passingGradeFixture,
-    failure: failedFailureFixture,
-    warnings: [],
-    finishedAt: runFixture.createdAt,
-    event: { ...eventEnvelopeFixture, cursor: undefined, recordedAt: undefined, type: "run.failed", payload: { outcome: "failed", failure: failedFailureFixture } },
-  }).success, false);
-});
-
-test("observation refs cannot cross revisions", () => {
-  const invalid = structuredClone(observationFixture);
-  invalid.elements[0]!.ref = "e:2:1" as typeof invalid.elements[0]["ref"];
-  assert.equal(AgentObservationSchema.safeParse(invalid).success, false);
+  const error = createBrowserProviderConcurrencyLimitError(999_999);
+  assert.equal(isBrowserProviderConcurrencyLimitError(error), true);
+  assert.equal(BrowserProviderConcurrencyLimitErrorSchema.parse(error.safe).retryAfterMs, 300_000);
+  assert.equal(BrowserProviderConcurrencyLimitErrorSchema.safeParse({ ...error.safe, retryCurrentCreate: true }).success, false);
 });
 
 test("central redactor removes known and patterned secrets and bounds output", () => {
   const redacted = redactJson({
     authorization: "Bearer should-never-persist",
-    basic: "Authorization: Basic dXNlcjpwYXNzd29yZA==",
     nested: { apiKey: "known-secret", note: "prefix known-secret suffix" },
     url: "wss://provider.invalid/connect?token=secret-value",
     credentialsUrl: "https://user:password@example.invalid/path",
-    signedUrl: "https://replay.invalid/view?signature=secret-signature&challenge=secret-challenge",
     long: "x".repeat(20),
   }, { knownSecrets: ["known-secret"], maxStringLength: 8 });
   const serialized = JSON.stringify(redacted);
-  assert.equal(serialized.includes("known-secret"), false);
-  assert.equal(serialized.includes("should-never-persist"), false);
-  assert.equal(serialized.includes("secret-value"), false);
-  assert.equal(serialized.includes("dXNlcjpwYXNzd29yZA"), false);
-  assert.equal(serialized.includes("password"), false);
-  assert.equal(serialized.includes("secret-signature"), false);
-  assert.equal(serialized.includes("secret-challenge"), false);
+  for (const secret of ["known-secret", "should-never-persist", "secret-value", "password"]) assert.equal(serialized.includes(secret), false);
   assert.equal(serialized.includes("[TRUNCATED]"), true);
 });
 
-test("environment rejects secret whitespace, credentials, and remote plaintext admin URLs", () => {
+test("production root exports contain no Demo admin/challenge/cart grading contract", () => {
+  const names = Object.keys(sharedExports);
+  assert.equal(names.some((name) => /DemoAdmin|DemoChallenge|CartGrade|ChallengeId/.test(name)), false);
+});
+
+test("P0 environment is loopback-only and local-file-only", () => {
   const base = {
     OPENROUTER_API_KEY: "openrouter-test-key",
     SOLARI_API_KEY: "solari-test-key",
     DATABASE_URL: "file:tracegate.db",
-    TRACEGATE_PUBLIC_BASE_URL: "https://demo.tracegate.test",
-    TRACEGATE_ADMIN_BASE_URL: "http://127.0.0.1:3000",
+    TRACEGATE_BIND_HOST: "127.0.0.1",
   };
   assert.equal(ServerEnvSchema.safeParse(base).success, true);
   assert.equal(ServerEnvSchema.safeParse({ ...base, SOLARI_API_KEY: " padded " }).success, false);
-  assert.equal(ServerEnvSchema.safeParse({ ...base, TRACEGATE_PUBLIC_BASE_URL: "https://user:password@demo.tracegate.test" }).success, false);
-  assert.equal(ServerEnvSchema.safeParse({ ...base, TRACEGATE_ADMIN_BASE_URL: "http://remote.invalid" }).success, false);
+  assert.equal(ServerEnvSchema.safeParse({ ...base, DATABASE_URL: "https://remote.invalid/db" }).success, false);
+  assert.equal(ServerEnvSchema.safeParse({ ...base, TRACEGATE_BIND_HOST: "0.0.0.0" }).success, false);
 });

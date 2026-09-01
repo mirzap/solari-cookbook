@@ -8,7 +8,6 @@ export const WebMcpGateStateSchema = z.enum([
   "unavailable",
   "available_disabled",
   "discover_only",
-  "allowlisted_demo_tools",
 ]);
 
 export const DiscoveredInterfaceSchema = z.object({

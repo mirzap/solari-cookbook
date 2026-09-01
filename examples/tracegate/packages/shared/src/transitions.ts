@@ -1,6 +1,7 @@
+import { z } from "zod";
 import type { ControlError } from "./errors.ts";
 import { createControlError } from "./errors.ts";
-import type { EvaluationStatus, LeaseDisposition, RunStatus, TransitionMode } from "./states.ts";
+import { LeaseDispositionSchema, TransitionModeSchema, type EvaluationStatus, type RunStatus } from "./states.ts";
 
 export const EVALUATION_TRANSITIONS: Readonly<Record<EvaluationStatus, readonly EvaluationStatus[]>> = {
   queued: ["running", "cancelling", "failed"],
@@ -25,10 +26,11 @@ const normalRunTransitions: Readonly<Record<RunStatus, readonly RunStatus[]>> = 
 
 export const RUN_TRANSITIONS = normalRunTransitions;
 
-export interface RunTransitionContext {
-  mode: TransitionMode;
-  leaseDisposition: LeaseDisposition;
-}
+export const RunTransitionContextSchema = z.object({
+  mode: TransitionModeSchema,
+  leaseDisposition: LeaseDispositionSchema,
+});
+export type RunTransitionContext = z.infer<typeof RunTransitionContextSchema>;
 
 export type TransitionValidation = { ok: true } | { ok: false; error: ControlError };
 

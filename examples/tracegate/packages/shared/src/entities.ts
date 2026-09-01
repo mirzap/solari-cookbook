@@ -22,7 +22,7 @@ import {
 } from "./states.ts";
 
 export const EvaluationSchema = z.object({
-  schemaVersion: z.literal(1),
+  schemaVersion: z.literal(2),
   id: EvaluationIdSchema,
   config: EvaluationConfigSchema,
   status: EvaluationStatusSchema,
@@ -38,7 +38,7 @@ export const EvaluationSchema = z.object({
 });
 
 export const RunSchema = z.object({
-  schemaVersion: z.literal(1),
+  schemaVersion: z.literal(2),
   id: RunIdSchema,
   evaluationId: EvaluationIdSchema,
   runIndex: z.number().int().nonnegative(),
@@ -79,6 +79,9 @@ export const RunSchema = z.object({
   if ((value.outcome === "failed" || value.outcome === "inconclusive") && value.failure?.outcome !== value.outcome) {
     context.addIssue({ code: "custom", path: ["failure"], message: "non-passing outcome requires matching terminal failure" });
   }
+  if (value.grade !== null && JSON.stringify(value.grade.failure) !== JSON.stringify(value.failure)) {
+    context.addIssue({ code: "custom", path: ["failure"], message: "run and grade must share the authoritative terminal failure" });
+  }
   if (value.status === "cancelled" && (value.grade !== null || value.failure !== null)) {
     context.addIssue({ code: "custom", path: ["grade"], message: "cancelled run has no grade or terminal failure" });
   }
@@ -89,27 +92,35 @@ export const RunSchema = z.object({
 });
 
 export const RunStepSchema = z.object({
-  schemaVersion: z.literal(1),
+  schemaVersion: z.literal(2),
   runId: RunIdSchema,
   sequence: RunSequenceSchema,
   kind: z.enum(["browser_action", "tool", "model", "discovery", "grading", "warning"]),
   payload: JsonObjectSchema,
-  interactionMode: z.enum(["semantic", "native", "system"]),
+  interactionMode: z.enum(["semantic", "safe_tool", "system"]),
   observationRevision: ObservationRevisionSchema.nullable(),
   durationMs: z.number().int().nonnegative().nullable(),
   occurredAt: UtcDateTimeSchema,
 });
 
 export const BrowserSessionSummarySchema = z.object({
-  schemaVersion: z.literal(1),
+  schemaVersion: z.literal(2),
   runId: RunIdSchema,
   providerSessionId: BrowserSessionIdSchema,
   region: z.string().min(1).max(100).nullable(),
   acquiredAt: UtcDateTimeSchema,
   releasedAt: UtcDateTimeSchema.nullable(),
   releaseStatus: ReleaseStatusSchema,
+  releaseConfirmed: z.boolean(),
   replayStatus: ReplayStatusSchema,
   recordingRequested: z.boolean(),
+}).superRefine((value, context) => {
+  if ((value.releaseStatus === "released") !== value.releaseConfirmed) {
+    context.addIssue({ code: "custom", path: ["releaseConfirmed"], message: "only explicitly confirmed release may use released status" });
+  }
+  if (value.releaseConfirmed !== (value.releasedAt !== null)) {
+    context.addIssue({ code: "custom", path: ["releasedAt"], message: "releasedAt exists exactly for confirmed release" });
+  }
 });
 
 export type Evaluation = z.infer<typeof EvaluationSchema>;

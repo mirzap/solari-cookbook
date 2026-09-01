@@ -1,38 +1,38 @@
-import type { AgentRunResult } from "../agent.ts";
+import type { AgentExecutionInputV2, AgentRunResult } from "../agent.ts";
 import type { DiscoveryEvidence } from "../discovery.ts";
-import type {
-  CreateDemoChallengeRequest,
-  DemoChallengeProvision,
-  DemoGradeEvidenceEnvelope,
-  GetDemoGradeEvidenceRequest,
-} from "../demo.ts";
-import type { FailureAnalysis, GradeResult } from "../grading.ts";
+import type { AssertionCaptureResult } from "../evidence.ts";
+import type { FailureAnalysis, GradeInputV2, GradeResultV2 } from "../grading.ts";
 import {
+  CreateAttemptCorrelationIdSchema,
   EvaluationIdSchema,
   EventIdSchema,
   RunIdSchema,
   type BrowserSessionId,
+  type CreateAttemptCorrelationId,
   type EvaluationId,
   type EventId,
   type RunId,
 } from "../ids.ts";
 import type {
-  AgentRunContext,
   AgentRunner,
+  AssertionCaptureInput,
+  AssertionEvidenceCapture,
+  BrowserController,
+  Clock,
   DiscoveryContext,
   DiscoveryController,
-  DemoAdminPort,
   FailureAnalysisContext,
   FailureAnalyzer,
-  GradeContext,
   Grader,
   IdGenerator,
   ReplayAccessResult,
   ReplayService,
   ReplayStatusResult,
+  SafeAgentToolPort,
   SensitiveReplayUrl,
+  TargetAdmissionPort,
 } from "../ports.ts";
-import type { Clock } from "../ports.ts";
+import type { PublicEvaluationTargetV2, TargetAdmissionResult } from "../targets.ts";
 
 const throwIfAborted = (signal: AbortSignal) => {
   if (signal.aborted) throw new DOMException("The operation was aborted", "AbortError");
@@ -51,6 +51,20 @@ export class SequentialIdGenerator implements IdGenerator {
   evaluationId(): EvaluationId { return EvaluationIdSchema.parse(this.#raw()); }
   runId(): RunId { return RunIdSchema.parse(this.#raw()); }
   eventId(): EventId { return EventIdSchema.parse(this.#raw()); }
+  createAttemptCorrelationId(): CreateAttemptCorrelationId { return CreateAttemptCorrelationIdSchema.parse(`create-${this.#raw()}`); }
+}
+
+export class FakeTargetAdmissionPort implements TargetAdmissionPort {
+  readonly calls: PublicEvaluationTargetV2[] = [];
+  #result: TargetAdmissionResult;
+
+  constructor(result: TargetAdmissionResult) { this.#result = clone(result); }
+
+  async assess(target: PublicEvaluationTargetV2, signal: AbortSignal): Promise<TargetAdmissionResult> {
+    throwIfAborted(signal);
+    this.calls.push(clone(target));
+    return clone(this.#result);
+  }
 }
 
 export class FakeDiscoveryController implements DiscoveryController {
@@ -66,60 +80,39 @@ export class FakeDiscoveryController implements DiscoveryController {
 }
 
 export class FakeAgentRunner implements AgentRunner {
-  readonly calls: AgentRunContext[] = [];
+  readonly calls: Array<{ input: AgentExecutionInputV2; safeTools: SafeAgentToolPort }> = [];
   #result: AgentRunResult;
 
   constructor(result: AgentRunResult) { this.#result = clone(result); }
-  async run(context: AgentRunContext, signal: AbortSignal): Promise<AgentRunResult> {
+  async run(input: AgentExecutionInputV2, safeTools: SafeAgentToolPort, signal: AbortSignal): Promise<AgentRunResult> {
     throwIfAborted(signal);
-    this.calls.push(context);
+    this.calls.push({ input: clone(input), safeTools });
+    return clone(this.#result);
+  }
+}
+
+export class FakeAssertionEvidenceCapture implements AssertionEvidenceCapture {
+  readonly calls: Array<{ controller: BrowserController; input: AssertionCaptureInput }> = [];
+  #result: AssertionCaptureResult;
+
+  constructor(result: AssertionCaptureResult) { this.#result = clone(result); }
+
+  async capture(controller: BrowserController, input: AssertionCaptureInput, signal: AbortSignal): Promise<AssertionCaptureResult> {
+    throwIfAborted(signal);
+    this.calls.push({ controller, input: clone(input) });
     return clone(this.#result);
   }
 }
 
 export class FakeGrader implements Grader {
-  readonly calls: GradeContext[] = [];
-  #result: GradeResult;
+  readonly calls: GradeInputV2[] = [];
+  #result: GradeResultV2;
 
-  constructor(result: GradeResult) { this.#result = clone(result); }
-  async grade(context: GradeContext, signal: AbortSignal): Promise<GradeResult> {
+  constructor(result: GradeResultV2) { this.#result = clone(result); }
+  async grade(input: GradeInputV2, signal: AbortSignal): Promise<GradeResultV2> {
     throwIfAborted(signal);
-    this.calls.push(clone(context));
+    this.calls.push(clone(input));
     return clone(this.#result);
-  }
-}
-
-export class FakeDemoAdminPort implements DemoAdminPort {
-  readonly createCalls: CreateDemoChallengeRequest[] = [];
-  readonly evidenceCalls: GetDemoGradeEvidenceRequest[] = [];
-  #challenge: DemoChallengeProvision;
-  #evidence: DemoGradeEvidenceEnvelope;
-
-  constructor(challenge: DemoChallengeProvision, evidence: DemoGradeEvidenceEnvelope) {
-    this.#challenge = clone(challenge);
-    this.#evidence = clone(evidence);
-  }
-
-  async createChallenge(request: CreateDemoChallengeRequest, signal: AbortSignal): Promise<DemoChallengeProvision> {
-    throwIfAborted(signal);
-    this.createCalls.push(clone(request));
-    if (
-      request.evaluationId !== this.#challenge.evaluationId
-      || request.runId !== this.#challenge.runId
-      || request.challengeId !== this.#challenge.challengeId
-    ) {
-      throw new Error("Configured Demo challenge does not match the create request identity");
-    }
-    return clone(this.#challenge);
-  }
-
-  async getGradeEvidence(request: GetDemoGradeEvidenceRequest, signal: AbortSignal): Promise<DemoGradeEvidenceEnvelope> {
-    throwIfAborted(signal);
-    this.evidenceCalls.push(clone(request));
-    if (request.runId !== this.#evidence.runId || request.challengeId !== this.#evidence.challengeId) {
-      throw new Error("Configured Demo grade evidence does not match the request identity");
-    }
-    return clone(this.#evidence);
   }
 }
 
