@@ -1,0 +1,13 @@
+packages:
+  - 'apps/*'
+  - 'packages/*'
+  - 'tests/*'
+
+storeDir: .pnpm-store
+
+allowBuilds:
+  '@openrouter/sdk': false
+  esbuild: true
+
+minimumReleaseAgeExclude:
+  - '@solarisdk/browser@0.1.2'

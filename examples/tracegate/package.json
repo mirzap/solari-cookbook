@@ -1,0 +1,45 @@
+{
+  "name": "@tracegate/workspace",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@12.0.0",
+  "engines": {
+    "node": "26.1.0",
+    "pnpm": "12.0.0"
+  },
+  "scripts": {
+    "build": "turbo run build",
+    "lint": "turbo run lint",
+    "typecheck": "turbo run typecheck",
+    "test": "turbo run test",
+    "test:integration": "turbo run test:integration",
+    "test:e2e:local": "turbo run test:e2e:local",
+    "probe:runtime": "node --version && pnpm --version && tsc --version && turbo --version && drizzle-kit --version && vite --version",
+    "verify": "turbo run lint typecheck test build"
+  },
+  "devDependencies": {
+    "@libsql/client": "0.17.4",
+    "@solarisdk/browser": "0.1.2",
+    "@solarisdk/sdk": "0.1.2",
+    "@tanstack/ai": "0.52.0",
+    "@tanstack/ai-openrouter": "0.19.5",
+    "@tanstack/ai-react": "0.22.4",
+    "@tanstack/react-query": "5.102.8",
+    "@tanstack/react-router": "1.170.32",
+    "@tanstack/react-start": "1.168.49",
+    "@types/node": "26.4.0",
+    "@types/react": "19.2.18",
+    "@types/react-dom": "19.2.5",
+    "@vitejs/plugin-react": "6.1.1",
+    "drizzle-kit": "0.31.10",
+    "drizzle-orm": "0.45.2",
+    "playwright-core": "1.62.1",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "turbo": "2.10.12",
+    "typescript": "7.0.2",
+    "vite": "8.2.2",
+    "zod": "4.5.4"
+  }
+}
