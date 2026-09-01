@@ -2,7 +2,14 @@ import { z } from "zod";
 import { SafeAgentToolNameSchema } from "./agent.ts";
 import { InterfaceModeSchema } from "./config.ts";
 import { DiscoveryEvidenceSchema } from "./discovery.ts";
-import { ControlErrorSchema, FailureRecordSchema, RunWarningSchema } from "./errors.ts";
+import {
+  ControlErrorSchema,
+  ErrorCategorySchema,
+  FailureRecordSchema,
+  RunWarningSchema,
+  SafeErrorCodeSchema,
+  type FailureRecord,
+} from "./errors.ts";
 import { GradeResultV2Schema } from "./grading.ts";
 import {
   EventCursorSchema,
@@ -19,7 +26,15 @@ import {
   ToolInterfaceSourceSchema,
   type InterfaceChannel,
 } from "./mcp.ts";
-import { PolicyActivitySchema, PolicyDenyCodeSchema } from "./policy.ts";
+import {
+  BrowserPolicyActionScopeSchema,
+  BrowserPolicyDiagnosticV1Schema,
+  PolicyActivitySchema,
+  PolicyDenyCodeSchema,
+  PolicyDiagnosticMethodClassSchema,
+  PolicyDiagnosticResourceTypeSchema,
+  type BrowserPolicyDiagnosticV1,
+} from "./policy.ts";
 import { ModelIdSchema } from "./models.ts";
 import { AdmissionReasonCodeSchema } from "./targets.ts";
 import { RunOutcomeSchema, RunStatusSchema, TransitionModeSchema } from "./states.ts";
@@ -73,6 +88,37 @@ const countSummary = z.object({
   potentialLeaks: z.number().int().nonnegative(),
 }).strict();
 
+export const RunToolCompletionFailurePhaseSchema = z.enum([
+  "proposal_admission",
+  "pre_dispatch_validation",
+  "runtime_dispatch",
+  "browser_policy",
+  "post_dispatch_validation",
+  "unknown",
+]);
+export type RunToolCompletionFailurePhase = z.infer<typeof RunToolCompletionFailurePhaseSchema>;
+
+export const RunToolCompletionFailureV1Schema = z.object({
+  schemaVersion: z.literal(1),
+  code: SafeErrorCodeSchema,
+  category: ErrorCategorySchema,
+  phase: RunToolCompletionFailurePhaseSchema,
+  browserPolicyDiagnostic: BrowserPolicyDiagnosticV1Schema.optional(),
+}).strict().superRefine((value, context) => {
+  if (value.browserPolicyDiagnostic !== undefined && !(
+    value.code === "unsafe_action_blocked" &&
+    value.category === "policy" &&
+    value.phase === "browser_policy"
+  )) {
+    context.addIssue({
+      code: "custom",
+      path: ["browserPolicyDiagnostic"],
+      message: "browser policy diagnostic is allowed only for browser-policy unsafe-action failures",
+    });
+  }
+});
+export type RunToolCompletionFailureV1 = z.infer<typeof RunToolCompletionFailureV1Schema>;
+
 const runToolCompletionBase = {
   toolCallId: ToolCallIdSchema,
   tool: SafeAgentToolNameSchema,
@@ -87,18 +133,38 @@ export const LegacyRunToolCompletedEventPayloadSchema = z.object({
   success: z.boolean(),
 }).strict();
 
-export const DispatchAwareRunToolCompletedEventPayloadSchema = z.discriminatedUnion("dispatchDisposition", [
-  z.object({
-    ...runToolCompletionBase,
-    dispatchDisposition: z.literal("dispatched"),
-    success: z.boolean(),
-  }).strict(),
-  z.object({
-    ...runToolCompletionBase,
-    dispatchDisposition: z.literal("rejected_before_dispatch"),
-    success: z.literal(false),
-  }).strict(),
+const dispatchAwareSuccessfulCompletionSchema = z.object({
+  ...runToolCompletionBase,
+  dispatchDisposition: z.literal("dispatched"),
+  success: z.literal(true),
+}).strict();
+
+const dispatchAwareFailedCompletionSchema = z.object({
+  ...runToolCompletionBase,
+  dispatchDisposition: z.literal("dispatched"),
+  success: z.literal(false),
+  failure: RunToolCompletionFailureV1Schema.optional(),
+}).strict();
+
+const dispatchAwareRejectedCompletionSchema = z.object({
+  ...runToolCompletionBase,
+  dispatchDisposition: z.literal("rejected_before_dispatch"),
+  success: z.literal(false),
+  failure: RunToolCompletionFailureV1Schema.optional(),
+}).strict();
+
+export const DispatchAwareRunToolCompletedEventPayloadSchema = z.union([
+  dispatchAwareSuccessfulCompletionSchema,
+  dispatchAwareFailedCompletionSchema,
+  dispatchAwareRejectedCompletionSchema,
 ]);
+
+export const FailureAwareRunToolCompletedEventPayloadSchema = z.union([
+  dispatchAwareSuccessfulCompletionSchema,
+  dispatchAwareFailedCompletionSchema.required({ failure: true }),
+  dispatchAwareRejectedCompletionSchema.required({ failure: true }),
+]);
+export type FailureAwareRunToolCompletedEventPayload = z.infer<typeof FailureAwareRunToolCompletedEventPayloadSchema>;
 
 export const RunToolCompletedEventPayloadSchema = z.union([
   DispatchAwareRunToolCompletedEventPayloadSchema,
@@ -109,6 +175,11 @@ export type RunToolCompletedEventPayload = z.infer<typeof RunToolCompletedEventP
 export const DispatchAwareRunToolCompletedEventSchema = event(
   "run.tool.completed",
   DispatchAwareRunToolCompletedEventPayloadSchema,
+);
+
+export const FailureAwareRunToolCompletedEventSchema = event(
+  "run.tool.completed",
+  FailureAwareRunToolCompletedEventPayloadSchema,
 );
 
 const runToolCompletedEventSchema = event(
@@ -137,6 +208,80 @@ export function resolveToolDispatchDisposition(
 ): EffectiveToolDispatchDisposition {
   if ("dispatchDisposition" in payload) return payload.dispatchDisposition;
   return payload.success ? "dispatched" : "legacy_unclassified";
+}
+
+const BROWSER_POLICY_DIAGNOSTIC_ISSUE_CODE = "first_fatal_policy_context";
+const BROWSER_POLICY_DIAGNOSTIC_PATHS = {
+  policyCode: "browserPolicy.firstFatal.policyCode",
+  actionScope: "browserPolicy.firstFatal.actionScope",
+  methodClass: "browserPolicy.firstFatal.methodClass",
+  resourceType: "browserPolicy.firstFatal.resourceType",
+  mainFrame: "browserPolicy.firstFatal.mainFrame",
+  sameOrigin: "browserPolicy.firstFatal.sameOrigin",
+} as const;
+const browserPolicyDiagnosticPathSet = new Set<string>(Object.values(BROWSER_POLICY_DIAGNOSTIC_PATHS));
+
+function parseNullablePolicyBoolean(value: string): { readonly ok: true; readonly value: boolean | null } | { readonly ok: false } {
+  if (value === "true") return { ok: true, value: true };
+  if (value === "false") return { ok: true, value: false };
+  if (value === "unknown") return { ok: true, value: null };
+  return { ok: false };
+}
+
+export function browserPolicyDiagnosticFromFailureRecord(
+  failure: FailureRecord,
+): BrowserPolicyDiagnosticV1 | null {
+  if (
+    failure.code !== "unsafe_action_blocked" ||
+    failure.category !== "policy" ||
+    failure.phase !== "browser_policy" ||
+    failure.policyCode === null
+  ) return null;
+
+  const candidateIssues = failure.fieldIssues.filter((issue) => browserPolicyDiagnosticPathSet.has(issue.path));
+  if (candidateIssues.length !== browserPolicyDiagnosticPathSet.size ||
+      candidateIssues.some((issue) => issue.code !== BROWSER_POLICY_DIAGNOSTIC_ISSUE_CODE)) return null;
+
+  const values = new Map<string, string>();
+  for (const issue of candidateIssues) {
+    if (values.has(issue.path)) return null;
+    values.set(issue.path, issue.message);
+  }
+  if (values.size !== browserPolicyDiagnosticPathSet.size) return null;
+
+  const policyCode = PolicyDenyCodeSchema.safeParse(values.get(BROWSER_POLICY_DIAGNOSTIC_PATHS.policyCode));
+  const rawActionScope = values.get(BROWSER_POLICY_DIAGNOSTIC_PATHS.actionScope);
+  const actionScope = rawActionScope === "none"
+    ? { success: true as const, data: null }
+    : BrowserPolicyActionScopeSchema.safeParse(rawActionScope);
+  const methodClass = PolicyDiagnosticMethodClassSchema.safeParse(values.get(BROWSER_POLICY_DIAGNOSTIC_PATHS.methodClass));
+  const resourceType = PolicyDiagnosticResourceTypeSchema.safeParse(values.get(BROWSER_POLICY_DIAGNOSTIC_PATHS.resourceType));
+  const mainFrame = parseNullablePolicyBoolean(values.get(BROWSER_POLICY_DIAGNOSTIC_PATHS.mainFrame) ?? "");
+  const sameOrigin = parseNullablePolicyBoolean(values.get(BROWSER_POLICY_DIAGNOSTIC_PATHS.sameOrigin) ?? "");
+
+  if (!policyCode.success || policyCode.data !== failure.policyCode || !actionScope.success ||
+      !methodClass.success || !resourceType.success || !mainFrame.ok || !sameOrigin.ok) return null;
+
+  return BrowserPolicyDiagnosticV1Schema.parse({
+    schemaVersion: 1,
+    policyCode: policyCode.data,
+    actionScope: actionScope.data,
+    methodClass: methodClass.data,
+    resourceType: resourceType.data,
+    mainFrame: mainFrame.value,
+    sameOrigin: sameOrigin.value,
+  });
+}
+
+export type ToolCompletionBrowserActionDelta = 0 | 1 | null;
+
+export function toolCompletionBrowserActionDelta(
+  payload: RunToolCompletedEventPayload,
+): ToolCompletionBrowserActionDelta {
+  const disposition = resolveToolDispatchDisposition(payload);
+  if (disposition === "legacy_unclassified") return null;
+  if (disposition === "rejected_before_dispatch" || payload.tool === "finish") return 0;
+  return 1;
 }
 
 export type ToolCompletionInterfaceUsageDelta = Readonly<{

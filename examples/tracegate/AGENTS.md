@@ -65,17 +65,31 @@ The F2C integration checkpoint is blocked until C and D adopt the A-owned termin
 
 **C-lane emission handoff (`packages/agent`):**
 
-1. Construct every newly emitted terminal completion with `DispatchAwareRunToolCompletedEventSchema` (or its required payload schema); do not use the legacy branch for new events.
-2. Emit `rejected_before_dispatch` for rejected admission, malformed or unavailable actions, policy/stale/equivalent rejection, and abort/timeout before port entry. Emit `dispatched` for allow/deny results, port throws, post-dispatch validation failures, and abort/timeout after port entry.
-3. Track the boundary directly rather than inferring it from the eventual error. Recovery `inspect` calls do not change the original proposal's disposition and do not create another model-requested invocation.
-4. Keep the existing strict tool/source vocabularies, bounded redacted summaries, and usage non-fabrication rules.
+1. Construct every newly emitted terminal completion with `FailureAwareRunToolCompletedEventSchema` (or its required payload schema). A success has no `failure`; every newly emitted unsuccessful completion has exactly one `RunToolCompletionFailureV1`. The compatibility reader still accepts older dispatch-aware failures without that field and legacy events without a disposition.
+2. Emit `rejected_before_dispatch` for rejected admission, malformed or unavailable actions, policy/stale/equivalent rejection, and abort/timeout before port entry. Emit `dispatched` for allow/deny results, port throws, post-dispatch validation failures, and abort/timeout after port entry. Never alter the disposition to fit the failure classification.
+3. Track the boundary directly rather than inferring it from the eventual error. Recovery `inspect` calls do not change the original proposal's disposition, failure, or completion and do not create another model-requested invocation.
+4. Map the original proposal lifecycle to the closed failure phases: initial admission/driver rejection → `proposal_admission`; action/surface/policy/equivalent rejection before port entry → `pre_dispatch_validation`; entered-port failure or returned deny → `runtime_dispatch`; B-origin browser-policy enforcement → `browser_policy`; invalid returned exchange/fresh observation → `post_dispatch_validation`; use `unknown` only when the lifecycle boundary is genuinely unavailable.
+5. When available, copy only `code` and `category` from a successfully parsed `TraceGateError.safe`; never copy its free-form `phase`. For a non-TraceGate or unrecognized safe error, use `unexpected_run_error` / `unknown` with the known closed lifecycle phase. The required synthetic cases are:
+
+| C condition | code | category | phase |
+|---|---|---|---|
+| malformed or unavailable admission | `provider_protocol_error` | `model_provider` | `proposal_admission` |
+| malformed action after admission | `provider_protocol_error` | `model_provider` | `pre_dispatch_validation` |
+| equivalent semantic failure rejected before entry | `stale_element_exhausted` | `tool_error` | `pre_dispatch_validation` |
+| returned policy denial | `unsafe_action_blocked` | `policy` | `runtime_dispatch` |
+| unknown port failure | `unexpected_run_error` | `unknown` | `runtime_dispatch` |
+| unknown returned-result validation failure | `unexpected_run_error` | `unknown` | `post_dispatch_validation` |
+
+6. Obtain the optional B policy context only by passing a parsed `FailureRecord` to `browserPolicyDiagnosticFromFailureRecord(...)`; omit it when the helper returns `null`. Never parse or persist URL, DOM/selector, request/body data, provider/error/result text, cause chains, secrets, assertions, or arbitrary field-issue content. Preserve the existing strict tool/source vocabularies and bounded redacted human summary separately.
 
 **D-lane projection handoff (`packages/db`, then `apps/web` projection consumers):**
 
-1. Derive interface `invoked`, `succeeded`, and `failed` only from deduplicated `run.tool.completed` events, using `toolCompletionInterfaceUsageDelta(...)`; first terminal event per `toolCallId` wins. Ignore starts for all three counters.
-2. Apply one completion atomically: dispatched success increments `invoked + succeeded`; dispatched failure increments `invoked + failed`; rejected/unclassified/orchestration completions increment none. This preserves `succeeded + failed === invoked` at every persisted cursor, including started-only and crash-truncated histories.
-3. Treat an explicit persisted `(invoked, succeeded, failed)` tuple atomically as a legacy fallback only when that channel has no tool trace activity; never mix an invoked count from starts/explicit state with outcomes from completions. Discovery/admission projection and the shared interface-usage invariants remain unchanged.
-4. D must land the compatible reader before C begins persisting dispatch-aware events. The checkpoint remains blocked until both handoffs compile and production projection is manually inspected; automated tests remain paused.
+1. Land the compatible shared reader before C emits failure-aware events. Persist the optional closed `failure` object as event payload JSON; no migration is required. Never derive structured diagnostics from `resultSummary`, error messages, starts, or other text.
+2. Derive interface `invoked`, `succeeded`, and `failed` only from deduplicated `run.tool.completed` events, using `toolCompletionInterfaceUsageDelta(...)`; first terminal event per `toolCallId` by cursor wins. Ignore starts for all three counters.
+3. Apply one completion atomically: dispatched success increments `invoked + succeeded`; dispatched failure increments `invoked + failed`; rejected/unclassified/orchestration completions increment none. This preserves `succeeded + failed === invoked` at every persisted cursor, including started-only and crash-truncated histories.
+4. Recover event-derived `browserActions` from the same first terminal completions with `toolCompletionBrowserActionDelta(...)`: `1` increments, `0` does not, and `null` makes the event history unclassifiable. A dispatched non-`finish` completion counts regardless of success; rejected-before-dispatch and dispatched `finish` do not. Legacy success remains proof of dispatch; legacy failure remains unclassified and must never be guessed. Starts and internal recovery calls do not supply missing model-requested completions.
+5. When at least one first terminal completion exists and every browser-action delta is non-null, use their summed event total atomically. When there are no terminal completions or any delta is `null`, use the explicit persisted `browserActions` value atomically; never add a partial event total to persisted state. Likewise treat an explicit persisted `(invoked, succeeded, failed)` tuple atomically as a legacy fallback only when that channel has no tool trace activity. Discovery/admission projection and shared interface-usage invariants remain unchanged.
+6. Rollout order is shared contract → D reader/projection → C producer. After C emits a failure-aware row, rollback must retain the compatible reader even if C emission is disabled. The checkpoint remains blocked until both handoffs compile and production projection is manually inspected; automated tests remain paused.
 
 ## Recovery step 6 assertion-capture seam
 

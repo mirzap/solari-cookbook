@@ -63,6 +63,13 @@ export const ControlErrorCodeSchema = z.enum([
   "internal_error",
 ]);
 
+export const SafeErrorCodeSchema = z.union([
+  TerminalFailureCodeSchema,
+  WarningCodeSchema,
+  ControlErrorCodeSchema,
+  z.literal("concurrency_limit_exceeded"),
+]);
+
 export const FieldIssueSchema = z.object({
   path: z.string().max(512),
   code: z.string().min(1).max(128),
@@ -156,6 +163,7 @@ export const SafeErrorSchema = z.union([
 
 export type ErrorCategory = z.infer<typeof ErrorCategorySchema>;
 export type TerminalFailureCode = z.infer<typeof TerminalFailureCodeSchema>;
+export type SafeErrorCode = z.infer<typeof SafeErrorCodeSchema>;
 export type FailureRecord = z.infer<typeof FailureRecordSchema>;
 export type RunWarning = z.infer<typeof RunWarningSchema>;
 export type ControlError = z.infer<typeof ControlErrorSchema>;

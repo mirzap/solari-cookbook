@@ -46,6 +46,55 @@ export const PolicyDenyCodeSchema = z.enum([
   "budget_exhausted",
 ]);
 
+export const BrowserPolicyActionScopeSchema = z.enum([
+  "navigation",
+  "direct_interaction",
+  "webmcp",
+]);
+
+export const PolicyDiagnosticMethodClassSchema = z.enum([
+  "get",
+  "head",
+  "other",
+  "not_applicable",
+]);
+
+export const PolicyDiagnosticResourceTypeSchema = z.enum([
+  "document",
+  "stylesheet",
+  "image",
+  "media",
+  "font",
+  "script",
+  "texttrack",
+  "xhr",
+  "fetch",
+  "eventsource",
+  "websocket",
+  "manifest",
+  "other",
+  "ping",
+  "beacon",
+  "cspviolationreport",
+  "prefetch",
+  "dialog",
+  "download",
+  "filechooser",
+  "popup",
+  "unknown",
+  "not_applicable",
+]);
+
+export const BrowserPolicyDiagnosticV1Schema = z.object({
+  schemaVersion: z.literal(1),
+  policyCode: PolicyDenyCodeSchema,
+  actionScope: BrowserPolicyActionScopeSchema.nullable(),
+  methodClass: PolicyDiagnosticMethodClassSchema,
+  resourceType: PolicyDiagnosticResourceTypeSchema,
+  mainFrame: z.boolean().nullable(),
+  sameOrigin: z.boolean().nullable(),
+}).strict();
+
 export const EffectDecisionSchema = z.discriminatedUnion("decision", [
   z.object({
     decision: z.literal("allow"),
@@ -89,6 +138,10 @@ export const PolicyActivitySummarySchema = z.object({
 export type SafetyPolicyVersionV1 = z.infer<typeof SafetyPolicyVersionV1Schema>;
 export type SafeActionEffect = z.infer<typeof SafeActionEffectSchema>;
 export type PolicyDenyCode = z.infer<typeof PolicyDenyCodeSchema>;
+export type BrowserPolicyActionScope = z.infer<typeof BrowserPolicyActionScopeSchema>;
+export type PolicyDiagnosticMethodClass = z.infer<typeof PolicyDiagnosticMethodClassSchema>;
+export type PolicyDiagnosticResourceType = z.infer<typeof PolicyDiagnosticResourceTypeSchema>;
+export type BrowserPolicyDiagnosticV1 = z.infer<typeof BrowserPolicyDiagnosticV1Schema>;
 export type EffectDecision = z.infer<typeof EffectDecisionSchema>;
 export type PolicyActivity = z.infer<typeof PolicyActivitySchema>;
 export type PolicyActivitySummary = z.infer<typeof PolicyActivitySummarySchema>;
