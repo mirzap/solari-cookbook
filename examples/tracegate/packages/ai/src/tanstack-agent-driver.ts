@@ -23,10 +23,15 @@ import type { TraceGateModelId } from './models.js'
 const DEEPSEEK = 'deepseek/deepseek-v4-flash-0731' as const
 type Adapter = ReturnType<typeof createOpenRouterText<TraceGateModelId>>
 
+interface RouteMetadata {
+  readonly attempts?: ReadonlyArray<{ readonly provider?: unknown; readonly status?: unknown }>
+  readonly endpoints?: { readonly available?: ReadonlyArray<{ readonly provider?: unknown; readonly selected?: unknown }> }
+}
+
 interface AdapterInternals {
   orClient: {
     chat: { send: (...args: unknown[]) => Promise<unknown> }
-    generations: { getGeneration: (request: { id: string }) => Promise<unknown> }
+    generations: { getGeneration: (request: { id: string }, options?: { signal?: AbortSignal }) => Promise<unknown> }
   }
 }
 
@@ -140,23 +145,52 @@ function safeGenerationId(value: unknown): string | null {
   return typeof value === 'string' && /^[A-Za-z0-9._-]{1,160}$/u.test(value) ? value : null
 }
 
-function observeGenerationIds(adapter: Adapter, ids: Set<string>): () => void {
-  const sender = (adapter as unknown as AdapterInternals).orClient.chat
+function safeProviderIdentity(value: unknown): string | null {
+  if (typeof value !== 'string' || !/^[A-Za-z0-9 ._/-]{1,100}$/u.test(value.trim())) return null
+  const provider = value.trim()
+  return provider.length > 0 && safeDiagnostic(provider) === provider ? provider : null
+}
+
+function observeGenerationIds(adapter: Adapter, ids: Set<string>, providers: Set<string>): () => void {
+  const internals = adapter as unknown as Partial<AdapterInternals>
+  const sender = internals.orClient?.chat
+  if (!sender || typeof sender.send !== 'function') {
+    throw terminalError('provider_protocol_error', 'OpenRouter adapter routing instrumentation is unavailable', 'ai.routing')
+  }
   const original = sender.send
-  sender.send = async (...args: unknown[]) => {
-    const result = await Reflect.apply(original, sender, args)
+  const observedSend = async (...args: unknown[]) => {
+    const [request, ...rest] = args
+    const metadataRequest = request !== null && typeof request === 'object' && !Array.isArray(request)
+      ? { ...request as Record<string, unknown>, xOpenRouterMetadata: 'enabled' }
+      : request
+    const result = await Reflect.apply(original, sender, [metadataRequest, ...rest])
     if (!isAsyncIterable(result)) return result
     return (async function* () {
       for await (const chunk of result) {
         if (chunk && typeof chunk === 'object') {
-          const id = safeGenerationId((chunk as Record<string, unknown>).id)
+          const record = chunk as Record<string, unknown>
+          const id = safeGenerationId(record.id)
           if (id) ids.add(id)
+          const metadata = record.openrouterMetadata as RouteMetadata | undefined
+          for (const attempt of metadata?.attempts ?? []) {
+            const provider = typeof attempt.status === 'number' && attempt.status >= 200 && attempt.status < 400
+              ? safeProviderIdentity(attempt.provider)
+              : null
+            if (provider) providers.add(provider)
+          }
+          for (const endpoint of metadata?.endpoints?.available ?? []) {
+            const provider = endpoint.selected === true ? safeProviderIdentity(endpoint.provider) : null
+            if (provider) providers.add(provider)
+          }
         }
         yield chunk
       }
     })()
   }
-  return () => { sender.send = original }
+  sender.send = observedSend
+  return () => {
+    if (sender.send === observedSend) sender.send = original
+  }
 }
 
 async function abortableDelay(durationMs: number, signal: AbortSignal): Promise<void> {
@@ -168,18 +202,19 @@ async function abortableDelay(durationMs: number, signal: AbortSignal): Promise<
   })
 }
 
-async function resolveProvider(adapter: Adapter, ids: ReadonlySet<string>, signal: AbortSignal): Promise<string> {
+async function resolveProvider(adapter: Adapter, ids: ReadonlySet<string>, observedProviders: ReadonlySet<string>, signal: AbortSignal): Promise<string> {
+  if (observedProviders.size === 1) return [...observedProviders][0]!
   const reader = (adapter as unknown as AdapterInternals).orClient.generations
   for (const id of ids) {
-    for (const wait of [0, 250, 750, 1_500]) {
+    for (const wait of [0, 250, 750, 1_500, 3_000]) {
       if (signal.aborted) throw abortedError('ai.routing')
       if (wait) await abortableDelay(wait, signal)
       try {
-        const response = await reader.getGeneration({ id })
+        const response = await reader.getGeneration({ id }, { signal })
         const root = response && typeof response === 'object' ? response as Record<string, unknown> : null
         const record = root?.data && typeof root.data === 'object' ? root.data as Record<string, unknown> : root
-        const provider = record?.providerName
-        if (typeof provider === 'string' && /^[A-Za-z0-9 ._/-]{1,100}$/u.test(provider.trim())) return provider.trim()
+        const provider = safeProviderIdentity(record?.providerName ?? record?.provider_name)
+        if (provider) return provider
       } catch { /* generation metadata is eventually consistent */ }
     }
   }
@@ -206,7 +241,8 @@ export class TanStackOpenRouterAgentDriver implements AgentModelDriver {
 
   async runTurn(input: AgentModelTurnInput): Promise<AgentModelTurnResult> {
     const generationIds = new Set<string>()
-    const restore = observeGenerationIds(this.#adapter, generationIds)
+    const observedProviders = new Set<string>()
+    let restore = () => {}
     const open = new Map<string, { name: string; args: string; sawArgs: boolean; ended: boolean; executed: boolean; resulted: boolean }>()
     const boundaryTasks: Promise<void>[] = []
     const turnMessages: AgentModelMessage[] = []
@@ -284,6 +320,7 @@ export class TanStackOpenRouterAgentDriver implements AgentModelDriver {
     }
 
     try {
+      restore = observeGenerationIds(this.#adapter, generationIds, observedProviders)
       const stream = chat({
         adapter: this.#adapter,
         systemPrompts: input.messages.filter((message) => message.role === 'system').map((message) => message.content ?? ''),
@@ -302,7 +339,7 @@ export class TanStackOpenRouterAgentDriver implements AgentModelDriver {
       if (!usage) throw terminalError('provider_protocol_error', 'Provider usage was missing or malformed', 'ai.usage')
       if (turnMessages.length === 0) turnMessages.push({ role: 'assistant', content: assistantText })
       for (const state of open.values()) if (!state.ended || !state.resulted) throw terminalError('provider_protocol_error', 'Provider stream ended with an incomplete tool lifecycle', 'ai.stream')
-      const resolvedProvider = await resolveProvider(this.#adapter, generationIds, input.signal)
+      const resolvedProvider = await resolveProvider(this.#adapter, generationIds, observedProviders, input.signal)
       return {
         messages: turnMessages,
         assistantSummary: String(redactJson(assistantText || (open.size ? `proposed ${open.size} tool call(s)` : 'assistant turn completed'), { maxStringLength: 4_000 })),
@@ -315,7 +352,7 @@ export class TanStackOpenRouterAgentDriver implements AgentModelDriver {
       if (isTraceGateError(error)) throw error
       throw terminalError('provider_protocol_error', safeDiagnostic(error), 'ai.stream')
     } finally {
-      restore()
+      try { restore() } catch { /* dependency-internal cleanup must not replace the normalized outcome */ }
       input.signal.removeEventListener('abort', onAbort)
     }
   }
