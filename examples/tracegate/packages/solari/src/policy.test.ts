@@ -42,7 +42,8 @@ test("classifies observable request method, body, protocol, and main-frame origi
     mainFrameNavigation: false,
   }
   assert.equal(classifyObservableRequest(base, origins), null)
-  assert.equal(classifyObservableRequest({ ...base, method: "POST" }, origins), "non_idempotent_request")
+  assert.equal(classifyObservableRequest({ ...base, method: "get" }, origins), null)
+  assert.equal(classifyObservableRequest({ ...base, method: "post" }, origins), "non_idempotent_request")
   assert.equal(classifyObservableRequest({ ...base, hasBody: true }, origins), "request_body_forbidden")
   assert.equal(
     classifyObservableRequest({ ...base, url: "file:///tmp/data" }, origins),
@@ -54,6 +55,10 @@ test("classifies observable request method, body, protocol, and main-frame origi
       origins,
     ),
     "origin_not_admitted",
+  )
+  assert.equal(
+    classifyObservableRequest({ ...base, url: "https://user:pass@jobs.example/" }, origins),
+    "credential_forbidden",
   )
   // Cross-origin GET subresources remain observable-but-allowed; this is one
   // of the functional PoC's documented whole-browser egress limitations.
@@ -80,6 +85,14 @@ test("blocks obvious auth, financial, submit, upload, and destructive controls",
   assert.equal(
     obviousUnsafeControl({ ...base, name: "Résumé", attributes: { type: "file" } }),
     "upload_or_download_forbidden",
+  )
+  assert.equal(
+    obviousUnsafeControl({ ...base, name: "Export", attributes: { download: "true" } }),
+    "upload_or_download_forbidden",
+  )
+  assert.equal(
+    obviousUnsafeControl({ ...base, name: "Details", attributes: { target: "_blank" } }),
+    "popup_forbidden",
   )
   assert.equal(obviousUnsafeControl({ ...base, name: "Filter jobs" }), null)
   assert.equal(

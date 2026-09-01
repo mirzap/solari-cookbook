@@ -20,6 +20,7 @@ export interface BrowserDiscoverySource {
   currentPageDiscoverySnapshot(signal: AbortSignal): Promise<{
     observationRevision: ObservationRevision
     jsonLdTexts: readonly string[]
+    jsonLdTruncated?: boolean
     webMcpPresent: boolean
   }>
   readCurrentOriginText(
@@ -44,21 +45,54 @@ export interface TraceGateDiscoveryControllerOptions {
   }
 }
 
-function collectJsonLdTypes(value: unknown, output: Set<string>): void {
-  if (output.size >= 100 || value === null || typeof value !== "object") return
+interface JsonLdTraversalState {
+  nodes: number
+  truncated: boolean
+}
+
+function collectJsonLdTypes(
+  value: unknown,
+  output: Set<string>,
+  state: JsonLdTraversalState,
+  depth = 0,
+): void {
+  if (value === null || typeof value !== "object") return
+  if (output.size >= 100 || state.nodes >= 1_000 || depth > 8) {
+    state.truncated = true
+    return
+  }
+  state.nodes += 1
   if (Array.isArray(value)) {
-    for (const item of value) collectJsonLdTypes(item, output)
+    for (const item of value) {
+      if (output.size >= 100 || state.nodes >= 1_000) {
+        state.truncated = true
+        break
+      }
+      collectJsonLdTypes(item, output, state, depth + 1)
+    }
     return
   }
   const record = value as Record<string, unknown>
   const type = record["@type"]
-  if (typeof type === "string" && type.trim()) output.add(type.trim().slice(0, 200))
+  if (typeof type === "string" && type.trim() && output.size < 100) {
+    output.add(type.trim().slice(0, 200))
+  }
   if (Array.isArray(type)) {
     for (const item of type) {
+      if (output.size >= 100) {
+        state.truncated = true
+        break
+      }
       if (typeof item === "string" && item.trim()) output.add(item.trim().slice(0, 200))
     }
   }
-  for (const nested of Object.values(record)) collectJsonLdTypes(nested, output)
+  for (const nested of Object.values(record)) {
+    if (output.size >= 100 || state.nodes >= 1_000) {
+      state.truncated = true
+      break
+    }
+    collectJsonLdTypes(nested, output, state, depth + 1)
+  }
 }
 
 export class TraceGateDiscoveryController implements DiscoveryController {
@@ -82,6 +116,7 @@ export class TraceGateDiscoveryController implements DiscoveryController {
     signal: AbortSignal,
   ): Promise<DiscoveryEvidence> {
     if (signal.aborted) throw signal.reason
+    this.#lastWebMcpTools = []
     const currentOrigin = PublicHttpsOriginSchema.parse(
       new URL(context.observation.url).origin,
     )
@@ -127,7 +162,8 @@ export class TraceGateDiscoveryController implements DiscoveryController {
     }
 
     const jsonLdTypes = new Set<string>()
-    let jsonLdTruncated = false
+    const jsonLdTraversal: JsonLdTraversalState = { nodes: 0, truncated: false }
+    let jsonLdTruncated = snapshot.jsonLdTruncated === true
     let jsonLdBytes = 0
     for (const text of snapshot.jsonLdTexts) {
       jsonLdBytes += Buffer.byteLength(text, "utf8")
@@ -136,11 +172,12 @@ export class TraceGateDiscoveryController implements DiscoveryController {
         break
       }
       try {
-        collectJsonLdTypes(JSON.parse(text), jsonLdTypes)
+        collectJsonLdTypes(JSON.parse(text), jsonLdTypes, jsonLdTraversal)
       } catch {
         // Invalid page metadata is untrusted and ignored.
       }
     }
+    jsonLdTruncated ||= jsonLdTraversal.truncated
     for (const type of jsonLdTypes) {
       interfaces.push({
         schemaVersion: 1,
@@ -151,20 +188,27 @@ export class TraceGateDiscoveryController implements DiscoveryController {
       })
     }
 
-    this.#lastWebMcpTools = []
+    let webMcpDiscoveryFailed = false
     let webMcpGate: "unavailable" | "available_disabled" | "discover_only" | "admitted_read_only" = "unavailable"
     if (snapshot.webMcpPresent) {
       if (context.interfaceMode === "semantic-only" || !this.#webMcp?.enabled) {
         webMcpGate = "available_disabled"
       } else {
-        this.#lastWebMcpTools = await this.#webMcp.adapter.discover(
-          this.#webMcp.controller,
-          currentOrigin,
-          signal,
-        )
-        webMcpGate = this.#lastWebMcpTools.length > 0
-          ? "admitted_read_only"
-          : "discover_only"
+        try {
+          this.#lastWebMcpTools = await this.#webMcp.adapter.discover(
+            this.#webMcp.controller,
+            currentOrigin,
+            signal,
+          )
+          webMcpGate = this.#lastWebMcpTools.length > 0
+            ? "admitted_read_only"
+            : "discover_only"
+        } catch (error) {
+          if (signal.aborted) throw error
+          this.#lastWebMcpTools = []
+          webMcpDiscoveryFailed = true
+          webMcpGate = "discover_only"
+        }
       }
       interfaces.push({
         schemaVersion: 1,
@@ -178,9 +222,10 @@ export class TraceGateDiscoveryController implements DiscoveryController {
       })
     }
 
-    const warnings = []
+    const warnings: ReturnType<typeof RunWarningSchema.parse>[] = []
     if (
       snapshot.webMcpPresent &&
+      context.interfaceMode !== "semantic-only" &&
       this.#webMcp?.enabled &&
       webMcpGate !== "admitted_read_only"
     ) {
@@ -191,7 +236,9 @@ export class TraceGateDiscoveryController implements DiscoveryController {
           code: "webmcp_degraded",
           phase: "discovery",
           retryable: false,
-          message: "No page-provided WebMCP tool passed read-only admission",
+          message: webMcpDiscoveryFailed
+            ? "WebMCP discovery failed; semantic browser controls remain available"
+            : "No page-provided WebMCP tool passed read-only admission",
           fieldIssues: [],
           causeChain: [],
         }),

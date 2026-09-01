@@ -83,6 +83,7 @@ interface RegistryEntry {
 export interface CurrentPageDiscoverySnapshot {
   readonly observationRevision: ObservationRevision
   readonly jsonLdTexts: readonly string[]
+  readonly jsonLdTruncated: boolean
   readonly webMcpPresent: boolean
 }
 
@@ -108,6 +109,13 @@ export interface RawCurrentOriginWebMcpTool {
   readonly annotations: unknown
 }
 
+export interface ExpectedCurrentOriginWebMcpTool {
+  readonly name: string
+  readonly description: string
+  readonly inputSchema: unknown
+  readonly declaredReadOnly: true
+}
+
 export interface SolariBrowserControllerOptions {
   readonly allowedOrigins: readonly string[]
   readonly maxObservationBytes?: number
@@ -116,6 +124,16 @@ export interface SolariBrowserControllerOptions {
 
 export interface SolariBrowserControllerFactoryOptions
   extends SolariBrowserControllerOptions {}
+
+type ConnectOverCdp = (
+  endpoint: string,
+  options: { timeout: number },
+) => Promise<Browser>
+
+/** Package-internal test seam; intentionally not exported from the public barrel. */
+export interface SolariBrowserControllerDependencies {
+  readonly connectOverCdp?: ConnectOverCdp
+}
 
 function staleElement(message = "Element reference is stale"): TraceGateError {
   return new TraceGateError(
@@ -220,13 +238,20 @@ async function readElement(locator: Locator): Promise<ElementSnapshot> {
       element.textContent ??
       ""
     const attributes: Record<string, string> = {}
-    for (const attribute of ["type", "name", "placeholder", "autocomplete", "href"] as const) {
+    for (const attribute of ["name", "placeholder", "autocomplete", "href", "target"] as const) {
       const value = element.getAttribute(attribute)
       if (value) attributes[attribute] = value.slice(0, 500)
     }
-    if (input?.form) attributes.formmethod = input.form.method.toLowerCase()
+    if (input) attributes.type = input.type.toLowerCase()
+    if (element instanceof HTMLButtonElement) attributes.type = element.type.toLowerCase()
+    if (element instanceof HTMLAnchorElement && element.hasAttribute("download")) {
+      attributes.download = "true"
+    }
+    if (input?.form) {
+      attributes.formmethod = (input.formMethod || input.form.method).toLowerCase()
+    }
     if (element instanceof HTMLButtonElement && element.form) {
-      attributes.formmethod = element.formMethod.toLowerCase() || element.form.method.toLowerCase()
+      attributes.formmethod = (element.formMethod || element.form.method).toLowerCase()
     }
     if (input && !["password", "file", "email", "tel"].includes(input.type)) {
       attributes.value = input.value.slice(0, 500)
@@ -265,6 +290,7 @@ export class SolariCdpBrowserController implements BrowserController {
   readonly #allowedOrigins: Set<string>
   readonly #maxObservationBytes: number
   readonly #actionTimeoutMs: number
+  readonly #connectOverCdp: ConnectOverCdp
   #browser: Browser | null = null
   #context: BrowserContext | null = null
   #page: Page | null = null
@@ -273,46 +299,81 @@ export class SolariCdpBrowserController implements BrowserController {
   #initialNavigationCompleted = false
   #hasDispatchedAgentAction = false
   #documentSequence = 0
+  #observedDocumentSequence: number | null = null
   #passivePolicyCount = 0
   #fatalPolicyCount = 0
   #passivePolicyCodes: PolicyDenyCode[] = []
   #fatalPolicyCodes: PolicyDenyCode[] = []
 
-  constructor(options: SolariBrowserControllerOptions) {
+  constructor(
+    options: SolariBrowserControllerOptions,
+    dependencies: SolariBrowserControllerDependencies = {},
+  ) {
     this.#allowedOrigins = canonicalAllowedOrigins(options.allowedOrigins)
     this.#maxObservationBytes = options.maxObservationBytes ?? 12_288
+    if (this.#maxObservationBytes < 2_048 || this.#maxObservationBytes > 65_536) {
+      throw new Error("Observation byte budget is out of bounds")
+    }
     this.#actionTimeoutMs = options.actionTimeoutMs ?? 15_000
+    this.#connectOverCdp = dependencies.connectOverCdp ?? ((endpoint, connectOptions) =>
+      chromium.connectOverCDP(endpoint, connectOptions))
   }
 
   async connect(lease: BrowserLease, signal: AbortSignal): Promise<void> {
     throwIfAborted(signal)
     if (this.#browser) throw new Error("Browser controller is already connected")
-    this.#browser = await chromium.connectOverCDP(lease.connectEndpoint, {
-      timeout: this.#actionTimeoutMs,
-    })
-    throwIfAborted(signal)
-    this.#context = this.#browser.contexts()[0] ?? null
-    if (!this.#context) {
-      await this.close(AbortSignal.timeout(5_000))
-      throw new Error("Solari CDP returned no default context")
+
+    let browser: Browser | null = null
+    let context: BrowserContext | null = null
+    try {
+      browser = await this.#connectOverCdp(String(lease.connectEndpoint), {
+        timeout: this.#actionTimeoutMs,
+      })
+      throwIfAborted(signal)
+      context = await browser.newContext({
+        serviceWorkers: "block",
+        acceptDownloads: false,
+      })
+      await this.#installServiceWorkerInitScript(context)
+      throwIfAborted(signal)
+      const page = await context.newPage()
+      page.setDefaultTimeout(this.#actionTimeoutMs)
+
+      this.#browser = browser
+      this.#context = context
+      this.#page = page
+      page.on("framenavigated", (frame) => {
+        if (frame === this.#page?.mainFrame()) {
+          this.#documentSequence += 1
+          this.#observedDocumentSequence = null
+          this.#registry.clear()
+        }
+      })
+      await this.#installPolicyHandlers(context, page)
+      await this.#enableServiceWorkerBypass(context, page)
+      throwIfAborted(signal)
+    } catch (error) {
+      this.#browser = null
+      this.#context = null
+      this.#page = null
+      this.#observedDocumentSequence = null
+      this.#registry.clear()
+      await context?.close().catch(() => {})
+      await browser?.close().catch(() => {})
+      throw error
     }
-    await this.#context.clearCookies()
-    this.#page = this.#context.pages()[0] ?? (await this.#context.newPage())
-    this.#page.setDefaultTimeout(this.#actionTimeoutMs)
-    this.#page.on("framenavigated", (frame) => {
-      if (frame === this.#page?.mainFrame()) this.#documentSequence += 1
-    })
-    await this.#installPolicyHandlers(this.#context, this.#page)
-    await this.#blockServiceWorkers(this.#context, this.#page)
   }
 
   async close(_signal: AbortSignal): Promise<void> {
+    const context = this.#context
     const browser = this.#browser
     this.#browser = null
     this.#context = null
     this.#page = null
+    this.#observedDocumentSequence = null
     this.#registry.clear()
-    if (browser) await browser.close().catch(() => {})
+    await context?.close().catch(() => {})
+    await browser?.close().catch(() => {})
   }
 
   async navigate(url: string, signal: AbortSignal): Promise<UntrustedAgentObservation> {
@@ -335,21 +396,41 @@ export class SolariCdpBrowserController implements BrowserController {
     this.#throwIfFatalPolicyViolation()
     const page = this.#requirePage()
     this.#assertCurrentOrigin()
+    const documentSequence = this.#documentSequence
     this.#revision += 1
     const revision = ObservationRevisionSchema.parse(this.#revision)
     this.#registry.clear()
 
+    const url = page.url()
+    const title = (await page.title()).slice(0, 500)
+    const elements: CompactElement[] = []
+    let truncated = false
+    const envelope = (visibleText: string, candidateElements: readonly CompactElement[]) => ({
+      schemaVersion: 2 as const,
+      trust: "untrusted_page_content" as const,
+      revision,
+      url,
+      title,
+      visibleText,
+      elements: candidateElements,
+      discoverySummary: `${candidateElements.length} visible semantic elements`,
+      truncated,
+    })
+    if (Buffer.byteLength(JSON.stringify(envelope("", [])), "utf8") > this.#maxObservationBytes) {
+      throw new Error("Observation envelope exceeds the configured byte budget")
+    }
+
     const controls = page.locator(SEMANTIC_SELECTOR)
     const totalCount = await controls.count()
     const count = Math.min(totalCount, 100)
-    const elements: CompactElement[] = []
+    truncated = totalCount > count
     for (let index = 0; index < count; index += 1) {
       const locator = controls.nth(index)
       if (!(await locator.isVisible().catch(() => false))) continue
       const snapshot = await readElement(locator).catch(() => null)
       if (!snapshot) continue
       const ref = `e:${revision}:${elements.length}`
-      elements.push({
+      const element: CompactElement = {
         ref,
         role: snapshot.role,
         name: snapshot.name,
@@ -358,7 +439,13 @@ export class SolariCdpBrowserController implements BrowserController {
         selected: snapshot.selected,
         expanded: snapshot.expanded,
         attributes: snapshot.attributes,
-      })
+      }
+      const next = [...elements, element]
+      if (Buffer.byteLength(JSON.stringify(envelope("", next)), "utf8") > this.#maxObservationBytes) {
+        truncated = true
+        break
+      }
+      elements.push(element)
       this.#registry.set(ref, {
         ref,
         revision,
@@ -368,28 +455,49 @@ export class SolariCdpBrowserController implements BrowserController {
       })
     }
 
-    const bodyText = await page.locator("body").innerText().catch(() => "")
-    const textBudget = Math.max(1_024, this.#maxObservationBytes - 4_096)
-    const visibleText = truncateUtf8(bodyText.replace(/\s+/g, " ").trim(), textBudget)
-    return UntrustedAgentObservationSchema.parse({
-      schemaVersion: 2,
-      trust: "untrusted_page_content",
-      revision,
-      url: page.url(),
-      title: (await page.title()).slice(0, 500),
-      visibleText: visibleText.value.slice(0, 20_000),
-      elements,
-      discoverySummary: `${elements.length} visible semantic elements`,
-      truncated: visibleText.truncated || totalCount > 100,
-    })
+    const boundedBodyText = await page.locator("body").evaluate(
+      (node, maximumCharacters) =>
+        ((node as HTMLElement).innerText ?? "")
+          .replace(/\s+/g, " ")
+          .trim()
+          .slice(0, maximumCharacters),
+      20_001,
+    ).catch(() => "")
+    const bodyText = boundedBodyText.slice(0, 20_000)
+    if (bodyText !== boundedBodyText) truncated = true
+    const bodyBytes = Buffer.byteLength(bodyText, "utf8")
+    let low = 0
+    let high = bodyBytes
+    let visibleText = ""
+    while (low <= high) {
+      const middle = Math.floor((low + high) / 2)
+      const candidate = truncateUtf8(bodyText, middle).value
+      if (Buffer.byteLength(JSON.stringify(envelope(candidate, elements)), "utf8") <= this.#maxObservationBytes) {
+        visibleText = candidate
+        low = middle + 1
+      } else {
+        high = middle - 1
+      }
+    }
+    if (visibleText !== bodyText) truncated = true
+
+    const observation = UntrustedAgentObservationSchema.parse(envelope(visibleText, elements))
+    if (Buffer.byteLength(JSON.stringify(observation), "utf8") > this.#maxObservationBytes) {
+      throw new Error("Observation serialization exceeded the configured byte budget")
+    }
+    throwIfAborted(signal)
+    if (this.#documentSequence !== documentSequence) throw staleElement("Document changed during observation")
+    this.#throwIfFatalPolicyViolation()
+    this.#observedDocumentSequence = documentSequence
+    return observation
   }
 
   async click(input: ElementActionInput, signal: AbortSignal): Promise<UntrustedAgentObservation> {
-    this.#hasDispatchedAgentAction = true
     const entry = await this.#resolve(input, signal)
     this.#assertElementSafe(entry.snapshot)
     const href = entry.snapshot.attributes.href
     if (href) assertAllowedNavigation(new URL(href, this.#requirePage().url()).href, this.#allowedOrigins)
+    this.#hasDispatchedAgentAction = true
     await entry.locator.click({ timeout: this.#actionTimeoutMs })
     return this.observe(signal)
   }
@@ -399,9 +507,9 @@ export class SolariCdpBrowserController implements BrowserController {
     signal: AbortSignal,
   ): Promise<UntrustedAgentObservation> {
     if (Buffer.byteLength(input.text, "utf8") > 4_000) throw new Error("Text is too large")
-    this.#hasDispatchedAgentAction = true
     const entry = await this.#resolve(input, signal)
     this.#assertElementSafe(entry.snapshot)
+    this.#hasDispatchedAgentAction = true
     if (input.clearFirst) await entry.locator.fill(input.text)
     else await entry.locator.pressSequentially(input.text)
     return this.observe(signal)
@@ -411,9 +519,9 @@ export class SolariCdpBrowserController implements BrowserController {
     input: ElementActionInput & { readonly value: string },
     signal: AbortSignal,
   ): Promise<UntrustedAgentObservation> {
-    this.#hasDispatchedAgentAction = true
     const entry = await this.#resolve(input, signal)
     this.#assertElementSafe(entry.snapshot)
+    this.#hasDispatchedAgentAction = true
     await entry.locator.selectOption(input.value)
     return this.observe(signal)
   }
@@ -422,12 +530,12 @@ export class SolariCdpBrowserController implements BrowserController {
     input: ElementActionInput & { readonly key: string },
     signal: AbortSignal,
   ): Promise<UntrustedAgentObservation> {
-    this.#hasDispatchedAgentAction = true
     if (!ALLOWED_KEYS.has(input.key)) {
       throw blockedByPolicy("press_key_forbidden", "Keyboard key is not allowed")
     }
     const entry = await this.#resolve(input, signal)
     this.#assertElementSafe(entry.snapshot)
+    this.#hasDispatchedAgentAction = true
     await entry.locator.press(input.key)
     return this.observe(signal)
   }
@@ -438,20 +546,20 @@ export class SolariCdpBrowserController implements BrowserController {
     signal: AbortSignal,
   ): Promise<UntrustedAgentObservation> {
     throwIfAborted(signal)
-    this.#hasDispatchedAgentAction = true
     if (!Number.isInteger(amount) || amount < 1 || amount > 5_000) {
       throw new Error("Scroll amount is out of bounds")
     }
+    this.#hasDispatchedAgentAction = true
     await this.#requirePage().mouse.wheel(0, direction === "down" ? amount : -amount)
     return this.observe(signal)
   }
 
   async wait(durationMs: number, signal: AbortSignal): Promise<UntrustedAgentObservation> {
     throwIfAborted(signal)
-    this.#hasDispatchedAgentAction = true
     if (!Number.isInteger(durationMs) || durationMs < 0 || durationMs > 15_000) {
       throw new Error("Wait duration is out of bounds")
     }
+    this.#hasDispatchedAgentAction = true
     await this.#requirePage().waitForTimeout(durationMs)
     throwIfAborted(signal)
     return this.observe(signal)
@@ -462,19 +570,35 @@ export class SolariCdpBrowserController implements BrowserController {
   ): Promise<CurrentPageDiscoverySnapshot> {
     throwIfAborted(signal)
     const page = this.#requirePage()
-    const texts = await page.locator('script[type="application/ld+json"]').allTextContents()
-    let total = 0
-    const jsonLdTexts: string[] = []
-    for (const text of texts) {
-      const bytes = Buffer.byteLength(text, "utf8")
-      if (total + bytes > 65_536) break
-      jsonLdTexts.push(text)
-      total += bytes
-    }
+    this.#assertCurrentOrigin()
+    this.#assertObservedDocument()
+    const { jsonLdTexts, jsonLdTruncated } = await page.evaluate((maximumBytes) => {
+      const encoder = new TextEncoder()
+      const decoder = new TextDecoder()
+      const output: string[] = []
+      let total = 0
+      let truncated = false
+      const scripts = document.querySelectorAll('script[type="application/ld+json"]')
+      for (const script of scripts) {
+        const bytes = encoder.encode(script.textContent ?? "")
+        const remaining = maximumBytes - total
+        if (bytes.byteLength > remaining) {
+          if (remaining > 0) output.push(decoder.decode(bytes.subarray(0, remaining)))
+          truncated = true
+          break
+        }
+        output.push(decoder.decode(bytes))
+        total += bytes.byteLength
+      }
+      return { jsonLdTexts: output, jsonLdTruncated: truncated }
+    }, 65_536)
     const webMcpPresent = await page.evaluate(() => "modelContext" in document)
+    this.#assertCurrentOrigin()
+    this.#assertObservedDocument()
     return {
       observationRevision: ObservationRevisionSchema.parse(this.#revision),
       jsonLdTexts,
+      jsonLdTruncated,
       webMcpPresent,
     }
   }
@@ -484,7 +608,8 @@ export class SolariCdpBrowserController implements BrowserController {
   ): Promise<readonly RawCurrentOriginWebMcpTool[]> {
     throwIfAborted(signal)
     this.#assertCurrentOrigin()
-    return this.#requirePage().evaluate(async () => {
+    this.#assertObservedDocument()
+    const tools = await this.#requirePage().evaluate(async () => {
       const modelContext = (
         document as Document & {
           modelContext?: {
@@ -494,40 +619,59 @@ export class SolariCdpBrowserController implements BrowserController {
       ).modelContext
       if (!modelContext?.getTools) return []
       const tools = await modelContext.getTools({ fromOrigins: [] })
+      if (!Array.isArray(tools)) return []
       return tools.slice(0, 25).map((candidate) => {
         const tool = candidate as Record<string, unknown>
+        let inputSchema: unknown = null
+        try {
+          const serialized = JSON.stringify(tool.inputSchema)
+          if (typeof serialized === "string" && new TextEncoder().encode(serialized).byteLength <= 16_384) {
+            inputSchema = JSON.parse(serialized)
+          }
+        } catch {
+          inputSchema = null
+        }
+        const annotations = typeof tool.annotations === "object" && tool.annotations !== null
+          ? { readOnlyHint: (tool.annotations as { readOnlyHint?: unknown }).readOnlyHint === true }
+          : null
         return {
-          name: typeof tool.name === "string" ? tool.name : "",
-          title: typeof tool.title === "string" ? tool.title : null,
-          description: typeof tool.description === "string" ? tool.description : "",
-          inputSchema: tool.inputSchema,
-          annotations: tool.annotations,
+          name: typeof tool.name === "string" ? tool.name.slice(0, 200) : "",
+          title: typeof tool.title === "string" ? tool.title.slice(0, 200) : null,
+          description: typeof tool.description === "string" ? tool.description.slice(0, 2_000) : "",
+          inputSchema,
+          annotations,
         }
       })
     })
+    this.#assertCurrentOrigin()
+    this.#assertObservedDocument()
+    throwIfAborted(signal)
+    return tools
   }
 
   currentBrowserOrigin(): string {
     this.#assertCurrentOrigin()
+    this.#assertObservedDocument()
     return new URL(this.#requirePage().url()).origin
   }
 
   async invokeCurrentOriginWebMcpTool(
-    name: string,
+    expectedTool: ExpectedCurrentOriginWebMcpTool,
     input: Readonly<Record<string, string | number | boolean | null>>,
     signal: AbortSignal,
   ): Promise<string> {
     throwIfAborted(signal)
-    this.#hasDispatchedAgentAction = true
     this.#assertCurrentOrigin()
+    this.#assertObservedDocument()
     const page = this.#requirePage()
+    this.#hasDispatchedAgentAction = true
     const execution = page.evaluate(
-      async ({ toolName, toolInput }) => {
+      async ({ expected, toolInput }) => {
         const modelContext = (
           document as Document & {
             modelContext?: {
               getTools?: (options?: { fromOrigins?: string[] }) => Promise<unknown[]>
-              executeTool?: (tool: unknown, input: object) => Promise<string>
+              executeTool?: (tool: unknown, input: object) => Promise<unknown>
             }
           }
         ).modelContext
@@ -535,32 +679,74 @@ export class SolariCdpBrowserController implements BrowserController {
           throw new Error("WebMCP is unavailable")
         }
         const tools = await modelContext.getTools({ fromOrigins: [] })
-        const tool = tools.find(
+        if (!Array.isArray(tools)) throw new Error("WebMCP catalog changed before invocation")
+        const matches = tools.filter(
           (candidate) =>
             typeof candidate === "object" &&
             candidate !== null &&
-            (candidate as { name?: unknown }).name === toolName,
+            (candidate as { name?: unknown }).name === expected.name,
         )
-        if (!tool) throw new Error("WebMCP tool changed before invocation")
-        return modelContext.executeTool(tool, toolInput)
+        if (matches.length !== 1) throw new Error("WebMCP tool changed before invocation")
+        const tool = matches[0] as Record<string, unknown>
+        const annotations = typeof tool.annotations === "object" && tool.annotations !== null
+          ? tool.annotations as { readOnlyHint?: unknown }
+          : null
+        const description = typeof tool.description === "string" ? tool.description : ""
+        if (
+          description !== expected.description ||
+          annotations?.readOnlyHint !== expected.declaredReadOnly ||
+          JSON.stringify(tool.inputSchema) !== JSON.stringify(expected.inputSchema)
+        ) {
+          throw new Error("WebMCP tool changed before invocation")
+        }
+        const raw = await modelContext.executeTool(tool, toolInput)
+        let visited = 0
+        const seen = new WeakSet<object>()
+        const normalize = (value: unknown, depth: number): unknown => {
+          visited += 1
+          if (visited > 500) return "[TRUNCATED]"
+          if (value === null || typeof value === "boolean") return value
+          if (typeof value === "number") return Number.isFinite(value) ? value : "[NON_FINITE]"
+          if (typeof value === "string") return value.slice(0, 2_000)
+          if (typeof value !== "object" || depth >= 5) return "[TRUNCATED]"
+          if (seen.has(value)) return "[CIRCULAR]"
+          seen.add(value)
+          if (Array.isArray(value)) return value.slice(0, 50).map((item) => normalize(item, depth + 1))
+          const output: Record<string, unknown> = {}
+          for (const [key, nested] of Object.entries(value).slice(0, 50)) {
+            output[key.slice(0, 200)] = normalize(nested, depth + 1)
+          }
+          return output
+        }
+        let serialized: string
+        try {
+          serialized = JSON.stringify(normalize(raw, 0))
+        } catch {
+          serialized = "[unserializable WebMCP result]"
+        }
+        const encoded = new TextEncoder().encode(serialized)
+        if (encoded.byteLength <= 12_000) return serialized
+        return new TextDecoder().decode(encoded.subarray(0, 12_000))
       },
-      { toolName: name, toolInput: input },
+      { expected: expectedTool, toolInput: input },
     )
+    let abortHandler: (() => void) | null = null
     const aborted = new Promise<never>((_resolve, reject) => {
-      signal.addEventListener(
-        "abort",
-        () => reject(new DOMException("WebMCP invocation aborted", "AbortError")),
-        { once: true },
-      )
+      abortHandler = () => reject(new DOMException("WebMCP invocation aborted", "AbortError"))
+      signal.addEventListener("abort", abortHandler, { once: true })
     })
     try {
       const result = await Promise.race([execution, aborted])
       this.#throwIfFatalPolicyViolation()
       this.#assertCurrentOrigin()
+      this.#assertObservedDocument()
+      throwIfAborted(signal)
       return result
     } catch (error) {
       if (signal.aborted) await this.close(AbortSignal.timeout(5_000))
       throw error
+    } finally {
+      if (abortHandler) signal.removeEventListener("abort", abortHandler)
     }
   }
 
@@ -570,20 +756,29 @@ export class SolariCdpBrowserController implements BrowserController {
     signal: AbortSignal,
   ): Promise<CurrentOriginTextResult> {
     throwIfAborted(signal)
-    if (!path.startsWith("/") || maxBytes < 1 || maxBytes > 65_536) {
+    if (!path.startsWith("/") || path.startsWith("//") || maxBytes < 1 || maxBytes > 65_536) {
       throw new Error("Current-origin discovery request is invalid")
     }
     const page = this.#requirePage()
     this.#assertCurrentOrigin()
-    return page.evaluate(
-      async ({ requestedPath, maximumBytes }) => {
+    this.#assertObservedDocument()
+    const currentOrigin = new URL(page.url()).origin
+    const requested = new URL(path, `${currentOrigin}/`)
+    if (requested.origin !== currentOrigin || requested.username || requested.password) {
+      throw new Error("Current-origin discovery path escaped the active origin")
+    }
+    const result = await page.evaluate(
+      async ({ requestedUrl, maximumBytes }) => {
+        const controller = new AbortController()
+        const timeout = setTimeout(() => controller.abort(), 5_000)
         try {
-          const requested = new URL(requestedPath, location.origin)
+          const requested = new URL(requestedUrl)
           const response = await fetch(requested, {
             method: "GET",
             credentials: "omit",
             redirect: "error",
             cache: "no-store",
+            signal: controller.signal,
           })
           if (new URL(response.url || requested.href).origin !== location.origin) {
             return { status: 0, finalUrl: requested.href, text: "", truncated: false }
@@ -605,6 +800,12 @@ export class SolariCdpBrowserController implements BrowserController {
             }
             chunks.push(next.value)
             total += next.value.byteLength
+            if (total === maximumBytes) {
+              const extra = await reader.read()
+              truncated = !extra.done
+              if (truncated) await reader.cancel()
+              break
+            }
           }
           const size = chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0)
           const bytes = new Uint8Array(size)
@@ -620,11 +821,17 @@ export class SolariCdpBrowserController implements BrowserController {
             truncated,
           }
         } catch {
-          return { status: 0, finalUrl: new URL(requestedPath, location.origin).href, text: "", truncated: false }
+          return { status: 0, finalUrl: requestedUrl, text: "", truncated: false }
+        } finally {
+          clearTimeout(timeout)
         }
       },
-      { requestedPath: path, maximumBytes: maxBytes },
+      { requestedUrl: requested.href, maximumBytes: maxBytes },
     )
+    this.#assertCurrentOrigin()
+    this.#assertObservedDocument()
+    throwIfAborted(signal)
+    return result
   }
 
   async currentAssertionSnapshot(signal: AbortSignal): Promise<CurrentAssertionSnapshot> {
@@ -648,7 +855,11 @@ export class SolariCdpBrowserController implements BrowserController {
   ): Promise<RegistryEntry> {
     throwIfAborted(signal)
     this.#throwIfFatalPolicyViolation()
-    if (input.observationRevision !== this.#revision) throw staleElement()
+    if (
+      input.observationRevision !== this.#revision ||
+      this.#observedDocumentSequence === null ||
+      this.#observedDocumentSequence !== this.#documentSequence
+    ) throw staleElement()
     const entry = this.#registry.get(input.ref)
     if (!entry || entry.revision !== input.observationRevision) throw staleElement()
     if (!(await entry.locator.isVisible().catch(() => false))) throw staleElement()
@@ -682,6 +893,15 @@ export class SolariCdpBrowserController implements BrowserController {
     }
   }
 
+  #assertObservedDocument(): void {
+    if (
+      this.#observedDocumentSequence === null ||
+      this.#observedDocumentSequence !== this.#documentSequence
+    ) {
+      throw staleElement("Document changed since the current observation")
+    }
+  }
+
   #recordPolicy(code: PolicyDenyCode): void {
     const fatal = this.#hasDispatchedAgentAction
     if (fatal) this.#fatalPolicyCount = Math.min(1_000, this.#fatalPolicyCount + 1)
@@ -696,7 +916,10 @@ export class SolariCdpBrowserController implements BrowserController {
   }
 
   async #installPolicyHandlers(context: BrowserContext, page: Page): Promise<void> {
-    page.on("dialog", (dialog) => void dialog.dismiss().catch(() => {}))
+    page.on("dialog", (dialog) => {
+      this.#recordPolicy("unknown_effect")
+      void dialog.dismiss().catch(() => {})
+    })
     page.on("download", (download) => {
       this.#recordPolicy("upload_or_download_forbidden")
       void download.cancel().catch(() => {})
@@ -736,7 +959,7 @@ export class SolariCdpBrowserController implements BrowserController {
     })
   }
 
-  async #blockServiceWorkers(context: BrowserContext, page: Page): Promise<void> {
+  async #installServiceWorkerInitScript(context: BrowserContext): Promise<void> {
     await context.addInitScript(() => {
       const serviceWorker = navigator.serviceWorker
       if (!serviceWorker) return
@@ -745,13 +968,9 @@ export class SolariCdpBrowserController implements BrowserController {
         value: () => Promise.reject(new DOMException("Blocked by TraceGate", "NotAllowedError")),
       })
     })
-    await page
-      .evaluate(async () => {
-        if (!navigator.serviceWorker) return
-        const registrations = await navigator.serviceWorker.getRegistrations()
-        await Promise.all(registrations.map((registration) => registration.unregister()))
-      })
-      .catch(() => {})
+  }
+
+  async #enableServiceWorkerBypass(context: BrowserContext, page: Page): Promise<void> {
     const cdp = await context.newCDPSession(page).catch(() => null)
     if (cdp) {
       await cdp.send("Network.enable").catch(() => {})
@@ -762,13 +981,16 @@ export class SolariCdpBrowserController implements BrowserController {
 }
 
 export class SolariBrowserControllerFactory implements BrowserControllerFactory {
-  constructor(private readonly options: SolariBrowserControllerFactoryOptions) {}
+  constructor(
+    private readonly options: SolariBrowserControllerFactoryOptions,
+    private readonly dependencies: SolariBrowserControllerDependencies = {},
+  ) {}
 
   async create(
     _lease: BrowserLease,
     signal: AbortSignal,
   ): Promise<BrowserController> {
     throwIfAborted(signal)
-    return new SolariCdpBrowserController(this.options)
+    return new SolariCdpBrowserController(this.options, this.dependencies)
   }
 }

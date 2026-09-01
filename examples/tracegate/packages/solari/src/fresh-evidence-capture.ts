@@ -42,15 +42,17 @@ function asSource(controller: BrowserController): AssertionSnapshotSource {
 
 async function defaultSleep(durationMs: number, signal: AbortSignal): Promise<void> {
   await new Promise<void>((resolve, reject) => {
-    const timeout = setTimeout(resolve, durationMs)
-    signal.addEventListener(
-      "abort",
-      () => {
-        clearTimeout(timeout)
-        reject(signal.reason)
-      },
-      { once: true },
-    )
+    const onAbort = () => {
+      clearTimeout(timeout)
+      signal.removeEventListener("abort", onAbort)
+      reject(signal.reason)
+    }
+    const timeout = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort)
+      resolve()
+    }, durationMs)
+    signal.addEventListener("abort", onAbort, { once: true })
+    if (signal.aborted) onAbort()
   })
 }
 

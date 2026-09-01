@@ -14,11 +14,10 @@
     "lint": "tsc --project tsconfig.json --noEmit",
     "typecheck": "tsc --project tsconfig.json --noEmit",
     "test": "pnpm run build && node --test dist/**/*.test.js",
-    "probe": "pnpm run build && node dist/connectivity-probe.js"
+    "smoke": "pnpm run build && node probes/public-site-safety-smoke.mjs"
   },
   "dependencies": {
     "@solarisdk/browser": "0.1.2",
-    "@solarisdk/sdk": "0.1.2",
     "@tracegate/shared": "workspace:*",
     "playwright-core": "1.62.1"
   },

@@ -4,4 +4,3 @@ export {
   renderJobBoard,
   type FixtureJob,
 } from "./job-board-fixture.js"
-export { createConnectivityServer } from "./server.js"

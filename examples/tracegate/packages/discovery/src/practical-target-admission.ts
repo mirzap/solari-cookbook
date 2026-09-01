@@ -19,6 +19,7 @@ export interface PracticalTargetAdmissionOptions {
   readonly lookup?: (hostname: string) => Promise<readonly ResolvedAddress[]>
   readonly now?: () => Date
   readonly admissionTtlMs?: number
+  readonly lookupTimeoutMs?: number
   readonly serviceWorkerControl?: "blocked" | "unsupported"
   readonly requestInterception?: "get_head_only_observable" | "unavailable"
 }
@@ -40,26 +41,49 @@ function isPublicIpv4(address: string): boolean {
   return true
 }
 
-function isPublicIpv6(address: string): boolean {
-  const value = address.toLowerCase().split("%")[0]!
-  if (value.startsWith("::ffff:")) {
-    const mapped = value.slice("::ffff:".length)
-    if (isIP(mapped) === 4) return isPublicIpv4(mapped)
-    const hextets = mapped.split(":")
-    if (hextets.length === 2) {
-      const high = Number.parseInt(hextets[0]!, 16)
-      const low = Number.parseInt(hextets[1]!, 16)
-      if (Number.isInteger(high) && Number.isInteger(low)) {
-        return isPublicIpv4(
-          `${high >> 8}.${high & 0xff}.${low >> 8}.${low & 0xff}`,
-        )
-      }
-    }
-    return false
+function parseIpv6Words(address: string): readonly number[] | null {
+  let value = address.toLowerCase().split("%")[0]!
+  if (isIP(value) !== 6) return null
+
+  const ipv4Separator = value.lastIndexOf(":")
+  const ipv4Tail = value.slice(ipv4Separator + 1)
+  if (ipv4Tail.includes(".")) {
+    if (isIP(ipv4Tail) !== 4) return null
+    const octets = ipv4Tail.split(".").map(Number)
+    value = `${value.slice(0, ipv4Separator)}:${((octets[0]! << 8) | octets[1]!).toString(16)}:${((octets[2]! << 8) | octets[3]!).toString(16)}`
   }
-  if (value === "::" || value === "::1") return false
-  if (/^f[cd]/.test(value) || /^fe[89ab]/.test(value) || value.startsWith("ff")) return false
-  if (value.startsWith("2001:db8:")) return false
+
+  const halves = value.split("::")
+  if (halves.length > 2) return null
+  const left = halves[0] ? halves[0].split(":") : []
+  const right = halves.length === 2 && halves[1] ? halves[1].split(":") : []
+  const explicit = [...left, ...right]
+  if (explicit.some((part) => !/^[0-9a-f]{1,4}$/.test(part))) return null
+  const omitted = 8 - explicit.length
+  if ((halves.length === 1 && omitted !== 0) || (halves.length === 2 && omitted < 1)) return null
+  return [
+    ...left.map((part) => Number.parseInt(part, 16)),
+    ...Array.from({ length: omitted }, () => 0),
+    ...right.map((part) => Number.parseInt(part, 16)),
+  ]
+}
+
+function isPublicIpv6(address: string): boolean {
+  const words = parseIpv6Words(address)
+  if (!words) return false
+  const [first, second, third] = words as [number, number, number, ...number[]]
+
+  // Only globally routed unicast space is eligible. All mapped/compatible IPv4,
+  // loopback, local, link-local, site-local, multicast, and unspecified forms
+  // consequently fail closed before the narrower special-purpose exclusions.
+  if (first < 0x2000 || first > 0x3fff) return false
+  if (first === 0x2002 || first === 0x3ffe) return false // 6to4 and retired 6bone
+  if (first === 0x2001 && second === 0x0000) return false // Teredo
+  if (first === 0x2001 && second === 0x0db8) return false // documentation
+  if (first === 0x2001 && second === 0x0002 && third === 0x0000) return false // benchmarking
+  if (first === 0x2001 && (second & 0xfff0) === 0x0010) return false // ORCHID
+  if (first === 0x2001 && (second & 0xfff0) === 0x0020) return false // ORCHIDv2
+  if (first === 0x3fff && second <= 0x0fff) return false // documentation 3fff::/20
   return true
 }
 
@@ -76,6 +100,38 @@ async function defaultLookup(hostname: string): Promise<readonly ResolvedAddress
   return nodeLookup(hostname, { all: true, verbatim: true })
 }
 
+async function lookupWithDeadline(
+  lookup: (hostname: string) => Promise<readonly ResolvedAddress[]>,
+  hostname: string,
+  timeoutMs: number,
+  signal: AbortSignal,
+): Promise<readonly ResolvedAddress[]> {
+  return new Promise((resolve, reject) => {
+    let settled = false
+    const finish = (callback: () => void) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timeout)
+      signal.removeEventListener("abort", onAbort)
+      callback()
+    }
+    const onAbort = () => finish(() => reject(new DOMException("Target admission aborted", "AbortError")))
+    const timeout = setTimeout(
+      () => finish(() => reject(new DOMException("DNS lookup timed out", "TimeoutError"))),
+      timeoutMs,
+    )
+    signal.addEventListener("abort", onAbort, { once: true })
+    if (signal.aborted) {
+      onAbort()
+      return
+    }
+    lookup(hostname).then(
+      (answers) => finish(() => resolve(answers)),
+      (error) => finish(() => reject(error)),
+    )
+  })
+}
+
 function rejected(
   reason: Exclude<AdmissionReasonCode, "admitted">,
   message: string,
@@ -87,6 +143,7 @@ export class PracticalTargetAdmission implements TargetAdmissionPort {
   readonly #lookup: (hostname: string) => Promise<readonly ResolvedAddress[]>
   readonly #now: () => Date
   readonly #ttlMs: number
+  readonly #lookupTimeoutMs: number
   readonly #serviceWorkers: "blocked" | "unsupported"
   readonly #requestInterception: "get_head_only_observable" | "unavailable"
 
@@ -94,6 +151,10 @@ export class PracticalTargetAdmission implements TargetAdmissionPort {
     this.#lookup = options.lookup ?? defaultLookup
     this.#now = options.now ?? (() => new Date())
     this.#ttlMs = options.admissionTtlMs ?? 300_000
+    this.#lookupTimeoutMs = options.lookupTimeoutMs ?? 5_000
+    if (this.#lookupTimeoutMs < 100 || this.#lookupTimeoutMs > 30_000) {
+      throw new Error("DNS lookup timeout is out of bounds")
+    }
     this.#serviceWorkers = options.serviceWorkerControl ?? "blocked"
     this.#requestInterception = options.requestInterception ?? "get_head_only_observable"
   }
@@ -123,16 +184,12 @@ export class PracticalTargetAdmission implements TargetAdmissionPort {
     for (const hostname of hostnames) {
       let answers: readonly ResolvedAddress[]
       try {
-        answers = await Promise.race([
-          this.#lookup(hostname),
-          new Promise<never>((_resolve, rejectPromise) => {
-            signal.addEventListener(
-              "abort",
-              () => rejectPromise(new DOMException("Target admission aborted", "AbortError")),
-              { once: true },
-            )
-          }),
-        ])
+        answers = await lookupWithDeadline(
+          this.#lookup,
+          hostname,
+          this.#lookupTimeoutMs,
+          signal,
+        )
       } catch {
         if (signal.aborted) return rejected("operation_aborted", "Target admission was aborted")
         return rejected("target_unreachable", "Public DNS preflight failed")

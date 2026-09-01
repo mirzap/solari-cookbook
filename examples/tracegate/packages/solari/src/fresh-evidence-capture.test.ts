@@ -133,3 +133,15 @@ test("marks every assertion unverifiable when bounded captures do not stabilize"
     true,
   )
 })
+
+test("cancellation interrupts the bounded quiet interval", async () => {
+  const capture = new FreshBrowserAssertionEvidenceCapture()
+  const controller = new AbortController()
+  const pending = capture.capture(
+    controllerWithTitles(["Senior jobs", "Senior jobs"]),
+    { assertions },
+    controller.signal,
+  )
+  setTimeout(() => controller.abort(), 10)
+  await assert.rejects(pending, (error) => error instanceof DOMException && error.name === "AbortError")
+})

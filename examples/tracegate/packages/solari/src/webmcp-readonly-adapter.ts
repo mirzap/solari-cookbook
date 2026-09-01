@@ -16,7 +16,10 @@ import {
   type WebMcpToolDescriptorV1,
 } from "@tracegate/shared"
 
-import type { RawCurrentOriginWebMcpTool } from "./browser-controller.js"
+import type {
+  ExpectedCurrentOriginWebMcpTool,
+  RawCurrentOriginWebMcpTool,
+} from "./browser-controller.js"
 
 const MAX_RESULT_BYTES = 12_000
 const ROOT_SCHEMA_KEYS = new Set(["type", "properties", "required", "additionalProperties"])
@@ -34,7 +37,7 @@ interface WebMcpControllerSource {
   currentBrowserOrigin(): string
   currentOriginWebMcpTools(signal: AbortSignal): Promise<readonly RawCurrentOriginWebMcpTool[]>
   invokeCurrentOriginWebMcpTool(
-    name: string,
+    expectedTool: ExpectedCurrentOriginWebMcpTool,
     input: Readonly<Record<string, string | number | boolean | null>>,
     signal: AbortSignal,
   ): Promise<string>
@@ -182,11 +185,16 @@ export class SolariWebMcpReadOnlyAdapter implements WebMcpReadOnlyAdapterPort {
       throw new Error("WebMCP discovery origin does not match the current page")
     }
     const raw = await source.currentOriginWebMcpTools(signal)
+    if (source.currentBrowserOrigin() !== origin) {
+      throw new Error("WebMCP discovery origin changed during catalog retrieval")
+    }
     const admitted: WebMcpToolDescriptorV1[] = []
     for (const tool of raw) {
       const descriptor = sanitizeTool(origin, tool)
       if (descriptor) admitted.push(descriptor)
-      if (admitted.length === 10) break
+      if (admitted.length > 10) {
+        throw new Error("WebMCP admitted tool count exceeds the bounded catalog")
+      }
     }
     const catalog = WebMcpToolCatalogV1Schema.parse(admitted)
     this.#catalogByController.set(
@@ -222,11 +230,20 @@ export class SolariWebMcpReadOnlyAdapter implements WebMcpReadOnlyAdapterPort {
       throw new Error("WebMCP input does not satisfy the admitted closed schema")
     }
 
-    const raw = await asSource(controller).invokeCurrentOriginWebMcpTool(
-      descriptor.name,
+    const source = asSource(controller)
+    const raw = await source.invokeCurrentOriginWebMcpTool(
+      {
+        name: descriptor.name,
+        description: descriptor.description,
+        inputSchema: descriptor.inputSchema,
+        declaredReadOnly: true,
+      },
       parsedRequest.input,
       signal,
     )
+    if (source.currentBrowserOrigin() !== parsedRequest.currentOrigin) {
+      throw new Error("WebMCP invocation changed the current origin")
+    }
     const output = boundedResult(raw)
     const redacted = redactJson(output.value, {
       maxStringLength: 2_000,

@@ -112,6 +112,35 @@ test("revalidates the admitted descriptor and returns bounded redacted untrusted
   assert.deepEqual(result.output.apiToken, "[REDACTED]")
 })
 
+test("rejects an admitted catalog larger than the frozen bound", async () => {
+  const controller = {
+    currentBrowserOrigin: () => "https://jobs.example",
+    async currentOriginWebMcpTools() {
+      return Array.from({ length: 11 }, (_, index) => ({
+        name: `read_jobs_${index}`,
+        title: null,
+        description: `Read public jobs group ${index}`,
+        inputSchema: {
+          type: "object",
+          properties: {},
+          required: [],
+          additionalProperties: false,
+        },
+        annotations: { readOnlyHint: true },
+      }))
+    },
+    async invokeCurrentOriginWebMcpTool() { return "{}" },
+  } as unknown as BrowserController
+  await assert.rejects(
+    new SolariWebMcpReadOnlyAdapter().discover(
+      controller,
+      currentOrigin,
+      new AbortController().signal,
+    ),
+    /exceeds/,
+  )
+})
+
 test("rejects stale descriptors and inputs outside the admitted closed schema", async () => {
   const fake = controllerWithTools()
   const adapter = new SolariWebMcpReadOnlyAdapter()

@@ -98,7 +98,10 @@ export function obviousUnsafeControl(
     .join(" ")
 
   if (element.disabled) return "unobservable_effect"
-  if (type === "file") return "upload_or_download_forbidden"
+  if (type === "file" || element.attributes.download === "true") {
+    return "upload_or_download_forbidden"
+  }
+  if (element.attributes.target?.toLowerCase() === "_blank") return "popup_forbidden"
   if (type === "submit" && element.attributes.formmethod !== "get") {
     return "submit_activation_forbidden"
   }
@@ -127,7 +130,9 @@ export function classifyObservableRequest(
     return "alternate_protocol_forbidden"
   }
   if (!["http:", "https:"].includes(url.protocol)) return "alternate_protocol_forbidden"
-  if (request.method !== "GET" && request.method !== "HEAD") return "non_idempotent_request"
+  if (url.username || url.password) return "credential_forbidden"
+  const method = request.method.toUpperCase()
+  if (method !== "GET" && method !== "HEAD") return "non_idempotent_request"
   if (request.hasBody) return "request_body_forbidden"
   if (
     request.mainFrameNavigation &&

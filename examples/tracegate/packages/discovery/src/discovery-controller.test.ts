@@ -5,6 +5,8 @@ import {
   AdmittedPublicTargetSchema,
   AgentObservationSchema,
   RunIdSchema,
+  type BrowserController,
+  type WebMcpReadOnlyAdapterPort,
 } from "@tracegate/shared"
 
 import { TraceGateDiscoveryController } from "./discovery-controller.js"
@@ -94,6 +96,31 @@ test("discovers through the active browser path, not ambient fetch", async () =>
   assert.equal(evidence.webMcpGate, "unavailable")
 })
 
+test("bounds JSON-LD traversal and marks clipped metadata", async () => {
+  const controller = new TraceGateDiscoveryController({
+    source: {
+      async currentPageDiscoverySnapshot() {
+        return {
+          observationRevision: observation.revision,
+          jsonLdTexts: [JSON.stringify({
+            "@type": Array.from({ length: 120 }, (_, index) => `Type${index}`),
+          })],
+          webMcpPresent: false,
+        }
+      },
+      async readCurrentOriginText() {
+        return { status: 404, finalUrl: "https://jobs.example/llms.txt", text: "", truncated: false }
+      },
+    },
+  })
+  const evidence = await controller.discover(
+    { ...discoveryContext, interfaceMode: "semantic-only" },
+    new AbortController().signal,
+  )
+  assert.equal(evidence.jsonLdTypes.length, 100)
+  assert.equal(evidence.truncated, true)
+})
+
 test("rejects a source snapshot from a different observation revision", async () => {
   const controller = new TraceGateDiscoveryController({
     source: {
@@ -117,4 +144,70 @@ test("rejects a source snapshot from a different observation revision", async ()
     ),
     /revision/,
   )
+})
+
+function webMcpSource(options: { jsonLdTruncated?: boolean } = {}) {
+  return {
+    async currentPageDiscoverySnapshot() {
+      return {
+        observationRevision: observation.revision,
+        jsonLdTexts: [],
+        jsonLdTruncated: options.jsonLdTruncated ?? false,
+        webMcpPresent: true,
+      }
+    },
+    async readCurrentOriginText() {
+      return {
+        status: 404,
+        finalUrl: "https://jobs.example/llms.txt",
+        text: "",
+        truncated: false,
+      }
+    },
+  }
+}
+
+const discoveryContext = {
+  runId: RunIdSchema.parse("01890f00-0000-7000-8000-000000000002"),
+  observation,
+  interfaceMode: "auto" as const,
+  admittedTarget,
+}
+
+test("WebMCP failure degrades to semantic fallback with bounded warning", async () => {
+  let calls = 0
+  const adapter = {
+    async discover() { calls += 1; throw new Error("untrusted adapter failure") },
+  } as unknown as WebMcpReadOnlyAdapterPort
+  const controller = new TraceGateDiscoveryController({
+    source: webMcpSource({ jsonLdTruncated: true }),
+    webMcp: { enabled: true, adapter, controller: {} as BrowserController },
+  })
+  const evidence = await controller.discover(
+    discoveryContext,
+    new AbortController().signal,
+  )
+  assert.equal(calls, 1)
+  assert.equal(evidence.webMcpGate, "discover_only")
+  assert.equal(evidence.truncated, true)
+  assert.equal(evidence.warnings[0]?.code, "webmcp_degraded")
+  assert.equal(controller.lastAdmittedWebMcpTools.length, 0)
+})
+
+test("semantic-only mode omits WebMCP invocation without degradation warning", async () => {
+  let calls = 0
+  const adapter = {
+    async discover() { calls += 1; return [] },
+  } as unknown as WebMcpReadOnlyAdapterPort
+  const controller = new TraceGateDiscoveryController({
+    source: webMcpSource(),
+    webMcp: { enabled: true, adapter, controller: {} as BrowserController },
+  })
+  const evidence = await controller.discover(
+    { ...discoveryContext, interfaceMode: "semantic-only" },
+    new AbortController().signal,
+  )
+  assert.equal(calls, 0)
+  assert.equal(evidence.webMcpGate, "available_disabled")
+  assert.deepEqual(evidence.warnings, [])
 })

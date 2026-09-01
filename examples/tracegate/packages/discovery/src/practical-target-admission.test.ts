@@ -58,6 +58,38 @@ test("rejects private-only and mixed DNS answer sets", async () => {
   )
 })
 
+test("bounds DNS lookup time and reports target unreachable", async () => {
+  const admission = new PracticalTargetAdmission({
+    lookupTimeoutMs: 100,
+    lookup: async () => new Promise(() => {}),
+  })
+  const result = await admission.assess(target, new AbortController().signal)
+  assert.equal(result.status, "rejected")
+  assert.equal(result.status === "rejected" && result.reason, "target_unreachable")
+})
+
+test("aborts a later admitted-origin lookup without accepting partial DNS evidence", async () => {
+  const multiOriginTarget = PublicEvaluationTargetV2Schema.parse({
+    kind: "public-web",
+    startUrl: "https://jobs.example/search",
+    allowedNavigationOrigins: ["https://jobs.example", "https://assets.example"],
+  })
+  const controller = new AbortController()
+  let calls = 0
+  const admission = new PracticalTargetAdmission({
+    lookup: async () => {
+      calls += 1
+      if (calls === 1) return [{ address: "93.184.216.34", family: 4 }]
+      return new Promise(() => {})
+    },
+  })
+  const pending = admission.assess(multiOriginTarget, controller.signal)
+  setTimeout(() => controller.abort(), 10)
+  const result = await pending
+  assert.equal(calls, 2)
+  assert.equal(result.status === "rejected" && result.reason, "operation_aborted")
+})
+
 test("public-address classifier rejects obvious private, local, and documentation ranges", () => {
   for (const address of [
     "10.0.0.1",
@@ -67,10 +99,16 @@ test("public-address classifier rejects obvious private, local, and documentatio
     "192.168.1.1",
     "192.0.2.10",
     "::1",
+    "0:0:0:0:0:0:0:1",
     "fc00::1",
     "fe80::1",
+    "fec0::1",
     "2001:db8::1",
+    "2001:0::1",
+    "2002:5db8:d822::1",
+    "3fff::1",
     "::ffff:c0a8:1",
+    "0:0:0:0:0:ffff:7f00:1",
   ]) {
     assert.equal(isPublicNetworkAddress(address), false, address)
   }
