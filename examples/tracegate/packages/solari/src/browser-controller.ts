@@ -1,4 +1,5 @@
 import {
+  FailureRecordSchema,
   ObservationRevisionSchema,
   RunWarningSchema,
   TraceGateError,
@@ -22,7 +23,7 @@ import {
   type Browser,
   type BrowserContext,
   type ElementHandle,
-  type Locator,
+  type JSHandle,
   type Page,
 } from "playwright-core"
 
@@ -150,6 +151,12 @@ interface ElementSnapshot extends PolicyElementSnapshot {
 }
 
 type ElementActionKind = "click" | "type" | "select" | "press_key"
+type BrowserTerminalPhase =
+  | "browser_connect"
+  | "navigation"
+  | "observation"
+  | "discovery"
+  | "assertion_capture"
 
 interface SafeSemanticIdentity {
   readonly tag: string
@@ -180,7 +187,7 @@ interface FirstFatalPolicyViolation {
 interface RegistryEntry {
   readonly ref: string
   readonly revision: ObservationRevision
-  readonly handle: ElementHandle<HTMLElement | SVGElement>
+  readonly handle: ElementHandle<Node>
   readonly identity: SafeSemanticIdentity
   readonly snapshot: ElementSnapshot
 }
@@ -200,6 +207,10 @@ interface InPageSemanticSnapshot {
   readonly totalCount: number
   readonly elementReadFailed: boolean
   readonly elements: readonly InPageSemanticElement[]
+}
+
+interface InPageSemanticCapture extends InPageSemanticSnapshot {
+  readonly nodes: readonly Element[]
 }
 
 interface InPageAssertionProjectionRequest {
@@ -336,17 +347,68 @@ function ambiguousElement(message = "Element semantic identity changed"): TraceG
   )
 }
 
-function abortedBrowserOperation(): TraceGateError {
+function abortedBrowserOperation(phase = "browser_action"): TraceGateError {
   return new TraceGateError(
     createControlError("operation_aborted", "Browser operation aborted", {
       category: "cancellation",
-      phase: "browser_action",
+      phase,
     }),
   )
 }
 
 function throwIfAborted(signal: AbortSignal): void {
   if (signal.aborted) throw abortedBrowserOperation()
+}
+
+const BROWSER_TERMINAL_FAILURE = {
+  browser_connect: {
+    code: "solari_unavailable",
+    message: "The browser controller could not establish a usable session.",
+  },
+  navigation: {
+    code: "target_unavailable",
+    message: "The admitted target could not be navigated to safely.",
+  },
+  observation: {
+    code: "target_evidence_lost",
+    message: "A trustworthy browser observation could not be captured.",
+  },
+  discovery: {
+    code: "target_evidence_lost",
+    message: "Browser discovery evidence could not be captured.",
+  },
+  assertion_capture: {
+    code: "target_evidence_lost",
+    message: "Fresh browser assertion evidence could not be captured.",
+  },
+} as const satisfies Record<
+  BrowserTerminalPhase,
+  { readonly code: "solari_unavailable" | "target_unavailable" | "target_evidence_lost"; readonly message: string }
+>
+
+function normalizeBrowserTerminalFailure(
+  phase: BrowserTerminalPhase,
+  error: unknown,
+  signal?: AbortSignal,
+): TraceGateError {
+  if (error instanceof TraceGateError && FailureRecordSchema.safeParse(error.safe).success) return error
+  if (signal?.aborted) return abortedBrowserOperation(phase)
+  const failure = BROWSER_TERMINAL_FAILURE[phase]
+  return new TraceGateError(
+    FailureRecordSchema.parse({
+      schemaVersion: 1,
+      category: "infrastructure",
+      code: failure.code,
+      outcome: "inconclusive",
+      policyCode: null,
+      phase,
+      retryable: false,
+      message: failure.message,
+      fieldIssues: [],
+      causeChain: [],
+    }),
+    error,
+  )
 }
 
 function browserPhaseFailure(
@@ -386,6 +448,7 @@ async function runBrowserPhase<T>(
   timeoutMs: number,
   signal: AbortSignal,
   operation: (phaseSignal: AbortSignal) => Promise<T>,
+  cleanupAbandonedResult?: (value: T) => void,
 ): Promise<T> {
   throwIfAborted(signal)
   const deadlineController = new AbortController()
@@ -396,7 +459,10 @@ async function runBrowserPhase<T>(
     deadlineController.abort(new Error(`Browser ${phase} deadline exceeded`))
   }, timeoutMs)
   try {
-    return await raceWithAbort(operation(phaseSignal), phaseSignal)
+    const pending = operation(phaseSignal)
+    return await (cleanupAbandonedResult
+      ? raceWithAbortAndCleanup(pending, phaseSignal, cleanupAbandonedResult)
+      : raceWithAbort(pending, phaseSignal))
   } catch (error) {
     if (signal.aborted) throw abortedBrowserOperation()
     if (timedOut) throw browserPhaseFailure(phase, `timed out after ${timeoutMs}ms`, error)
@@ -451,6 +517,35 @@ async function raceWithAbort<T>(operation: Promise<T>, signal: AbortSignal): Pro
     return await Promise.race([operation, aborted])
   } finally {
     if (abortHandler) signal.removeEventListener("abort", abortHandler)
+  }
+}
+
+async function raceWithAbortAndCleanup<T>(
+  operation: Promise<T>,
+  signal: AbortSignal,
+  cleanup: (value: T) => void,
+): Promise<T> {
+  let abandoned = false
+  let resolvedValue: T | undefined
+  let hasResolvedValue = false
+  const tracked = operation.then((value) => {
+    if (abandoned || signal.aborted) {
+      cleanup(value)
+      throw abortedBrowserOperation()
+    }
+    resolvedValue = value
+    hasResolvedValue = true
+    return value
+  })
+  try {
+    return await raceWithAbort(tracked, signal)
+  } catch (error) {
+    abandoned = true
+    if (hasResolvedValue) {
+      cleanup(resolvedValue as T)
+      hasResolvedValue = false
+    }
+    throw error
   }
 }
 
@@ -516,7 +611,7 @@ function sameSafeSemanticIdentity(
     left.disabled === right.disabled
 }
 
-async function readElement(handle: ElementHandle<HTMLElement | SVGElement>): Promise<ElementSnapshot> {
+async function readElement(handle: ElementHandle<Node>): Promise<ElementSnapshot> {
   return handle.evaluate((node, limits) => {
     const element = node as HTMLElement
     const tag = element.tagName.toLowerCase()
@@ -661,7 +756,7 @@ export class SolariCdpBrowserController implements BrowserController, AssertionS
   #page: Page | null = null
   #revision = 0
   #registry = new Map<string, RegistryEntry>()
-  #retiredHandles: Array<ElementHandle<HTMLElement | SVGElement>> = []
+  #retiredHandles: Array<ElementHandle<Node>> = []
   #initialNavigationCompleted = false
   #activePolicyAction: ActivePolicyAction | null = null
   #nextPolicyActionToken = 0
@@ -759,7 +854,7 @@ export class SolariCdpBrowserController implements BrowserController, AssertionS
       this.#clearRegistry()
       if (context) await settleWithin(context.close(), 5_000)
       if (browser) await settleWithin(browser.close(), 5_000)
-      throw error
+      throw normalizeBrowserTerminalFailure("browser_connect", error, signal)
     }
   }
 
@@ -785,6 +880,14 @@ export class SolariCdpBrowserController implements BrowserController, AssertionS
   }
 
   async navigate(url: string, signal: AbortSignal): Promise<UntrustedAgentObservation> {
+    try {
+      return await this.#navigate(url, signal)
+    } catch (error) {
+      throw normalizeBrowserTerminalFailure("navigation", error, signal)
+    }
+  }
+
+  async #navigate(url: string, signal: AbortSignal): Promise<UntrustedAgentObservation> {
     throwIfAborted(signal)
     const target = assertAllowedNavigation(url, this.#allowedOrigins)
     const page = this.#requirePage()
@@ -860,6 +963,16 @@ export class SolariCdpBrowserController implements BrowserController, AssertionS
   }
 
   async observe(signal: AbortSignal): Promise<UntrustedAgentObservation> {
+    try {
+      return await this.#observe(signal)
+    } catch (error) {
+      this.#observedDocumentSequence = null
+      this.#clearRegistry()
+      throw normalizeBrowserTerminalFailure("observation", error, signal)
+    }
+  }
+
+  async #observe(signal: AbortSignal): Promise<UntrustedAgentObservation> {
     throwIfAborted(signal)
     this.#throwIfFatalPolicyViolation()
     const page = this.#requirePage()
@@ -869,9 +982,31 @@ export class SolariCdpBrowserController implements BrowserController, AssertionS
     const revision = ObservationRevisionSchema.parse(this.#revision)
     this.#clearRegistry()
 
-    const controls = page.locator(SEMANTIC_SELECTOR)
-    const collection = controls.evaluateAll(
-      (nodes, limits): InPageSemanticSnapshot => {
+    const { collected, candidateHandles } = await runBrowserPhase(
+      "semantic observation capture",
+      this.#internalOperationTimeoutMs,
+      signal,
+      async (phaseSignal) => {
+        let captureHandle: JSHandle<InPageSemanticCapture> | null = null
+        let nodesHandle: JSHandle<readonly Element[]> | null = null
+        let nodePropertyHandles: Map<string, JSHandle<unknown>> | null = null
+        const transferredHandles = new Set<JSHandle<unknown>>()
+        let candidateHandlesTransferred = false
+        const disposeHandle = (handle: JSHandle<unknown>): void => {
+          void handle.dispose().catch(() => {})
+        }
+        const disposePropertyHandles = (handles: Map<string, JSHandle<unknown>>): void => {
+          for (const handle of handles.values()) disposeHandle(handle)
+        }
+        try {
+          // The page retains only the bounded prefix as remote nodes. Snapshotting happens against
+          // those exact nodes in the same evaluation, while totalCount preserves truncation honesty.
+          captureHandle = await raceWithAbortAndCleanup(
+            page.evaluateHandle(
+              ({ selector, limits }): InPageSemanticCapture => {
+                const semanticMatches = document.querySelectorAll(selector)
+                const nodes = Array.from(semanticMatches).slice(0, limits.maximumCandidates)
+                const totalCount = semanticMatches.length
         const isVisibleTextNode = (node: Text): boolean => {
           const range = document.createRange()
           range.selectNode(node)
@@ -1028,9 +1163,10 @@ export class SolariCdpBrowserController implements BrowserController, AssertionS
         for (let sourceIndex = 0; sourceIndex < candidateCount; sourceIndex += 1) {
           const node = nodes[sourceIndex]
           if (!node) continue
+          const element = node as Element
           try {
-            if (!isVisible(node)) continue
-            semanticElements.push({ sourceIndex, snapshot: readSnapshot(node) })
+            if (!isVisible(element)) continue
+            semanticElements.push({ sourceIndex, snapshot: readSnapshot(element) })
           } catch {
             elementReadFailed = true
           }
@@ -1050,22 +1186,83 @@ export class SolariCdpBrowserController implements BrowserController, AssertionS
           bodyText: bodyText.slice(0, limits.maximumVisibleTextCharacters + 1),
           bodyTextTruncated: bodyText.length > limits.maximumVisibleTextCharacters,
           bodyTextReadFailed,
-          totalCount: nodes.length,
+          totalCount,
           elementReadFailed,
           elements: semanticElements,
+          nodes,
         }
       },
       {
-        maximumCandidates: MAX_SEMANTIC_CANDIDATES,
-        maximumElementRoleCharacters: MAX_ELEMENT_ROLE_CHARACTERS,
-        maximumElementFieldCharacters: MAX_ELEMENT_FIELD_CHARACTERS,
-        maximumVisibleTextCharacters: MAX_VISIBLE_TEXT_CHARACTERS,
+        selector: SEMANTIC_SELECTOR,
+        limits: {
+          maximumCandidates: MAX_SEMANTIC_CANDIDATES,
+          maximumElementRoleCharacters: MAX_ELEMENT_ROLE_CHARACTERS,
+          maximumElementFieldCharacters: MAX_ELEMENT_FIELD_CHARACTERS,
+          maximumVisibleTextCharacters: MAX_VISIBLE_TEXT_CHARACTERS,
+        },
+      },
+            ),
+            phaseSignal,
+            disposeHandle,
+          )
+          const capturedSnapshot = await raceWithAbort(
+            captureHandle.evaluate((capture): InPageSemanticSnapshot => {
+              const { nodes: _nodes, ...snapshot } = capture
+              return snapshot
+            }),
+            phaseSignal,
+          )
+          nodesHandle = await raceWithAbortAndCleanup(
+            captureHandle.getProperty("nodes"),
+            phaseSignal,
+            disposeHandle,
+          )
+          nodePropertyHandles = await raceWithAbortAndCleanup(
+            nodesHandle.getProperties(),
+            phaseSignal,
+            disposePropertyHandles,
+          )
+          const boundedCount = Math.min(capturedSnapshot.totalCount, MAX_SEMANTIC_CANDIDATES)
+          const handles: ElementHandle<Node>[] = []
+          for (let index = 0; index < boundedCount; index += 1) {
+            const propertyHandle = nodePropertyHandles.get(String(index))
+            const elementHandle = propertyHandle?.asElement()
+            if (!propertyHandle || !elementHandle) {
+              throw new Error("Bounded semantic node acquisition returned an incomplete handle set")
+            }
+            transferredHandles.add(propertyHandle)
+            handles.push(elementHandle)
+          }
+          throwIfAborted(phaseSignal)
+          candidateHandlesTransferred = true
+          return { collected: capturedSnapshot, candidateHandles: handles }
+        } finally {
+          if (nodePropertyHandles) {
+            for (const handle of nodePropertyHandles.values()) {
+              if (!candidateHandlesTransferred || !transferredHandles.has(handle)) disposeHandle(handle)
+            }
+          }
+          if (nodesHandle) disposeHandle(nodesHandle)
+          if (captureHandle) disposeHandle(captureHandle)
+        }
+      },
+      ({ candidateHandles: abandonedHandles }) => {
+        for (const handle of abandonedHandles) void handle.dispose().catch(() => {})
       },
     )
-    const collected = await raceWithAbort(collection, signal)
+    const disposeCandidateHandles = (): void => {
+      for (const handle of candidateHandles) void handle.dispose().catch(() => {})
+    }
     const url = collected.url
-    const snapshotUrl = new URL(url)
+    let snapshotUrl: URL
+    try {
+      snapshotUrl = new URL(url)
+    } catch (error) {
+      disposeCandidateHandles()
+      throw error
+    }
     if (snapshotUrl.protocol !== "https:" || !this.#allowedOrigins.has(snapshotUrl.origin)) {
+      disposeCandidateHandles()
       throw blockedByPolicy("origin_not_admitted", "Page left the declared navigation origins")
     }
     const title = collected.title
@@ -1087,41 +1284,49 @@ export class SolariCdpBrowserController implements BrowserController, AssertionS
       discoverySummary: `${candidateElements.length} visible semantic elements`,
       truncated,
     })
-    if (Buffer.byteLength(JSON.stringify(envelope("", [])), "utf8") > this.#maxObservationBytes) {
-      throw new Error("Observation envelope exceeds the configured byte budget")
+    try {
+      if (Buffer.byteLength(JSON.stringify(envelope("", [])), "utf8") > this.#maxObservationBytes) {
+        throw new Error("Observation envelope exceeds the configured byte budget")
+      }
+    } catch (error) {
+      disposeCandidateHandles()
+      throw error
     }
 
-    for (const { sourceIndex, snapshot } of collected.elements) {
-      if (snapshot.truncated) truncated = true
-      const ref = `e:${revision}:${elements.length}`
-      const element: CompactElement = {
-        ref,
-        role: snapshot.role,
-        name: snapshot.name,
-        disabled: snapshot.disabled,
-        checked: snapshot.checked,
-        selected: snapshot.selected,
-        expanded: snapshot.expanded,
-        attributes: snapshot.attributes,
+    const retainedHandles = new Set<ElementHandle<Node>>()
+    try {
+      for (const { sourceIndex, snapshot } of collected.elements) {
+        if (snapshot.truncated) truncated = true
+        const ref = `e:${revision}:${elements.length}`
+        const element: CompactElement = {
+          ref,
+          role: snapshot.role,
+          name: snapshot.name,
+          disabled: snapshot.disabled,
+          checked: snapshot.checked,
+          selected: snapshot.selected,
+          expanded: snapshot.expanded,
+          attributes: snapshot.attributes,
+        }
+        const next = [...elements, element]
+        if (Buffer.byteLength(JSON.stringify(envelope("", next)), "utf8") > this.#maxObservationBytes) {
+          truncated = true
+          break
+        }
+        const handle = candidateHandles[sourceIndex]
+        if (!handle) {
+          truncated = true
+          continue
+        }
+        const identity = safeSemanticIdentity(snapshot)
+        this.#registry.set(ref, { ref, revision, handle, identity, snapshot })
+        retainedHandles.add(handle)
+        elements.push(element)
       }
-      const next = [...elements, element]
-      if (Buffer.byteLength(JSON.stringify(envelope("", next)), "utf8") > this.#maxObservationBytes) {
-        truncated = true
-        break
+    } finally {
+      for (const handle of candidateHandles) {
+        if (!retainedHandles.has(handle)) void handle.dispose().catch(() => {})
       }
-      const handle = await raceWithAbort(controls.nth(sourceIndex).elementHandle(), signal)
-      if (!handle) {
-        truncated = true
-        continue
-      }
-      elements.push(element)
-      this.#registry.set(ref, {
-        ref,
-        revision,
-        handle,
-        identity: safeSemanticIdentity(snapshot),
-        snapshot,
-      })
     }
 
     const boundedBodyText = collected.bodyText
@@ -1237,6 +1442,16 @@ export class SolariCdpBrowserController implements BrowserController, AssertionS
   async currentPageDiscoverySnapshot(
     signal: AbortSignal,
   ): Promise<CurrentPageDiscoverySnapshot> {
+    try {
+      return await this.#currentPageDiscoverySnapshot(signal)
+    } catch (error) {
+      throw normalizeBrowserTerminalFailure("discovery", error, signal)
+    }
+  }
+
+  async #currentPageDiscoverySnapshot(
+    signal: AbortSignal,
+  ): Promise<CurrentPageDiscoverySnapshot> {
     throwIfAborted(signal)
     const page = this.#requirePage()
     this.#assertCurrentOrigin()
@@ -1273,6 +1488,16 @@ export class SolariCdpBrowserController implements BrowserController, AssertionS
   }
 
   async currentOriginWebMcpTools(
+    signal: AbortSignal,
+  ): Promise<readonly RawCurrentOriginWebMcpTool[]> {
+    try {
+      return await this.#currentOriginWebMcpTools(signal)
+    } catch (error) {
+      throw normalizeBrowserTerminalFailure("discovery", error, signal)
+    }
+  }
+
+  async #currentOriginWebMcpTools(
     signal: AbortSignal,
   ): Promise<readonly RawCurrentOriginWebMcpTool[]> {
     throwIfAborted(signal)
@@ -1326,9 +1551,13 @@ export class SolariCdpBrowserController implements BrowserController, AssertionS
   }
 
   currentBrowserOrigin(): string {
-    this.#assertCurrentOrigin()
-    this.#assertObservedDocument()
-    return new URL(this.#requirePage().url()).origin
+    try {
+      this.#assertCurrentOrigin()
+      this.#assertObservedDocument()
+      return new URL(this.#requirePage().url()).origin
+    } catch (error) {
+      throw normalizeBrowserTerminalFailure("discovery", error)
+    }
   }
 
   async invokeCurrentOriginWebMcpTool(
@@ -1451,6 +1680,18 @@ export class SolariCdpBrowserController implements BrowserController, AssertionS
     maxBytes: number,
     signal: AbortSignal,
   ): Promise<CurrentOriginTextResult> {
+    try {
+      return await this.#readCurrentOriginText(path, maxBytes, signal)
+    } catch (error) {
+      throw normalizeBrowserTerminalFailure("discovery", error, signal)
+    }
+  }
+
+  async #readCurrentOriginText(
+    path: string,
+    maxBytes: number,
+    signal: AbortSignal,
+  ): Promise<CurrentOriginTextResult> {
     throwIfAborted(signal)
     if (!path.startsWith("/") || path.startsWith("//") || maxBytes < 1 || maxBytes > 65_536) {
       throw new Error("Current-origin discovery request is invalid")
@@ -1531,6 +1772,17 @@ export class SolariCdpBrowserController implements BrowserController, AssertionS
   }
 
   async captureAssertionSnapshot(
+    input: AssertionCaptureInput,
+    signal: AbortSignal,
+  ): Promise<TransientAssertionSnapshotV1> {
+    try {
+      return await this.#captureAssertionSnapshot(input, signal)
+    } catch (error) {
+      throw normalizeBrowserTerminalFailure("assertion_capture", error, signal)
+    }
+  }
+
+  async #captureAssertionSnapshot(
     input: AssertionCaptureInput,
     signal: AbortSignal,
   ): Promise<TransientAssertionSnapshotV1> {
@@ -2028,7 +2280,7 @@ export class SolariCdpBrowserController implements BrowserController, AssertionS
     identity: SafeSemanticIdentity,
     action: ElementActionKind,
     signal: AbortSignal,
-  ): Promise<ElementHandle<HTMLElement | SVGElement> | null> {
+  ): Promise<ElementHandle<Node> | null> {
     const controls = this.#requirePage().locator(SEMANTIC_SELECTOR)
     const lookup = controls.evaluateAll((nodes, request) => {
       const normalizeWhitespace = (value: string | null): string =>
@@ -2214,7 +2466,7 @@ export class SolariCdpBrowserController implements BrowserController, AssertionS
   }
 
   async #isHandleActionable(
-    handle: ElementHandle<HTMLElement | SVGElement>,
+    handle: ElementHandle<Node>,
     action: ElementActionKind,
   ): Promise<boolean> {
     if (!(await handle.isVisible().catch(() => false))) return false
