@@ -21,6 +21,7 @@ import {
   FakeProviderCapacityPort,
   FakeProviderSessionReconciliationPort,
   FakeSafeAgentToolPort,
+  FakeWebMcpReadOnlyAdapter,
   InMemoryEvaluationRepository,
   InMemoryEvaluationSubmissionRepository,
   InMemoryEventRepository,
@@ -34,6 +35,8 @@ import {
   observationFixture,
   passingGradeFixture,
   runFixture,
+  webMcpResultFixture,
+  webMcpToolDescriptorFixture,
 } from "../src/testing/index.ts";
 
 const signal = () => new AbortController().signal;
@@ -132,6 +135,21 @@ test("controller factory constructs per lease and safe-tool fake enforces action
   const safeTools = new FakeSafeAgentToolPort(surface, [result]);
   assert.deepEqual((await safeTools.surface(1, signal())).tools, ["inspect", "finish"]);
   assert.equal((await safeTools.execute({ kind: "inspect", toolCallId, observationRevision: 1 }, signal())).tool, "inspect");
+});
+
+test("WebMCP fake preserves current-origin discovery and tool-result identity", async () => {
+  const browser = new ScriptedBrowserController([]);
+  const adapter = new FakeWebMcpReadOnlyAdapter([webMcpToolDescriptorFixture], [webMcpResultFixture]);
+  const descriptors = await adapter.discover(browser, webMcpToolDescriptorFixture.currentOrigin, signal());
+  assert.deepEqual(descriptors, [webMcpToolDescriptorFixture]);
+  const result = await adapter.invoke(browser, {
+    toolId: webMcpToolDescriptorFixture.id,
+    currentOrigin: webMcpToolDescriptorFixture.currentOrigin,
+    input: { query: "senior engineer", minimumSalary: 150_000 },
+  }, signal());
+  assert.equal(result.toolId, webMcpToolDescriptorFixture.id);
+  assert.equal(adapter.discoveryCalls.length, 1);
+  assert.equal(adapter.invocationCalls.length, 1);
 });
 
 test("capacity and ambiguous-create reconciliation fakes preserve typed safety semantics", async () => {

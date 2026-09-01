@@ -38,6 +38,7 @@ export const PublicEvaluationConfigV2Schema = z.object({
   requestedRunsPerModel: z.number().int().min(1).max(5).default(3),
   requestedConcurrency: z.number().int().min(1).max(5).default(3),
   interfaceMode: InterfaceModeSchema.default("auto"),
+  webMcpReadOnlyEnabled: z.boolean().default(false),
   recordingRequested: z.boolean().default(false),
   sampling: SamplingConfigSchema.default({ temperature: 0.2, topP: 1, providerRouting: null }),
   budgets: RuntimeBudgetsSchema.default({

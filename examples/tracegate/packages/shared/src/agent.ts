@@ -4,6 +4,12 @@ import { ElementRefSchema, ObservationRevisionSchema, ToolCallIdSchema } from ".
 import { PublicHttpsOriginSchema, PublicHttpsUrlSchema } from "./targets.ts";
 import { EffectDecisionSchema } from "./policy.ts";
 import { RunWarningSchema } from "./errors.ts";
+import {
+  UntrustedWebMcpResultV1Schema,
+  WebMcpInvocationInputSchema,
+  WebMcpToolCatalogV1Schema,
+  WebMcpToolIdSchema,
+} from "./webmcp.ts";
 
 const boundedText = z.string().max(4_000);
 
@@ -16,6 +22,7 @@ export const SafeAgentToolNameSchema = z.enum([
   "pressKey",
   "scroll",
   "wait",
+  "invokeWebMcpReadOnly",
   "finish",
 ]);
 
@@ -46,6 +53,7 @@ export const SafeAgentActionSchema = z.discriminatedUnion("kind", [
   z.object({ ...proposalBase, kind: z.literal("pressKey"), ref: ElementRefSchema, key: RestrictedKeySchema }).strict(),
   z.object({ ...proposalBase, kind: z.literal("scroll"), direction: z.enum(["up", "down"]), amount: z.number().int().min(1).max(5_000) }).strict(),
   z.object({ ...proposalBase, kind: z.literal("wait"), durationMs: z.number().int().min(0).max(15_000) }).strict(),
+  z.object({ ...proposalBase, kind: z.literal("invokeWebMcpReadOnly"), toolId: WebMcpToolIdSchema, input: WebMcpInvocationInputSchema }).strict(),
   z.object({ ...proposalBase, kind: z.literal("finish"), completed: z.boolean(), summary: z.string().max(2_000) }).strict(),
 ]);
 
@@ -83,7 +91,7 @@ export const AgentObservationSchema = UntrustedAgentObservationSchema;
 export const PublicCapabilitySummarySchema = z.object({
   startOrigin: PublicHttpsOriginSchema,
   allowedNavigationOrigins: z.array(PublicHttpsOriginSchema).min(1).max(3),
-  availableTools: z.array(SafeAgentToolNameSchema).max(9),
+  availableTools: z.array(SafeAgentToolNameSchema).max(10),
   interfaceMode: z.enum(["auto", "semantic-only"]),
   safetySummary: z.literal("anonymous public observable-state tasks only; unknown effects are denied"),
 }).strict().superRefine((value, context) => {
@@ -114,9 +122,14 @@ export const AgentPromptLayersV2Schema = z.object({
 
 export const SafeAgentToolSurfaceSchema = z.object({
   observationRevision: ObservationRevisionSchema,
-  tools: z.array(SafeAgentToolNameSchema).max(9),
+  tools: z.array(SafeAgentToolNameSchema).max(10),
+  webMcpTools: WebMcpToolCatalogV1Schema.default([]),
 }).strict().superRefine((value, context) => {
   if (new Set(value.tools).size !== value.tools.length) context.addIssue({ code: "custom", path: ["tools"], message: "tool surface must not contain duplicates" });
+  const hasInvocationTool = value.tools.includes("invokeWebMcpReadOnly");
+  if (hasInvocationTool !== (value.webMcpTools.length > 0)) {
+    context.addIssue({ code: "custom", path: ["webMcpTools"], message: "the WebMCP invocation tool and admitted descriptor catalog must be exposed together" });
+  }
 });
 
 const toolResultBase = {
@@ -137,6 +150,7 @@ export const SafeAgentToolResultSchema = z.discriminatedUnion("tool", [
   z.object({ ...toolResultBase, tool: z.literal("pressKey") }).strict(),
   z.object({ ...toolResultBase, tool: z.literal("scroll") }).strict(),
   z.object({ ...toolResultBase, tool: z.literal("wait") }).strict(),
+  z.object({ ...toolResultBase, tool: z.literal("invokeWebMcpReadOnly"), webMcpResult: UntrustedWebMcpResultV1Schema }).strict(),
   z.object({ ...toolResultBase, tool: z.literal("finish"), observation: z.null(), finishedBelief: z.boolean() }).strict(),
 ]).superRefine((value, context) => {
   if (value.decision.decision !== "allow") return;
@@ -149,6 +163,7 @@ export const SafeAgentToolResultSchema = z.discriminatedUnion("tool", [
     pressKey: ["restricted_key_navigation"],
     scroll: ["viewport_scroll"],
     wait: ["passive_wait"],
+    invokeWebMcpReadOnly: ["admitted_read_only_webmcp"],
     finish: ["finish_declaration"],
   } as const;
   if (!(allowedEffects[value.tool] as readonly string[]).includes(value.decision.effect)) {
@@ -165,6 +180,9 @@ export const SafeAgentToolExchangeSchema = z.object({
   }
   if (value.result.decision.observationRevision !== value.action.observationRevision) {
     context.addIssue({ code: "custom", path: ["result", "decision", "observationRevision"], message: "effect decision must use the proposal revision" });
+  }
+  if (value.action.kind === "invokeWebMcpReadOnly" && value.result.tool === "invokeWebMcpReadOnly" && value.action.toolId !== value.result.webMcpResult.toolId) {
+    context.addIssue({ code: "custom", path: ["result", "webMcpResult", "toolId"], message: "WebMCP result tool ID must match its action" });
   }
 });
 

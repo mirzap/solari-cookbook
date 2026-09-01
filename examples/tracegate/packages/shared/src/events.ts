@@ -75,7 +75,7 @@ export const RunEventSchema = z.discriminatedUnion("type", [
   event("run.status_changed", RunStatusChangedEventPayloadSchema),
   event("run.environment.recorded", RunEnvironmentEvidenceSchema),
   event("run.admission.completed", z.discriminatedUnion("status", [
-    z.object({ status: z.literal("admitted"), reason: z.literal("admitted"), enforcement: z.enum(["provider_preconnect", "forced_proxy_preconnect"]) }).strict(),
+    z.object({ status: z.literal("admitted"), reason: z.literal("admitted"), enforcement: z.enum(["provider_preconnect", "forced_proxy_preconnect", "practical_best_effort"]) }).strict(),
     z.object({ status: z.literal("rejected"), reason: AdmissionReasonCodeSchema.exclude(["admitted"]), enforcement: z.null() }).strict(),
   ])),
   event("run.browser.ready", z.object({ region: z.string().min(1).max(100).nullable(), recordingRequested: z.boolean() }).strict()),

@@ -11,6 +11,7 @@ import {
   EventCursorSchema, EvaluationIdSchema, EventIdSchema, RunIdSchema, UtcDateTimeSchema,
 } from "../ids.ts";
 import { AdmittedPublicTargetSchema } from "../targets.ts";
+import { UntrustedWebMcpResultV1Schema, WebMcpToolDescriptorV1Schema } from "../webmcp.ts";
 
 export const FIXTURE_NOW = UtcDateTimeSchema.parse("2026-09-01T12:00:00.000Z");
 export const FIXTURE_EVALUATION_ID = EvaluationIdSchema.parse("01890f00-0000-7000-8000-000000000001");
@@ -55,6 +56,35 @@ export const observationFixture = UntrustedAgentObservationSchema.parse({
   elements: [{ ref: "e:1:1", role: "combobox", name: "Size", disabled: false, checked: null, selected: null, expanded: null, attributes: { value: "M" } }],
   discoverySummary: "One page-authored semantic control observed.",
   truncated: false,
+});
+
+export const webMcpToolDescriptorFixture = WebMcpToolDescriptorV1Schema.parse({
+  schemaVersion: 1,
+  id: "jobs.search.readonly",
+  name: "searchJobs",
+  description: "Search the current job catalog using public filters without changing page state.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      query: { type: "string", maxLength: 200 },
+      minimumSalary: { type: "integer", minimum: 0, maximum: 1_000_000 },
+    },
+    required: ["query", "minimumSalary"],
+    additionalProperties: false,
+  },
+  currentOrigin: "https://demo.tracegate.test",
+  trust: "untrusted_page_capability",
+  declaredReadOnly: true,
+});
+
+export const webMcpResultFixture = UntrustedWebMcpResultV1Schema.parse({
+  schemaVersion: 1,
+  toolId: webMcpToolDescriptorFixture.id,
+  trust: "untrusted_page_tool_result",
+  summary: "Three public job cards were returned by the page tool.",
+  output: { count: 3, query: "senior software engineer" },
+  truncated: false,
+  redacted: true,
 });
 
 export const agentExecutionInputFixture = AgentExecutionInputV2Schema.parse({

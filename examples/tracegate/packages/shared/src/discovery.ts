@@ -8,6 +8,7 @@ export const WebMcpGateStateSchema = z.enum([
   "unavailable",
   "available_disabled",
   "discover_only",
+  "admitted_read_only",
 ]);
 
 export const DiscoveredInterfaceSchema = z.object({

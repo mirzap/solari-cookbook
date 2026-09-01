@@ -27,7 +27,10 @@ import {
   type ReleaseResult,
   type SafeAgentToolPort,
   type SensitiveBrowserEndpoint,
+  type WebMcpReadOnlyAdapterPort,
 } from "../ports.ts";
+import type { PublicHttpsOrigin } from "../targets.ts";
+import type { UntrustedWebMcpResultV1, WebMcpInvocationRequest, WebMcpToolDescriptorV1 } from "../webmcp.ts";
 import { cleanupWarningFixture } from "./fixtures.ts";
 
 export type ScriptedBrowserOperation =
@@ -174,6 +177,33 @@ export class FakeSafeAgentToolPort implements SafeAgentToolPort {
     const result = this.#results.shift();
     if (result === undefined) throw new Error("No scripted safe-tool result remains");
     SafeAgentToolExchangeSchema.parse({ action, result });
+    return clone(result);
+  }
+}
+
+export class FakeWebMcpReadOnlyAdapter implements WebMcpReadOnlyAdapterPort {
+  readonly discoveryCalls: Array<{ controller: BrowserController; currentOrigin: PublicHttpsOrigin }> = [];
+  readonly invocationCalls: Array<{ controller: BrowserController; request: WebMcpInvocationRequest }> = [];
+  #descriptors: readonly WebMcpToolDescriptorV1[];
+  #results: UntrustedWebMcpResultV1[];
+
+  constructor(descriptors: readonly WebMcpToolDescriptorV1[], results: readonly UntrustedWebMcpResultV1[] = []) {
+    this.#descriptors = clone(descriptors);
+    this.#results = [...results].map(clone);
+  }
+
+  async discover(controller: BrowserController, currentOrigin: PublicHttpsOrigin, signal: AbortSignal): Promise<readonly WebMcpToolDescriptorV1[]> {
+    throwIfAborted(signal);
+    this.discoveryCalls.push({ controller, currentOrigin });
+    return clone(this.#descriptors);
+  }
+
+  async invoke(controller: BrowserController, request: WebMcpInvocationRequest, signal: AbortSignal): Promise<UntrustedWebMcpResultV1> {
+    throwIfAborted(signal);
+    this.invocationCalls.push({ controller, request: clone(request) });
+    const result = this.#results.shift();
+    if (result === undefined) throw new Error("No scripted WebMCP result remains");
+    if (result.toolId !== request.toolId) throw new Error("Scripted WebMCP result tool ID mismatch");
     return clone(result);
   }
 }

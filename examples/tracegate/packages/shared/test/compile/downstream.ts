@@ -16,6 +16,7 @@ import type {
   RunTransitionRepository,
   SafeAgentToolPort,
   TargetAdmissionPort,
+  WebMcpReadOnlyAdapterPort,
 } from "@tracegate/shared";
 import { PublicEvaluationConfigV2Schema } from "@tracegate/shared";
 import { evaluationConfigFixture, type DeterministicClock } from "@tracegate/shared/testing";
@@ -39,6 +40,7 @@ export interface DownstreamCompositionV2 {
   events: EventRepository;
   replay: ReplayService;
   clock: DeterministicClock;
+  webMcp: WebMcpReadOnlyAdapterPort;
 }
 
 export const downstreamConfigV2 = PublicEvaluationConfigV2Schema.parse(evaluationConfigFixture);

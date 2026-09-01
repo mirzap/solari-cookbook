@@ -26,7 +26,9 @@ import {
   type EvaluationStatus, type ReleaseStatus, type ReplayStatus, type RunOutcome, type RunStatus,
 } from "./states.ts";
 import type { AdmittedPublicTarget, PublicEvaluationTargetV2, TargetAdmissionResult } from "./targets.ts";
+import type { PublicHttpsOrigin } from "./targets.ts";
 import { RunTransitionContextSchema, validateRunTransition } from "./transitions.ts";
+import type { UntrustedWebMcpResultV1, WebMcpInvocationRequest, WebMcpToolDescriptorV1 } from "./webmcp.ts";
 
 export interface Clock { now(): Date; nowIso(): UtcDateTime; sleep(durationMs: number, signal: AbortSignal): Promise<void>; }
 export interface IdGenerator { evaluationId(): EvaluationId; runId(): RunId; eventId(): EventId; createAttemptCorrelationId(): CreateAttemptCorrelationId; }
@@ -145,6 +147,11 @@ export interface BrowserController {
   wait(durationMs: number, signal: AbortSignal): Promise<UntrustedAgentObservation>;
 }
 export interface BrowserControllerFactory { create(lease: BrowserLease, signal: AbortSignal): Promise<BrowserController>; }
+
+export interface WebMcpReadOnlyAdapterPort {
+  discover(controller: BrowserController, currentOrigin: PublicHttpsOrigin, signal: AbortSignal): Promise<readonly WebMcpToolDescriptorV1[]>;
+  invoke(controller: BrowserController, request: WebMcpInvocationRequest, signal: AbortSignal): Promise<UntrustedWebMcpResultV1>;
+}
 
 export interface SafeAgentToolPort {
   surface(observationRevision: ObservationRevision, signal: AbortSignal): Promise<SafeAgentToolSurface>;

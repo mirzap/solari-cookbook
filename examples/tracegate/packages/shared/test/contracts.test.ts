@@ -5,6 +5,7 @@ import * as sharedExports from "../src/index.ts";
 import {
   AgentExecutionInputV2Schema,
   AgentTraceEventSchema,
+  AdmittedPublicTargetSchema,
   AssertionCaptureResultSchema,
   AssertionSetV1Schema,
   BrowserAssertionEvidenceV1Schema,
@@ -28,6 +29,8 @@ import {
   ServerEnvSchema,
   TERMINAL_FAILURE_SEMANTICS,
   UntrustedAgentObservationSchema,
+  UntrustedWebMcpResultV1Schema,
+  WebMcpToolDescriptorV1Schema,
   buildAgentExecutionInputV2,
   createBrowserProviderConcurrencyLimitError,
   isBrowserProviderConcurrencyLimitError,
@@ -36,6 +39,7 @@ import {
 } from "../src/index.ts";
 import {
   ASSERTION_ONLY_CANARY,
+  admittedTargetFixture,
   agentExecutionInputFixture,
   assertionCanaryConfigFixture,
   assertionCaptureResultFixture,
@@ -48,6 +52,8 @@ import {
   observationFixture,
   passingGradeFixture,
   runFixture,
+  webMcpResultFixture,
+  webMcpToolDescriptorFixture,
 } from "../src/testing/index.ts";
 
 test("canonical V2 fixtures satisfy authoritative schemas", () => {
@@ -61,6 +67,8 @@ test("canonical V2 fixtures satisfy authoritative schemas", () => {
 
 test("public target and config are bounded, exact-origin, and V2-only", () => {
   assert.equal(PublicEvaluationConfigV2Schema.parse(evaluationConfigFixture).assertions.length, 4);
+  assert.equal(PublicEvaluationConfigV2Schema.parse(evaluationConfigFixture).webMcpReadOnlyEnabled, false);
+  assert.equal(PublicEvaluationConfigV2Schema.parse({ ...evaluationConfigFixture, webMcpReadOnlyEnabled: true }).webMcpReadOnlyEnabled, true);
   assert.equal(PublicHttpsUrlSchema.safeParse("http://example.test").success, false);
   assert.equal(PublicHttpsUrlSchema.safeParse("https://127.0.0.1/path").success, false);
   assert.equal(PublicHttpsOriginSchema.safeParse("https://example.test/path").success, false);
@@ -73,6 +81,26 @@ test("public target and config are bounded, exact-origin, and V2-only", () => {
     ...evaluationConfigFixture,
     assertions: [{ ...evaluationConfigFixture.assertions[0], expectedUrl: "https://other.test/path" }],
   }).success, false, "URL assertion origin must be declared");
+  assert.equal(AdmittedPublicTargetSchema.safeParse({
+    schemaVersion: 1,
+    startUrl: "https://example.test/path",
+    allowedNavigationOrigins: ["https://example.test"],
+    admittedAt: "2026-09-01T12:00:00.000Z",
+    expiresAt: "2026-09-01T12:05:00.000Z",
+    policyVersion: "public-safe-v1",
+    enforcement: "practical_best_effort",
+    practicalControls: {
+      dnsPreflight: "public_answers_only",
+      serviceWorkers: "blocked",
+      requestInterception: "get_head_only_observable",
+      limitations: ["no_provider_preconnect_ip_enforcement", "dns_rebinding_not_fully_prevented"],
+    },
+  }).success, true);
+  assert.equal(AdmittedPublicTargetSchema.safeParse({
+    ...admittedTargetFixture,
+    enforcement: "practical_best_effort",
+    practicalControls: null,
+  }).success, false);
 });
 
 test("assertion DSL variants are closed and bounded", () => {
@@ -117,6 +145,31 @@ test("assertion-only canary cannot flow into assertion-free agent DTO or agent t
     ["inspect", "finish"],
   );
   assert.equal(lexicalCoincidence.userTask.includes(ASSERTION_ONLY_CANARY), true, "user-authored lexical overlap is not an assertion-provenance failure");
+});
+
+test("WebMCP contracts expose only admitted bounded read-only capabilities and untrusted results", () => {
+  assert.equal(WebMcpToolDescriptorV1Schema.parse(webMcpToolDescriptorFixture).declaredReadOnly, true);
+  assert.equal(UntrustedWebMcpResultV1Schema.parse(webMcpResultFixture).trust, "untrusted_page_tool_result");
+  assert.equal(WebMcpToolDescriptorV1Schema.safeParse({ ...webMcpToolDescriptorFixture, declaredReadOnly: false }).success, false);
+  assert.equal(WebMcpToolDescriptorV1Schema.safeParse({
+    ...webMcpToolDescriptorFixture,
+    inputSchema: { type: "object", properties: { destinationUrl: { type: "string" } }, required: [], additionalProperties: false },
+  }).success, false);
+  assert.equal(WebMcpToolDescriptorV1Schema.safeParse({
+    ...webMcpToolDescriptorFixture,
+    inputSchema: { ...webMcpToolDescriptorFixture.inputSchema, additionalProperties: true },
+  }).success, false);
+  assert.equal(UntrustedWebMcpResultV1Schema.safeParse({ ...webMcpResultFixture, redacted: false }).success, false);
+  assert.equal(JSON.stringify(webMcpToolDescriptorFixture).includes(ASSERTION_ONLY_CANARY), false);
+  assert.equal(JSON.stringify(webMcpResultFixture).includes(ASSERTION_ONLY_CANARY), false);
+  assert.equal(SafeAgentToolExchangeSchema.safeParse({
+    action: { kind: "invokeWebMcpReadOnly", toolCallId: "tool-webmcp", observationRevision: 1, toolId: webMcpToolDescriptorFixture.id, input: { query: "engineer", minimumSalary: 150_000 } },
+    result: {
+      schemaVersion: 1, toolCallId: "tool-webmcp", tool: "invokeWebMcpReadOnly",
+      decision: { decision: "allow", effect: "admitted_read_only_webmcp", observationRevision: 1 },
+      observation: observationFixture, finishedBelief: null, summary: "Read-only page capability completed.", webMcpResult: webMcpResultFixture,
+    },
+  }).success, true);
 });
 
 test("universal outcome precedence is cancellation, policy, unverifiable, false, pass", () => {

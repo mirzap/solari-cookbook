@@ -53,6 +53,21 @@ export const AdmissionReasonCodeSchema = z.enum([
   "operation_aborted",
 ]);
 
+export const PracticalAdmissionControlsSchema = z.object({
+  dnsPreflight: z.enum(["public_answers_only", "unavailable"]),
+  serviceWorkers: z.enum(["blocked", "unsupported"]),
+  requestInterception: z.enum(["get_head_only_observable", "unavailable"]),
+  limitations: z.array(z.enum([
+    "no_provider_preconnect_ip_enforcement",
+    "dns_rebinding_not_fully_prevented",
+    "browser_process_traffic_not_fully_observable",
+  ])).min(1).max(3),
+}).strict().superRefine((value, context) => {
+  if (new Set(value.limitations).size !== value.limitations.length) {
+    context.addIssue({ code: "custom", path: ["limitations"], message: "limitations must be unique" });
+  }
+});
+
 export const AdmittedPublicTargetSchema = z.object({
   schemaVersion: z.literal(1),
   startUrl: PublicHttpsUrlSchema,
@@ -60,7 +75,8 @@ export const AdmittedPublicTargetSchema = z.object({
   admittedAt: UtcDateTimeSchema,
   expiresAt: UtcDateTimeSchema,
   policyVersion: z.literal("public-safe-v1"),
-  enforcement: z.enum(["provider_preconnect", "forced_proxy_preconnect"]),
+  enforcement: z.enum(["provider_preconnect", "forced_proxy_preconnect", "practical_best_effort"]),
+  practicalControls: PracticalAdmissionControlsSchema.nullable().default(null),
 }).strict().superRefine((value, context) => {
   if (new Set(value.allowedNavigationOrigins).size !== value.allowedNavigationOrigins.length) {
     context.addIssue({ code: "custom", path: ["allowedNavigationOrigins"], message: "admitted origins must be unique" });
@@ -70,6 +86,9 @@ export const AdmittedPublicTargetSchema = z.object({
   }
   if (Date.parse(value.expiresAt) <= Date.parse(value.admittedAt)) {
     context.addIssue({ code: "custom", path: ["expiresAt"], message: "admission expiry must follow admission time" });
+  }
+  if ((value.enforcement === "practical_best_effort") !== (value.practicalControls !== null)) {
+    context.addIssue({ code: "custom", path: ["practicalControls"], message: "practical controls are required only for practical best-effort admission" });
   }
 });
 
@@ -86,5 +105,6 @@ export type PublicHttpsUrl = z.infer<typeof PublicHttpsUrlSchema>;
 export type PublicHttpsOrigin = z.infer<typeof PublicHttpsOriginSchema>;
 export type PublicEvaluationTargetV2 = z.infer<typeof PublicEvaluationTargetV2Schema>;
 export type AdmissionReasonCode = z.infer<typeof AdmissionReasonCodeSchema>;
+export type PracticalAdmissionControls = z.infer<typeof PracticalAdmissionControlsSchema>;
 export type AdmittedPublicTarget = z.infer<typeof AdmittedPublicTargetSchema>;
 export type TargetAdmissionResult = z.infer<typeof TargetAdmissionResultSchema>;

@@ -12,6 +12,7 @@ export const SafeActionEffectSchema = z.enum([
   "local_filter_select",
   "non_sensitive_filter_input",
   "restricted_key_navigation",
+  "admitted_read_only_webmcp",
   "finish_declaration",
 ]);
 
