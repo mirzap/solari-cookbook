@@ -1,163 +1,133 @@
-# Generic-site V2 pivot decision record
+# Generic-site functional-app rebaseline
 
 - **Recorded:** 2026-09-01
 - **Owner:** Agent A, planning/integration owner
 - **Authority:** explicit user product decision
-- **Status:** approved planning pivot; implementation quarantined until TG-006R
+- **Status:** approved functional-app plan; TG-004R passed, application-lane WIP remains quarantined pending lane-local integration
 - **Source plan:** `docs/plans/tracegate-poc-build-2026-09-01.md`
 
-## Decisions
+## Current product decision
 
-TraceGate V2:
+TraceGate is a local functional proof of concept, not a production-grade remote-browser security platform or submission package.
 
-1. Accepts generic user-submitted public HTTPS targets and bounded prompts.
-2. Accepts 1–20 bounded required declarative URL, text, semantic, or state assertions.
-3. Enforces assertion isolation as a provenance/non-flow guarantee with assertion-only canaries and a schema-parsed assertion-free agent DTO; it does not claim impossible global lexical absence. Assertions remain in the local authoring/grading control plane.
-4. Builds model input from fixed server policy, a separate user task, a bounded public capability summary, and explicitly untrusted observations/results. Browser-captured accessibility semantics remain page-authored untrusted content and never certify safety.
-5. Grades only from a fresh bounded operationally stable browser capture after the serialized action FIFO drains: fixed quiet interval, two identical canonical captures (three attempts maximum), same document/loader, no relevant activity, and fixed deadline.
-6. Maps any required unverifiable evidence to INCONCLUSIVE.
-7. Permits only anonymous public actions within a closed detectable-effect policy; this is not a claim of backend reversibility or harmless GET behavior.
-8. Prohibits authentication/credentials, financial/purchase actions, messaging/publication, destructive actions, uploads/downloads, sensitive data, permissions, irreversible submits, and unknown or unobservable effects.
-9. Uses Demo Store only as a deterministic positive/adversarial test fixture. Production configuration, composition, API, report, and grading cannot depend on Demo administration, challenges, cart state, or privileged evidence.
-10. Defines PASS as satisfaction of declared browser-observable assertions only. PASS does not prove arbitrary backend business truth or durable external effect.
-11. Keeps generic WebMCP invocation disabled; discovery may remain informational only through the enforced/pinned network path.
+The app:
 
-## B/C/D review corrections incorporated
+1. Accepts a user-submitted public HTTPS URL, exact allowed origins, bounded prompt, one to twenty URL/text/semantic/state assertions, and model/run/concurrency settings.
+2. Executes real isolated Solari sessions through the verified `deepseek/deepseek-v4-flash-0731` TanStack/OpenRouter path.
+3. Gives the model an assertion-free execution DTO and dynamically available semantic safe tools.
+4. Captures fresh browser-observable evidence after actions stop and grades deterministically as PASS, FAIL, or INCONCLUSIVE.
+5. Persists authoritative local state in Drizzle/libSQL and provides snapshot/SSE live UI, bounded traces, reports, aggregation, and cleanup state.
+6. Keeps Demo Store test-only. Production composition and grading do not depend on Demo admin, challenges, cart state, scenario IDs, or privileged evidence.
+7. Defines PASS only as declared browser-observable assertion satisfaction, never arbitrary backend or business truth.
 
-The reviews are accepted as planning constraints:
+Fork establishment, video, social post, challenge submission, and submission polish are no longer product deliverables. Their historical evidence remains untouched.
 
-- **Assertion boundary:** data-only `AgentExecutionInputV2` is an allowlisted, Zod-parsed DTO with no assertion/grader/port references; `SafeAgentToolPort` is injected separately into the runner. Assertion-only canaries test provenance/non-flow through DTO/port construction, prompt layers, tool/model history, agent trace, and target traffic; coincidental words already present in task/site content are negative controls, not leakage.
-- **Untrusted page data:** text, roles, accessible names, ARIA, attributes, structured data, and tool results remain explicitly untrusted even when capture integrity and stability are trusted. They never authorize an action or certify effect safety.
-- **Agent surface:** the named tools are only an upper bound. Runtime capabilities omit tools dynamically; every FIFO proposal is revalidated against the current observation revision and a closed pre-dispatch effect decision. Unknown/unobservable effects deny. `pressKey`, independent budgets/history, cancellation, and malformed TanStack lifecycle behavior have explicit fail-closed criteria.
-- **Target safety feasibility:** TG-002R can pass only with provider-side enforcement or a forced outbound proxy that sees/denies actual IP:port before connection. URL/CDP routing, DNS preflight, hostname policy, or post-response observation cannot pass. A fresh context blocks service workers. TG-006R freezes the exhaustive protocol/transport × method-or-not_applicable × request-context × origin-relation × credential-state × destination-observability table, including DNS/UDP/STUN/TURN/data channels, speculation, workers, EventSource, beacon, WebSocket, WebTransport, WebRTC, popups/downloads, and browser-process traffic. Non-HTTP paths must have equivalent enforcement or be blocked before transmission. TG-002R is disposable; TG-008 is reviewed production code.
-- **Effect causality:** pre-action passive blocked-page telemetry may be a warning only when complete deterministic evidence remains possible. The fixed causal action window spans dispatch through post-action quiet/timeout and includes redirects, workers, network, dialogs, popups, and downloads. Agent-caused or causally unclassifiable prohibited activity is INCONCLUSIVE.
-- **Evidence stability:** acceptance is two consecutive byte-identical canonical captures (maximum three) after a 750 ms quiet interval, within five seconds, with the same document/loader. Activity monitoring remains armed from quiet start through acceptance; intervening relevant activity resets quiet and the capture sequence. This is bounded operational stability, not perfect revision proof.
-- **Discovery:** network discovery uses the proven enforced browser path or a separately vetted control-plane fetcher pinned to public IP:port enforcement. Ordinary ambient fetch is forbidden.
-- **Solari lifecycle:** create is one attempt absent provider idempotency. TG-002R must measure/freeze a provider inventory or safe correlation mechanism exposed through `ProviderSessionReconciliationPort`; ambiguous create is not retried and remains a potential leak/acceptance blocker until reconciled. If unidentified creates cannot be reconciled, that provider capability is an acceptance stop. Release needs measured positive confirmation; 404 is not success, and failed/ambiguous release remains retryable. Replay is optional and never grades.
-- **Local-only control plane:** P0 API/report/trace/SSE/replay surfaces bind loopback only. Known secret/sensitive patterns are rejected before local prompt/assertion persistence; any value that storage redaction would mutate is rejected. Accepted canonical prompt/assertion specifications persist unchanged locally, while derived projections are redacted and residual risk is disclosed. No absolute no-sensitive-string claim is made. Raw canonical grading URLs are transient and separate from redacted persisted/display URLs.
-- **Clean V2 persistence:** TG-005 spike DBs are disposable. TG-005R creates a generated V2 Drizzle `0000` on a recreated local DB with no V1 reader/converter/migration machinery; TG-010 consumes that migration unchanged. HTTP create idempotency is deferred.
-- **Projection/streaming:** typed bounded snapshot/report/assertion-blind trace projections are separate (100 default/200 max items, 16 KiB/item, 512 KiB/response). SSE subscribes and buffers before snapshot, performs a ready/cursor handshake, drains/deduplicates, then streams live with ≤16 KiB payload, ≤20 KiB frame, 15-second heartbeat, ≤128 events/512 KiB per-subscriber queue, five-second handoff, eight-connection, and slow-consumer disconnect bounds. Every event transaction family proves publish-after-commit and no publish on rollback.
-- **Run evidence and metrics:** environment, discovery, admission, policy, grading, and cleanup evidence are run-scoped. Every terminal non-cancelled run has exactly one passed/failed/inconclusive outcome; ungraded lifecycle failures map inconclusive. Aggregate numerators/denominators derive exactly from persisted runs/terminal outcomes, with nonterminal and potential-leak counts explicit.
-- **Verification:** TG-009 and TG-017C stop on assertion flow, unsafe dispatch, budget/cancellation bypass, or lifecycle ambiguity. TG-017D stops on V1 machinery, remote API exposure, trace/report mixing, raw grading URL persistence, stream races/unbounded transport, wrong aggregates, or seeded leakage. Demo-independence negative checks cover imports, exports, schemas, configuration, API, and report composition.
+## Preserved contract and evidence baseline
 
-## Historical evidence preserved
+- TG-000 public-fork/workspace evidence remains truthful history.
+- TG-001 verified Node `26.1.0`, global pnpm `12.0.0`, and exact pins.
+- TG-002 measured real Solari fixture connectivity, Cloudflare Quick Tunnel use, at least five concurrent sessions, and recording/replay capability.
+- TG-003 verified exact model slug `deepseek/deepseek-v4-flash-0731` through pinned TanStack/OpenRouter; optional models remain unverified.
+- TG-005 measured local libSQL/Drizzle transaction, snapshot, ordered event, publish-after-commit SSE, and refetch feasibility.
+- TG-006 remains the historical V1 checkpoint.
+- TG-004R passed at `89e2c93` and provides the generic V2 shared baseline: public target/config, assertion DSL, assertion-free agent DTO, evidence/grade/outcome contracts, atomic ports, lifecycle/release types, bounded API/event projections, canonical fakes, and production Demo-export removal.
 
-The pivot does not change these measured results:
+Historical evidence is append-only in meaning and cannot be repurposed to claim unmeasured safety or model support.
 
-- TG-000 established the compliant public fork/workspace.
-- TG-001 verified Node `26.1.0`, global pnpm `12.0.0`, exact dependency pins, and practical workspace smoke.
-- TG-002 proved real Solari fixture connectivity, Cloudflare Quick Tunnel use, at least five observed concurrent sessions, and recording/replay capability.
-- TG-003 historically verified exact P0 slug `deepseek/deepseek-v4-flash-0731` through pinned TanStack/OpenRouter and has no V2 rerun. TG-009/TG-017C own exactly one bounded post-pivot credentialed safe-surface smoke; optional models remain unverified.
-- TG-005 proved local libSQL/Drizzle snapshot, ordered milestone persistence, publish-after-commit process-local SSE, and refetch recovery feasibility.
-- TG-006 truthfully recorded the V1 contract/architecture freeze and ownership.
+## Practical P0 safety boundary
 
-These facts remain append-only in meaning. TG-002 did not test generic-target SSRF, runtime DNS rebinding, redirect, resolved-destination, or mutation enforcement. TG-005 did not test V2 evidence privacy. TG-006 is historical and is superseded for V2 production semantics only after TG-006R passes.
+The functional app uses capabilities already available or directly implementable in the browser/controller path:
 
-## Superseded production contracts
+- structural HTTPS URL validation with no credentials;
+- exact user-declared navigation origins;
+- rejection of IP literals, localhost/`.local`, malformed hosts, and unsupported ports;
+- best-effort public A/AAAA DNS preflight with obvious private/reserved/mixed-answer rejection;
+- a fresh anonymous Solari session and fresh controller per run;
+- service-worker blocking where supported by the available browser capability;
+- observable request interception for non-GET/HEAD requests, request bodies, WebSocket, beacon, downloads, and external protocols;
+- pre-dispatch blocking of obvious auth, sensitive, financial, purchase, messaging, upload, permission, destructive, submit, stale, and unknown-effect controls;
+- INCONCLUSIVE when observed policy activity or missing/unstable/ambiguous evidence prevents a trustworthy deterministic grade;
+- close/release attempts in `finally` for every acknowledged provider session ID.
 
-The following V1 concepts are removed from the V2 production path:
+A Solari create is attempted once. A timeout/disconnect/malformed ambiguous result is not retried; it becomes INCONCLUSIVE and records potential-leak evidence. Lack of provider inventory reconciliation is disclosed but does not block the functional app.
 
-- `kind: "tracegate-demo-store"` production target;
-- `ScenarioIdSchema` / `classic-tee-size-m-v1` as universal success definition;
-- `adminBaseUrl`, `DemoAdminPort`, challenge provisioning, and sensitive challenge navigation;
-- `DemoMutationRevision` as production grade evidence revision;
-- privileged cart evidence and fixed Classic Tee/M/quantity predicates;
-- generic native/WebMCP tool invocation;
-- model-facing success criteria or assertions;
-- the claim that a controlled Demo mutation proves generic-site completion.
+## Strict-hardening probe retained as limitation evidence
 
-Reusable parts of commit `9b141cbcedf690354bb7b2cf6b07c86cc1454243` are retained, especially explicit idempotent `BrowserController.close`. Demo-specific schemas/fakes may remain only behind fixture/legacy boundaries until removed from production exports during TG-004R.
+TG-002R explored a stricter provider-network boundary. It did not establish:
 
-## Work disposition
+- provider-side or forced-proxy pre-connect actual-IP enforcement for every browser/browser-process protocol;
+- perfect DNS-rebinding prevention;
+- complete visibility and blocking across all non-HTTP/browser-process traffic;
+- provider inventory or safe correlation for every unidentified ambiguous create.
 
-### Keep/generalize
+URL/request interception and DNS preflight remain useful defense in depth, but they do not prove whole-browser SSRF confinement. The functional app and report must say so. The missing strict controls are deferred hardening rather than current blockers.
 
-- provider lease/controller/release/replay lifecycle;
-- typed provider capacity degradation;
-- atomic evaluation submission and transition concepts;
-- states, event ordering, snapshots/SSE, redaction, cleanup, aggregation;
-- semantic observations, opaque refs, stale-ref rejection and bounded discovery;
-- TanStack/OpenRouter drivers, budgets, history, cancellation and safe event mapping;
-- Drizzle/libSQL repositories and UI/API scaffolding, generalized to V2;
-- Demo semantic pages only as deterministic fixtures and adversarial policy targets.
+## Assertions, evidence, and grading remain unchanged
 
-### Remove from production composition
+The simplification does not weaken evaluation integrity:
 
-- Demo admin client/challenge store/privileged grader wiring;
-- cart mutation as a production acceptance dependency;
-- fixed Demo copy and scenario columns in V2 projections;
-- raw browser controller access from the agent lane;
-- native tool invocation and any assertion leakage to the model.
+- assertions remain outside model prompts, tool definitions/results, history, model events, agent trace, and evaluated-target traffic;
+- assertion-only canaries test provenance/non-flow, while coincidental user/page lexical overlap is allowed;
+- page text and accessibility semantics remain explicitly untrusted page-authored data and never certify action safety;
+- grading uses only a fresh bounded canonical capture after the action FIFO drains;
+- cancellation precedes observed policy violation, which precedes unverifiable evidence, PASS, then FAIL;
+- one false plus one unverifiable assertion is INCONCLUSIVE;
+- model belief/summary never grades a run.
 
-## Dirty-WIP quarantine at pivot
+## Demo disposition
 
-The working tree was already dirty when this decision was recorded. No source or lockfile work is integrated by this planning checkpoint.
+Demo Store is retained only for deterministic URL/text/semantic/state tests, stable/unstable evidence, stale/ambiguous controls, prohibited-action cases, and prompt-injection fixtures. Production imports/exports/configuration/API/report/composition must remain independent of Demo admin, challenges, cart grading, scenario IDs, and fixture-host assumptions.
 
-### Interrupted Agent A shared-contract work
+## Current WIP quarantine
 
-Uncommitted changes exist in:
+Application work remains dirty under the exclusive B/C/D lanes and `pnpm-lock.yaml` remains dirty from concurrent manifests. TG-004R shared work is committed and no longer part of the interrupted quarantine.
 
-- `packages/shared/src/errors.ts`
-- `packages/shared/src/events.ts`
-- `packages/shared/src/ports.ts`
-- `packages/shared/src/transitions.ts`
-- `packages/shared/src/testing/repositories.ts`
+Rules remain:
 
-The typed concurrency error, specialized queued/status events, atomic repository ports, controller factory, and transition-context schema remain useful concepts. The repository fake work is incomplete. None is checkpoint-ready; all must be rebased against V2 in TG-004R with fixtures/tests/impact review.
+- do not blanket reset, stage, format, or commit another lane’s work;
+- each owner reviews and rebases only its paths against TG-004R;
+- keep reusable infrastructure and remove V1/Demo production assumptions;
+- do not treat file presence as a green implementation;
+- only Agent A regenerates the lockfile after intended manifests settle.
 
-### Concurrent B work
-
-Dirty/untracked work exists under `packages/solari`, `packages/discovery`, and `apps/demo`. Preserve provider/controller/semantic infrastructure; generalize safety/origin behavior. Demo admin/challenge/cart behavior becomes fixture/legacy only.
-
-### Concurrent C work
-
-Dirty/untracked work exists under `packages/ai` and `packages/agent`. Preserve adapter, budget, history, cancellation, and serialization work; revise prompts/tools so assertions are absent and the agent receives only the safe action port.
-
-### Concurrent D work
-
-Dirty/untracked work exists under `packages/db`, `packages/ui`, and `apps/web`. Preserve persistence/SSE/API/UI infrastructure; generalize schemas/routes/views and remove production Demo-admin dependencies.
-
-### Lockfile
-
-`pnpm-lock.yaml` is dirty because concurrent manifests are present. It remains unstaged. Only Agent A regenerates and commits the authoritative lockfile after V2 manifests settle at TG-006R.
-
-No agent may blanket-reset, stage, format, or revert another lane’s quarantined paths. Explicitly assigned TG-002R/TG-004R/TG-005R work may selectively stage only its owned reviewed rebaseline paths; unrelated WIP and the lockfile remain quarantined until TG-006R.
-
-## Revised gates
-
-Historical gates remain recorded. V2 proceeds through:
+## Immediate functional path and four-lane assignments
 
 ```text
-TG-002R target-safety feasibility
-TG-004R V2 contracts
-TG-005R V2 persistence/privacy
-TG-006R pivot freeze
-TG-007 generic evaluator/grader
-TG-008 safe browser/admission/evidence
-TG-009 assertion-blind safe agent
-TG-010 V2 DB/API/UI
-TG-011 single-run integration
-TG-012 repeated orchestration
-TG-013 policy/security/cleanup evidence
-TG-014 non-blocking P1
-TG-015 complete UX
-TG-016 P0 checkpoint
-TG-017A–D verification
-TG-018 final acceptance
+TG-004R PASS
+  → integrate quarantined lane WIP against V2 contracts
+  → parallel DB/API/UI + browser + agent + evaluation/grading slices
+  → one real Solari/DeepSeek run
+  → repeated runs and report
+  → functional verification
 ```
 
-## Blocking feasibility questions
+- **Agent A:** evaluation/grading, one-evaluation queue, executor, precedence, aggregation, finally cleanup, integration, end-to-end tests, and final lockfile.
+- **Agent B:** Solari provider/controller lifecycle, exact-origin and practical request/action guards, discovery, fresh evidence capture, fixture-only Demo, and one bounded public-site safety smoke before integration freeze.
+- **Agent C:** pinned DeepSeek/OpenRouter adapter, assertion-blind prompt layers, dynamic safe tools, FIFO/current-revision checks, budgets/history/cancellation, and bounded event mapping.
+- **Agent D:** clean V2 Drizzle migration/repositories, loopback API, authoritative snapshot/SSE, configure/live/report UI, and separate agent trace versus grading report.
 
-Wave 1 production implementation must not resume until TG-006R, and TG-006R cannot pass until TG-002R proves:
+The B-lane smoke uses measured capabilities and records limitations; it does not wait for a new provider/proxy feature.
 
-1. provider-side policy or a forced proxy can observe and deny the actual IP:port **before connection** for every HTTP and non-HTTP browser/browser-process context, redirect, DNS change, and re-resolution, or block the path before transmission;
-2. the closed protocol/method/resource/origin/credential/observability table plus pre-dispatch effect policy can block mutation, bodies, EventSource/beacon/WebSocket/WebTransport/WebRTC, downloads/popups/workers/speculation/service-worker bypass, unknown effects, and causally unclassifiable post-action traffic; and
-3. a measured provider inventory or safe correlation mechanism can reconcile an ambiguous unidentified create without retrying it.
+## Deferred hardening and removed deliverables
 
-Assigned TG-002R/TG-004R/TG-005R spike/contract/persistence rebaseline work is permitted before TG-006R under path-specific ownership and staging.
+Deferred:
 
-DNS preflight alone is not DNS-rebinding protection. Neither URL/CDP request routing nor post-response IP observation can pass. If Solari lacks provider-side enforcement and cannot force all traffic through a controlled pre-connect actual-IP:port proxy (with non-HTTP paths equivalently enforced or blocked before transmission), generic-site V2 P0 is externally blocked rather than weakened. An ambiguous unidentified create also blocks acceptance unless the measured provider reconciliation mechanism resolves it.
+- provider-side destination policy or forced outbound proxy;
+- actual-IP enforcement across every browser-process protocol;
+- stronger DNS pinning/rebinding defenses;
+- exhaustive egress classification;
+- provider inventory/ambiguous-create reconciliation;
+- HTTP create idempotency;
+- replay UX, optional models, distributed queues, remote database, hosted control plane, and richer assertions.
+
+Removed from the product critical path:
+
+- fork relationship as a delivery gate;
+- challenge/submission requirements;
+- README/video/social-post acceptance gates;
+- exhaustive security gate numbering and repeated provider-hardening verification;
+- any requirement to solve unmeasured provider networking features before building the functional app.
 
 ## Planning checkpoint scope
 
-This record and the rewritten plan are planning artifacts only. They do not claim TG-002R, TG-004R, TG-005R, or TG-006R has passed, do not integrate current source WIP, and do not regenerate the lockfile.
+This rebaseline edits planning artifacts only. It does not integrate application WIP, modify source, regenerate the lockfile, or claim a new runtime result. The next implementation action is lane-local WIP integration against TG-004R.

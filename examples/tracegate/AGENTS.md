@@ -1,103 +1,101 @@
 # TraceGate agent ownership and integration rules
 
-This file records ownership and integration rules. The green TG-006 checkpoint is historical; the approved generic-site V2 pivot plan is now authoritative, but no V2 implementation contract is frozen until TG-006R passes. Paths are relative to `examples/tracegate/`.
+Paths are relative to `examples/tracegate/`.
 
-## Historical checkpoint and V2 rebaseline
+## Current checkpoint
 
-- Historical base checkpoint: `TG-006`, 2026-09-01.
-- Historical exceptional shared-contract checkpoint: TG-007 impact note `docs/evidence/tg-007-shared-contract-impact.md`, 2026-09-01.
-- Historical shared Git tree: `63cb741672f75f39884788c2fd59fb0f58185591`.
-- Approved V2 source plan: `docs/plans/tracegate-poc-build-2026-09-01.md`.
-- Pivot decision/quarantine record: `docs/evidence/generic-site-pivot.md`.
-- V1 Demo target/grading contracts are superseded for V2 production use. They remain historical/fixture contracts until TG-004R replaces public surfaces.
-- Assigned TG-002R/TG-004R/TG-005R rebaseline work may selectively stage only its owned gate paths. No Wave 1 production implementation may resume and no agent may claim a V2 freeze until TG-006R is green.
-- After TG-006R, `packages/shared` Zod v4 schemas and inferred TypeScript types are again the authoritative cross-lane contract.
-- Public consumers import only `@tracegate/shared` or `@tracegate/shared/testing`; they do not import another lane's concrete internals.
-- After this checkpoint, only Agent A may edit `packages/shared`, TraceGate root workspace configuration, or `pnpm-lock.yaml`.
-- TG-006 historically authorized V1 fan-out. The pivot revokes that authorization for V2; only TG-006R may authorize the revised Wave 1.
+- Authoritative plan: `docs/plans/tracegate-poc-build-2026-09-01.md`.
+- Product boundary: local generic-site functional proof of concept.
+- Generic V2 shared contracts: TG-004R PASS at `89e2c93`.
+- Pivot/rebaseline record: `docs/evidence/generic-site-pivot.md`.
+- B/C/D application WIP and `pnpm-lock.yaml` remain dirty/quarantined until reviewed lane by lane.
+- Demo Store is test-only and never a production target, composition, or grading dependency.
+- PASS means declared browser-observable assertions passed from fresh evidence; it never claims arbitrary backend business truth.
 
-## Exclusive lanes
+## Short critical path
 
-| Agent | Exclusive paths | Responsibilities |
+```text
+TG-004R PASS
+  → integrate quarantined lane WIP against V2 contracts
+  → parallel DB/API/UI + browser + agent + evaluation/grading slices
+  → one real Solari/DeepSeek run
+  → repeated runs/report
+  → functional verification
+```
+
+Deferred provider-grade egress enforcement, perfect DNS-rebinding prevention, forced proxying, and provider inventory reconciliation are documented limitations, not functional-app blockers.
+
+## Exclusive lanes and immediate assignments
+
+| Agent | Exclusive paths | Immediate assignment |
 |---|---|---|
-| **A — integration/evaluation** | root configs and `AGENTS.md`, `packages/shared`, `packages/evaluation`, `packages/grading`, `tests/e2e`, `pnpm-lock.yaml`, checkpoint/final evidence | V2 contracts, assertion/outcome semantics, evaluation runtime, deterministic grading, integration, final lockfile |
-| **B — browser/target/discovery** | `packages/solari`, `packages/discovery`, `apps/demo`, target/Solari evidence | public-network admission and runtime egress/effect safety, Solari lifecycle/CDP, stable evidence capture, semantic refs/discovery, fixture-only Demo, cleanup/replay |
-| **C — AI/agent runtime** | `packages/ai`, `packages/agent`, model/tool-confinement evidence | TanStack/OpenRouter capability, assertion-blind prompts, safe tools, budgets, history, cancellation and event mapping |
-| **D — data/product UI** | `packages/db`, `packages/ui`, `apps/web`, persistence/UI evidence | V2 migration/repositories, API/SSE, snapshots, generic target/assertion UX and reports |
+| **A — integration/evaluation** | root TraceGate configs and this file, `packages/shared`, `packages/evaluation`, `packages/grading`, `tests/e2e`, `pnpm-lock.yaml`, integration evidence | Integrate shared consumers; implement atomic submission, one-evaluation queue, executor, deterministic grading/precedence, aggregation, finally cleanup, end-to-end composition, and final lockfile |
+| **B — browser/target/discovery** | `packages/solari`, `packages/discovery`, `apps/demo`, browser/Solari evidence | Rebase provider/controller/discovery WIP to V2; implement exact-origin and practical observable request/action guards, fresh evidence capture, fixture-only Demo, and one bounded real public-site safety smoke |
+| **C — AI/agent** | `packages/ai`, `packages/agent`, model/agent evidence | Rebase adapter/runner WIP to V2; implement verified DeepSeek/OpenRouter, assertion-blind prompt layers, dynamic safe tools, FIFO/current-revision checks, budgets/history/cancellation, and bounded event mapping |
+| **D — persistence/product UI** | `packages/db`, `packages/ui`, `apps/web`, persistence/UI evidence | Rebase DB/API/UI WIP to V2; implement clean V2 Drizzle migration/repositories, loopback API, authoritative snapshot/SSE, configure/live/report UI, and separate agent trace/grading report |
 
-Do not edit, rename, format, stage, or revert another lane's exclusive paths. Ask the owning lane to fix a concrete defect. Agent A may stage an owner's completed handoff unchanged at an integration checkpoint.
+Do not edit, rename, format, stage, restore, or reset another lane’s exclusive paths. Agent A may integrate a completed lane handoff unchanged at an explicit integration checkpoint.
 
-## Pivot WIP quarantine
+## Shared-contract rules
 
-- Current dirty B/C/D source and the interrupted A shared checkpoint remain unstaged and unintegrated.
-- Explicitly assigned rebaseline gates may selectively stage only their owned reviewed paths; all unrelated dirty paths remain quarantined.
-- Do not blanket-reset, stage, format, or commit unrelated quarantined work.
+- `@tracegate/shared` is the authoritative cross-lane contract.
+- Public consumers import only `@tracegate/shared` or `@tracegate/shared/testing`.
+- Concrete DB, Solari, agent, UI, or Demo classes never appear in another lane’s public signature.
+- Only Agent A edits `packages/shared`.
+- A shared change requires a concrete compile/runtime blocker, named affected schemas/ports/events/lanes, compatibility impact, updated fixtures/tests, and downstream compile verification.
+- Assertion-origin values remain outside the agent DTO, prompt, tools/results, model history/events, agent trace, and target traffic.
+- Browser page text/accessibility semantics remain untrusted and never authorize an unsafe effect.
+
+## WIP quarantine and staging
+
+- Review and retain reusable work in place; remove V1/Demo production assumptions during the owning lane’s rebase.
+- Do not infer success from untracked or compiling files without running the lane checks.
+- Stage with explicit owned paths only.
+- Do not blanket reset, clean, format, or stage the repository.
 - Do not stage `pnpm-lock.yaml` while concurrent manifests are changing.
-- Preserve reusable infrastructure, but production Demo administration/cart grading, assertion exposure to the model, raw controller access from the agent, and generic native-tool invocation are superseded.
-- Demo Store is a test fixture only and never a V2 production target or grader dependency.
-- PASS means declared browser-observable assertions passed from fresh stable evidence; it never claims arbitrary backend business truth.
+- Each lane commits only its exclusive paths and reports commands, results, changed files, and blockers.
 
 ## Runtime and commands
 
-Use the globally installed pnpm directly. Corepack is not required or used.
+Use the globally installed pnpm directly; Corepack is not required.
 
 ```bash
 cd examples/tracegate
 node --version                 # v26.1.0
 pnpm --version                 # 12.0.0
 pnpm install --frozen-lockfile
-pnpm probe:runtime
 pnpm lint
 pnpm typecheck
 pnpm test
 pnpm build
 ```
 
-Use `pnpm --filter <workspace-name> <script>` for a lane-local check. A green package-local run does not replace checkpoint-wide verification.
+Use `pnpm --filter <workspace-name> <script>` for lane-local checks. A green package-local command does not replace functional integration verification.
 
-## Cross-lane interface status
+## Lockfile discipline
 
-### Historical V1 surface
+Only Agent A updates `pnpm-lock.yaml`. After intended manifests settle:
 
-- The current committed shared tree remains the historical V1 authority for evidence/rebase purposes only.
-- Its server-only Demo admin target, Demo grading, fixed terminal mapping, and event vocabulary are superseded for V2 production and must not guide new implementation.
+1. use Node `26.1.0` and global pnpm `12.0.0`;
+2. regenerate the sole authoritative lockfile;
+3. run frozen install plus workspace typecheck/test/build;
+4. commit the lockfile with the integration checkpoint.
 
-### V2 rules pending TG-004R/TG-006R
+## Practical safety and cleanup boundary
 
-- Zod schemas and inferred TypeScript types will be authoritative after TG-006R.
-- IDs, cursors, lifecycle/lease guards, persisted ordering, AbortSignal-aware ports, cleanup with a fresh bounded signal, central redaction, and canonical fakes remain architectural invariants.
-- V2 replaces Demo target/grading with admitted public HTTPS targets, assertion-blind agent context, trusted fresh evidence, generic assertion results, and revised policy/outcome events.
-- Public consumers import only `@tracegate/shared` or `@tracegate/shared/testing`; concrete cross-lane types remain forbidden.
+P0 uses structural HTTPS validation, exact origins, best-effort public DNS preflight, fresh anonymous sessions, service-worker blocking where supported, observable unsafe-request interception, and obvious unsafe-control blocking. Coverage gaps are limitations, not hidden claims.
 
-## Measured checkpoint capabilities
+A Solari create is attempted once. An ambiguous unacknowledged create becomes INCONCLUSIVE/potential-leak evidence and is not retried. Every acknowledged session ID must still receive controller close and provider release attempts in `finally`, with durable cleanup state.
 
-- Historical connectivity: Cloudflare Quick Tunnel over HTTPS was selected for the V1 fixture; public/admin separation remains historical fixture evidence, not a V2 production dependency.
-- Solari: at least five simultaneous Browser sessions were observed without a limit response; the safe cap is five, while the P0 requested default remains three. A future real `429` must reduce scheduling honestly.
-- Recording/replay: recording was accepted and replay reached `ready`; presigned replay access was discarded after validation.
-- Models: `deepseek/deepseek-v4-flash-0731` is the sole verified P0 model through pinned TanStack AI/OpenRouter. Mistral Small and GPT-5 Mini remain optional and unverified, and must not appear as verified.
-- Persistence: local libSQL/Drizzle transactions, authoritative public snapshots, ordered milestone persistence, publish-after-commit process-local SSE, reconnect-by-refetch, and repository-boundary redaction are feasible.
+## Non-fabrication
 
-## Contract-change discipline
+Never:
 
-TG-004R replaces the V1 target/grading production contracts and TG-006R freezes V2. Shared changes may land only through Agent A at explicit impact checkpoints. The change must:
+- present fixture/local output as a real Solari run;
+- claim optional models are verified;
+- claim whole-browser network confinement or perfect DNS-rebinding prevention;
+- hard-code or splice PASS/FAIL results;
+- rewrite measured evidence to improve a result;
+- persist credentials, CDP/replay capability URLs, full DOM, or raw provider payloads.
 
-1. name every affected schema, event, port, and downstream lane;
-2. describe compatibility and migration impact;
-3. update canonical fixtures and focused negative tests;
-4. pass the downstream compile consumer and the full workspace suite;
-5. include a redaction review and synchronized rebase/acknowledgement from affected lanes.
-
-Temporary concrete cross-lane imports, duplicate local contract types, and drive-by shared edits are rejected.
-
-## Merge and lockfile discipline
-
-- Each lane commits only its exclusive paths and reports exact commands, evidence, and redaction review.
-- Agents do not independently stage, restore, or hand-edit `pnpm-lock.yaml`.
-- After all intended manifests are present, Agent A runs pnpm `12.0.0`, regenerates the one authoritative lockfile, runs frozen install plus the full suite, and commits it with the checkpoint.
-- Preserve exact external dependency pins; internal packages use `workspace:*` and resolve to local links in the lockfile.
-- A red verification, secret-shaped persisted fixture, unmatched acknowledged browser session, fabricated capability result, or ownership violation blocks the next wave.
-- Measured evidence is append-only in meaning: correct errors with an explicit note; never rewrite a result to improve the submission.
-
-## Historical acknowledgement and V2 stop rule
-
-TG-002 through TG-005 evidence remains truthful for the historical V1 checkpoint. It does not prove generic-site runtime safety or V2 evidence privacy. Until TG-006R, the current shared tree is historical rather than V2 production authority, and all implementation lanes remain stopped except for explicitly assigned rebaseline gates.
+The immediate next implementation action is lane-local integration of quarantined WIP against TG-004R.
