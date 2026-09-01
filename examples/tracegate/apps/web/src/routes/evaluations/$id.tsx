@@ -124,6 +124,16 @@ function AgentInterfaceInsights({ runs, history }: { readonly runs: readonly Run
   );
 }
 
+function successCriterionDescription(assertion: EvaluationReportProjection["assertions"][number]): string {
+  if (assertion.kind === "url" && assertion.operator === "origin_path_and_query_parameter_equals") {
+    return `Registration page ${assertion.expectedUrl} with exactly one ${assertion.queryParameter.name}=${assertion.queryParameter.value}`;
+  }
+  if (assertion.kind === "url") return `Final page ${assertion.expectedUrl}`;
+  if (assertion.kind === "text") return `Visible text includes “${assertion.expected}”`;
+  if (assertion.kind === "semantic") return `${assertion.locator.role} named “${assertion.locator.accessibleName.value}” is present`;
+  return `${assertion.locator.role} named “${assertion.locator.accessibleName.value}” reaches the expected state`;
+}
+
 function GradingReport({ report }: { readonly report: EvaluationReportProjection }) {
   return (
     <Panel eyebrow="Reliability results" title="Did agents reach the outcome?">
@@ -136,7 +146,8 @@ function GradingReport({ report }: { readonly report: EvaluationReportProjection
               <table className="tg-result-table">
                 <thead><tr><th>Success criterion</th><th>Result</th><th>What TraceGate observed</th></tr></thead>
                 <tbody>{run.grade.assertions.map((result, index) => <tr key={result.assertionId}>
-                  <td>Criterion {index + 1}</td><td><StatusBadge status={result.status} /></td><td>{result.actualSummary}</td>
+                  <td><strong>Criterion {index + 1}</strong><span className="tg-criterion-copy">{report.assertions[index] === undefined ? "Configured outcome" : successCriterionDescription(report.assertions[index])}</span></td>
+                  <td><StatusBadge status={result.status} /></td><td>{result.actualSummary}</td>
                 </tr>)}</tbody>
               </table>
             )}

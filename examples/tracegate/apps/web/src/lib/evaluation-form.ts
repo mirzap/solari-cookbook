@@ -5,13 +5,15 @@ import {
   type ModelId,
 } from "@tracegate/shared";
 
-export type AssertionKind = "url" | "text" | "semantic" | "state";
+export type AssertionKind = "url" | "url_query" | "text" | "semantic" | "state";
 
 export interface AssertionDraft {
   readonly key: number;
   readonly kind: AssertionKind;
   readonly value: string;
   readonly name: string;
+  readonly queryParameterName?: string;
+  readonly queryParameterValue?: string;
 }
 
 export interface EvaluationFormDraft {
@@ -35,6 +37,17 @@ export function assertionFromDraft(draft: AssertionDraft, index: number) {
   const id = `assertion-${index + 1}`;
   if (draft.kind === "url") return {
     schemaVersion: 1, id, kind: "url", operator: "origin_and_path_equals", expectedUrl: draft.value,
+  } as const;
+  if (draft.kind === "url_query") return {
+    schemaVersion: 1,
+    id,
+    kind: "url",
+    operator: "origin_path_and_query_parameter_equals",
+    expectedUrl: draft.value,
+    queryParameter: {
+      name: draft.queryParameterName ?? "",
+      value: draft.queryParameterValue ?? "",
+    },
   } as const;
   if (draft.kind === "text") return {
     schemaVersion: 1, id, kind: "text", scope: "document_visible_text", operator: "contains", expected: draft.value, caseSensitive: false,

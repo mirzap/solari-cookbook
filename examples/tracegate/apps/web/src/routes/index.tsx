@@ -140,19 +140,28 @@ function ConfigurePage() {
         <Panel eyebrow="3 · Success criteria" title="What outcome proves success?">
           <div className="tg-field-stack">
             {assertions.map((assertion, index) => (
-              <fieldset className="tg-assertion" key={assertion.key}>
+              <fieldset className="tg-assertion" data-kind={assertion.kind} key={assertion.key}>
                 <legend>Criterion {index + 1}</legend>
                 <label>Observe
                   <select value={assertion.kind} onChange={(event) => updateAssertion(assertion.key, { kind: event.target.value as AssertionKind })}>
                     <option value="text">Visible text</option>
                     <option value="url">Final page</option>
+                    <option value="url_query">Registration page with plan</option>
                     <option value="semantic">Page element</option>
                     <option value="state">Selected state</option>
                   </select>
                 </label>
-                <label>{assertion.kind === "url" ? "Expected HTTPS URL" : assertion.kind === "text" ? "Expected visible text" : "Element role"}
-                  <input required placeholder={assertion.kind === "url" ? "https://your-site.example/result" : assertion.kind === "text" ? "Support plan" : "heading"} value={assertion.value} onChange={(event) => updateAssertion(assertion.key, { value: event.target.value })} />
+                <label>{assertion.kind === "url_query" ? "Registration page URL" : assertion.kind === "url" ? "Expected page URL" : assertion.kind === "text" ? "Expected visible text" : "Element role"}
+                  <input required type={assertion.kind === "url" || assertion.kind === "url_query" ? "url" : "text"} placeholder={assertion.kind === "url_query" ? "https://your-site.example/register" : assertion.kind === "url" ? "https://your-site.example/result" : assertion.kind === "text" ? "Support plan" : "heading"} value={assertion.value} onChange={(event) => updateAssertion(assertion.key, { value: event.target.value })} />
                 </label>
+                {assertion.kind === "url_query" ? <>
+                  <label>Query parameter name
+                    <input required placeholder="planId" value={assertion.queryParameterName ?? ""} onChange={(event) => updateAssertion(assertion.key, { queryParameterName: event.target.value })} />
+                  </label>
+                  <label>Expected value
+                    <input required placeholder="12" value={assertion.queryParameterValue ?? ""} onChange={(event) => updateAssertion(assertion.key, { queryParameterValue: event.target.value })} />
+                  </label>
+                </> : null}
                 {assertion.kind === "semantic" || assertion.kind === "state" ? <label>Accessible name
                   <input required placeholder="Plan details" value={assertion.name} onChange={(event) => updateAssertion(assertion.key, { name: event.target.value })} />
                 </label> : null}
@@ -160,7 +169,7 @@ function ConfigurePage() {
               </fieldset>
             ))}
             <button type="button" className="tg-link-button" disabled={assertions.length >= 20} onClick={() => {
-              setAssertions((current) => [...current, { key: nextAssertionKey, kind: "text", value: "", name: "" }]);
+              setAssertions((current) => [...current, { key: nextAssertionKey, kind: "text", value: "", name: "", queryParameterName: "", queryParameterValue: "" }]);
               setNextAssertionKey((value) => value + 1);
             }}>Add success criterion</button>
             <p className="tg-field-help">Agents never see these checks. TraceGate grades them independently from a fresh browser view. If an outcome cannot be verified, the run is inconclusive—not guessed.</p>

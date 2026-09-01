@@ -148,6 +148,7 @@ textarea { resize: vertical; }
 .tg-run-metrics .tg-metric + .tg-metric { padding-left: var(--tg-space-4); }
 
 .tg-assertion { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)) auto; align-items: end; gap: var(--tg-space-3); border: 1px solid var(--tg-border); padding: var(--tg-space-3); }
+.tg-assertion[data-kind="url_query"] { grid-template-columns: repeat(4, minmax(0, 1fr)) auto; }
 .tg-assertion legend { padding: 0 var(--tg-space-2); font-family: var(--tg-font-mono); font-size: 0.72rem; font-weight: 700; text-transform: uppercase; }
 .tg-assertion label { display: grid; gap: var(--tg-space-1); margin: 0; }
 .tg-link-button { border: 0; background: transparent; color: var(--tg-accent); cursor: pointer; padding: var(--tg-space-2); text-decoration: underline; text-underline-offset: 0.2em; }
@@ -172,6 +173,7 @@ textarea { resize: vertical; }
 .tg-report-run header { display: flex; justify-content: space-between; gap: var(--tg-space-3); margin-bottom: var(--tg-space-3); }
 .tg-result-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
 .tg-result-table th, .tg-result-table td { border-bottom: 1px solid var(--tg-border); padding: var(--tg-space-2); text-align: left; vertical-align: top; }
+.tg-criterion-copy { display: block; max-width: 32rem; margin-top: var(--tg-space-1); color: var(--tg-muted); font-size: 0.76rem; overflow-wrap: anywhere; }
 .tg-trace { display: grid; gap: var(--tg-space-2); margin: 0; padding: 0; list-style: none; }
 .tg-trace li { display: grid; grid-template-columns: 6rem minmax(10rem, 0.5fr) minmax(0, 1fr); gap: var(--tg-space-3); border-bottom: 1px solid var(--tg-border); padding: var(--tg-space-2) 0; }
 .tg-trace time, .tg-trace strong { font-family: var(--tg-font-mono); font-size: 0.72rem; }
@@ -183,7 +185,7 @@ textarea { resize: vertical; }
   .tg-config-grid, .tg-summary { grid-template-columns: 1fr; }
   .tg-interface-grid { grid-template-columns: 1fr; }
   .tg-interface-card dl { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-  .tg-assertion { grid-template-columns: 1fr; }
+  .tg-assertion, .tg-assertion[data-kind="url_query"] { grid-template-columns: 1fr; }
   .tg-config-grid > .tg-panel:nth-child(3), .tg-submit-row { grid-column: auto; }
   .tg-submit-row { align-items: stretch; flex-direction: column; }
   .tg-button { width: 100%; }
