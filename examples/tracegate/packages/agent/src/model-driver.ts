@@ -22,6 +22,7 @@ export interface AgentToolExecutor {
   admit(providerCallId: string, toolName: string, rawArguments: string): ToolAdmission;
   execute(providerCallId: string, proposal: unknown, signal: AbortSignal): Promise<string>;
   failAdmitted(providerCallId: string, error: unknown): Promise<void>;
+  safeToolFeedback(providerCallId: string): string | null;
 }
 
 export interface AgentModelTurnInput {

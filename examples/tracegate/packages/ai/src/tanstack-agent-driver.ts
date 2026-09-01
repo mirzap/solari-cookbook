@@ -290,7 +290,7 @@ export class TanStackOpenRouterAgentDriver implements AgentModelDriver {
     const generationIds = new Set<string>()
     const observedProviders = new Set<string>()
     let restore = () => {}
-    const open = new Map<string, { name: string; args: string; sawArgs: boolean; ended: boolean; executed: boolean; resulted: boolean }>()
+    const open = new Map<string, { name: string; args: string; sawArgs: boolean; argsOverflowed: boolean; ended: boolean; executed: boolean; failed: boolean; resulted: boolean }>()
     const boundaryTasks: Promise<void>[] = []
     const turnMessages: AgentModelMessage[] = []
     let assistantText = ''
@@ -312,18 +312,25 @@ export class TanStackOpenRouterAgentDriver implements AgentModelDriver {
         if (chunk.type === 'TOOL_CALL_START') {
           if (open.has(chunk.toolCallId)) protocolFailure = terminalError('provider_protocol_error', 'Duplicate tool start', 'ai.stream')
           else if (open.size >= 100) protocolFailure = terminalError('provider_protocol_error', 'Tool-call count exceeds protocol bound', 'ai.stream')
-          else open.set(chunk.toolCallId, { name: chunk.toolCallName, args: '', sawArgs: false, ended: false, executed: false, resulted: false })
+          else open.set(chunk.toolCallId, { name: chunk.toolCallName, args: '', sawArgs: false, argsOverflowed: false, ended: false, executed: false, failed: false, resulted: false })
         } else if (chunk.type === 'TOOL_CALL_ARGS') {
           const state = open.get(chunk.toolCallId)
           if (!state || state.ended) protocolFailure = terminalError('provider_protocol_error', 'Tool arguments were out of order', 'ai.stream')
-          else if (Buffer.byteLength(state.args + chunk.delta, 'utf8') > 8_192) protocolFailure = terminalError('provider_protocol_error', 'Tool arguments exceed protocol bound', 'ai.stream')
-          else { state.args += chunk.delta; state.sawArgs = true }
+          else {
+            state.sawArgs = true
+            if (!state.argsOverflowed && Buffer.byteLength(state.args + chunk.delta, 'utf8') <= 8_192) state.args += chunk.delta
+            else state.argsOverflowed = true
+          }
         } else if (chunk.type === 'TOOL_CALL_END') {
           const state = open.get(chunk.toolCallId)
           if (!state || state.ended || !state.sawArgs) protocolFailure = terminalError('provider_protocol_error', 'Tool end was out of order or missing arguments', 'ai.stream')
           else {
             state.ended = true
-            input.executor.admit(chunk.toolCallId, state.name, state.args)
+            input.executor.admit(
+              chunk.toolCallId,
+              state.name,
+              state.argsOverflowed ? 'tool arguments exceeded the bounded schema' : state.args,
+            )
           }
         } else if (chunk.type === 'TOOL_CALL_RESULT') {
           const state = open.get(chunk.toolCallId)
@@ -344,6 +351,7 @@ export class TanStackOpenRouterAgentDriver implements AgentModelDriver {
           abortController.abort('provider protocol failure')
         } else {
           state.executed = true
+          state.failed = !info.ok
         }
         if (!info.ok) await input.executor.failAdmitted(info.toolCallId, info.error)
       },
@@ -354,7 +362,21 @@ export class TanStackOpenRouterAgentDriver implements AgentModelDriver {
           toolCalls: info.toolCalls.map((call) => ({ id: call.id, name: call.function.name, arguments: call.function.arguments })),
         })
         for (const result of info.results) {
-          turnMessages.push({ role: 'tool', toolCallId: result.toolCallId, content: typeof result.result === 'string' ? result.result : JSON.stringify(redactJson(result.result)) })
+          const state = open.get(result.toolCallId)
+          const recordedFeedback = input.executor.safeToolFeedback(result.toolCallId)
+          const genericFeedback = JSON.stringify({
+            schemaVersion: 2,
+            trust: 'untrusted_page_or_tool_content',
+            kind: 'safe_tool_error',
+            error: {
+              reason: 'malformed_proposal',
+              recoverable: true,
+              browserSurfaceResynchronized: false,
+              message: 'The proposal was rejected by the strict tool boundary. Correct it or choose another currently admitted action.',
+            },
+          })
+          const content = recordedFeedback ?? (state?.failed || typeof result.result !== 'string' ? genericFeedback : result.result)
+          turnMessages.push({ role: 'tool', toolCallId: result.toolCallId, content })
         }
       },
       onUsage: (_context, value) => {
