@@ -34,6 +34,9 @@ import {
   obviousUnsafeControl,
   type BlockedPolicyDisposition,
   type BrowserPolicyActionScope,
+  type FirstFatalPolicyDiagnostic,
+  type PolicyDiagnosticMethodClass,
+  type PolicyDiagnosticResourceType,
   type PolicyElementSnapshot,
 } from "./policy.js"
 
@@ -73,6 +76,55 @@ const MAX_ASSERTION_SEMANTIC_MATCHES = 21
 const MAX_ASSERTION_STATE_MATCHES = 2
 const MAX_ASSERTION_STATE_VALUE_CHARACTERS = 500
 
+const DIAGNOSTIC_REQUEST_RESOURCE_TYPES = new Set<PolicyDiagnosticResourceType>([
+  "document",
+  "stylesheet",
+  "image",
+  "media",
+  "font",
+  "script",
+  "texttrack",
+  "xhr",
+  "fetch",
+  "eventsource",
+  "websocket",
+  "manifest",
+  "other",
+  "ping",
+  "beacon",
+  "cspviolationreport",
+  "prefetch",
+])
+
+function policyDiagnosticMethodClass(method: string): PolicyDiagnosticMethodClass {
+  const normalized = method.toUpperCase()
+  if (normalized === "GET") return "get"
+  if (normalized === "HEAD") return "head"
+  return "other"
+}
+
+function policyDiagnosticResourceType(resourceType: string): PolicyDiagnosticResourceType {
+  const normalized = resourceType.toLowerCase() as PolicyDiagnosticResourceType
+  return DIAGNOSTIC_REQUEST_RESOURCE_TYPES.has(normalized) ? normalized : "unknown"
+}
+
+function policyDiagnosticSameOrigin(rawUrl: string, activeOrigin: string | null): boolean | null {
+  if (activeOrigin === null) return null
+  try {
+    const url = new URL(rawUrl)
+    if (url.protocol === "http:" || url.protocol === "https:") {
+      return url.origin === activeOrigin
+    }
+    if (url.protocol === "ws:" || url.protocol === "wss:") {
+      const comparableProtocol = url.protocol === "wss:" ? "https:" : "http:"
+      return new URL(`${comparableProtocol}//${url.host}`).origin === activeOrigin
+    }
+  } catch {
+    // Only the bounded tri-state result is retained; raw destinations are discarded.
+  }
+  return null
+}
+
 const ALLOWED_KEYS = new Set([
   "Escape",
   "Tab",
@@ -96,6 +148,11 @@ interface ElementSnapshot extends PolicyElementSnapshot {
 interface ActivePolicyAction {
   readonly scope: BrowserPolicyActionScope
   readonly token: number
+}
+
+interface FirstFatalPolicyViolation {
+  readonly code: PolicyDenyCode
+  readonly diagnostic: FirstFatalPolicyDiagnostic
 }
 
 interface RegistryEntry {
@@ -527,6 +584,7 @@ export class SolariCdpBrowserController implements BrowserController, AssertionS
   #fatalPolicyCount = 0
   #passivePolicyCodes: PolicyDenyCode[] = []
   #fatalPolicyCodes: PolicyDenyCode[] = []
+  #firstFatalPolicyViolation: FirstFatalPolicyViolation | null = null
   #closePromise: Promise<void> | null = null
 
   constructor(
@@ -992,7 +1050,7 @@ export class SolariCdpBrowserController implements BrowserController, AssertionS
     this.#assertElementSafe(entry.snapshot)
     const href = entry.snapshot.attributes.href
     if (href) assertAllowedNavigation(new URL(href, this.#requirePage().url()).href, this.#allowedOrigins)
-    return this.#runWithPolicyAction("direct_interaction", async () => {
+    return this.#runWithPolicyAction(href ? "navigation" : "direct_interaction", async () => {
       await entry.locator.click({ timeout: this.#internalOperationTimeoutMs })
       return this.observe(signal)
     })
@@ -1856,50 +1914,100 @@ export class SolariCdpBrowserController implements BrowserController, AssertionS
     }
   }
 
-  #directEventDisposition(): BlockedPolicyDisposition {
-    const scope = this.#activePolicyAction?.scope
-    return scope === "direct_interaction" || scope === "webmcp" ? "fatal" : "passive"
+  #eventPolicyDiagnostic(resourceType: PolicyDiagnosticResourceType): FirstFatalPolicyDiagnostic {
+    return {
+      actionScope: this.#activePolicyAction?.scope ?? null,
+      methodClass: "not_applicable",
+      resourceType,
+      mainFrame: null,
+      sameOrigin: null,
+    }
   }
 
-  #recordPolicy(code: PolicyDenyCode, disposition: BlockedPolicyDisposition): void {
+  #requestPolicyDiagnostic(
+    rawUrl: string,
+    method: string,
+    resourceType: string,
+    mainFrame: boolean,
+    activePageOrigin = this.#activePageOrigin(),
+  ): FirstFatalPolicyDiagnostic {
+    return {
+      actionScope: this.#activePolicyAction?.scope ?? null,
+      methodClass: policyDiagnosticMethodClass(method),
+      resourceType: policyDiagnosticResourceType(resourceType),
+      mainFrame,
+      sameOrigin: policyDiagnosticSameOrigin(rawUrl, activePageOrigin),
+    }
+  }
+
+  #recordPolicy(
+    code: PolicyDenyCode,
+    disposition: BlockedPolicyDisposition,
+    diagnostic?: FirstFatalPolicyDiagnostic,
+  ): void {
     const fatal = disposition === "fatal"
-    if (fatal) this.#fatalPolicyCount = Math.min(1_000, this.#fatalPolicyCount + 1)
-    else this.#passivePolicyCount = Math.min(1_000, this.#passivePolicyCount + 1)
+    if (fatal) {
+      this.#fatalPolicyCount = Math.min(1_000, this.#fatalPolicyCount + 1)
+      this.#firstFatalPolicyViolation ??= {
+        code,
+        diagnostic: diagnostic ?? this.#eventPolicyDiagnostic("unknown"),
+      }
+    } else {
+      this.#passivePolicyCount = Math.min(1_000, this.#passivePolicyCount + 1)
+    }
     const destination = fatal ? this.#fatalPolicyCodes : this.#passivePolicyCodes
     if (!destination.includes(code)) destination.push(code)
   }
 
   #throwIfFatalPolicyViolation(): void {
-    const code = this.#fatalPolicyCodes[0]
-    if (code) throw blockedByPolicy(code, "An observable prohibited browser action or request was blocked")
+    const firstFatal = this.#firstFatalPolicyViolation
+    if (firstFatal) {
+      throw blockedByPolicy(
+        firstFatal.code,
+        "An observable prohibited browser action or request was blocked",
+        firstFatal.diagnostic,
+      )
+    }
   }
 
   async #installPolicyHandlers(context: BrowserContext, page: Page): Promise<void> {
     page.on("dialog", (dialog) => {
-      this.#recordPolicy("unknown_effect", this.#directEventDisposition())
+      this.#recordPolicy("unknown_effect", "fatal", this.#eventPolicyDiagnostic("dialog"))
       void dialog.dismiss().catch(() => {})
     })
     page.on("download", (download) => {
-      this.#recordPolicy("upload_or_download_forbidden", "fatal")
+      this.#recordPolicy(
+        "upload_or_download_forbidden",
+        "fatal",
+        this.#eventPolicyDiagnostic("download"),
+      )
       void download.cancel().catch(() => {})
     })
     page.on("filechooser", (chooser) => {
-      this.#recordPolicy("upload_or_download_forbidden", "fatal")
+      this.#recordPolicy(
+        "upload_or_download_forbidden",
+        "fatal",
+        this.#eventPolicyDiagnostic("filechooser"),
+      )
       void chooser.setFiles([]).catch(() => {})
     })
     context.on("page", (candidate) => {
       if (candidate !== page) {
-        this.#recordPolicy("popup_forbidden", "fatal")
+        this.#recordPolicy("popup_forbidden", "fatal", this.#eventPolicyDiagnostic("popup"))
         void candidate.close().catch(() => {})
       }
     })
     await context.routeWebSocket("**/*", async (route) => {
-      const disposition = classifyBlockedWebSocket(
-        route.url(),
-        this.#activePageOrigin(),
-        this.#activePolicyAction?.scope ?? null,
-      )
-      this.#recordPolicy("alternate_protocol_forbidden", disposition)
+      const activePageOrigin = this.#activePageOrigin()
+      const actionScope = this.#activePolicyAction?.scope ?? null
+      const disposition = classifyBlockedWebSocket(route.url(), activePageOrigin, actionScope)
+      this.#recordPolicy("alternate_protocol_forbidden", disposition, {
+        actionScope,
+        methodClass: "not_applicable",
+        resourceType: "websocket",
+        mainFrame: false,
+        sameOrigin: policyDiagnosticSameOrigin(route.url(), activePageOrigin),
+      })
       await route.close({ code: 1008, reason: "TraceGate blocks WebSocket" }).catch(() => {})
     })
     await context.route("**/*", async (route) => {
@@ -1909,7 +2017,16 @@ export class SolariCdpBrowserController implements BrowserController, AssertionS
         const requestFrame = request.frame()
         const requestPage = requestFrame.page()
         if (requestPage !== page) {
-          this.#recordPolicy("popup_forbidden", "fatal")
+          this.#recordPolicy(
+            "popup_forbidden",
+            "fatal",
+            this.#requestPolicyDiagnostic(
+              request.url(),
+              request.method(),
+              request.resourceType(),
+              false,
+            ),
+          )
           await route.abort("blockedbyclient").catch(() => {})
           return
         }
@@ -1919,6 +2036,7 @@ export class SolariCdpBrowserController implements BrowserController, AssertionS
         // Worker-owned requests have no frame. They can still be denied below,
         // but frame absence must not fabricate main-document causality.
       }
+      const activePageOrigin = this.#activePageOrigin()
       const decision = classifyBlockedRequest(
         {
           url: request.url(),
@@ -1929,12 +2047,22 @@ export class SolariCdpBrowserController implements BrowserController, AssertionS
         this.#allowedOrigins,
         {
           resourceType: request.resourceType(),
-          activePageOrigin: this.#activePageOrigin(),
+          activePageOrigin,
           actionScope: this.#activePolicyAction?.scope ?? null,
         },
       )
       if (decision) {
-        this.#recordPolicy(decision.code, decision.disposition)
+        this.#recordPolicy(
+          decision.code,
+          decision.disposition,
+          this.#requestPolicyDiagnostic(
+            request.url(),
+            request.method(),
+            request.resourceType(),
+            mainFrameNavigation,
+            activePageOrigin,
+          ),
+        )
         await route.abort("blockedbyclient").catch(() => {})
         return
       }

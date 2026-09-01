@@ -25,6 +25,39 @@ export interface ObservableRequestSnapshot {
 
 export type BrowserPolicyActionScope = "navigation" | "direct_interaction" | "webmcp"
 export type BlockedPolicyDisposition = "passive" | "fatal"
+export type PolicyDiagnosticMethodClass = "get" | "head" | "other" | "not_applicable"
+export type PolicyDiagnosticResourceType =
+  | "document"
+  | "stylesheet"
+  | "image"
+  | "media"
+  | "font"
+  | "script"
+  | "texttrack"
+  | "xhr"
+  | "fetch"
+  | "eventsource"
+  | "websocket"
+  | "manifest"
+  | "other"
+  | "ping"
+  | "beacon"
+  | "cspviolationreport"
+  | "prefetch"
+  | "dialog"
+  | "download"
+  | "filechooser"
+  | "popup"
+  | "unknown"
+  | "not_applicable"
+
+export interface FirstFatalPolicyDiagnostic {
+  readonly actionScope: BrowserPolicyActionScope | null
+  readonly methodClass: PolicyDiagnosticMethodClass
+  readonly resourceType: PolicyDiagnosticResourceType
+  readonly mainFrame: boolean | null
+  readonly sameOrigin: boolean | null
+}
 
 export interface BlockedRequestContext {
   readonly resourceType: string
@@ -99,7 +132,43 @@ export function assertAllowedNavigation(
 export function blockedByPolicy(
   code: PolicyDenyCode,
   message: string,
+  firstFatalDiagnostic?: FirstFatalPolicyDiagnostic,
 ): TraceGateError {
+  const diagnosticCode = "first_fatal_policy_context"
+  const fieldIssues = firstFatalDiagnostic
+    ? [
+        { path: "browserPolicy.firstFatal.policyCode", code: diagnosticCode, message: code },
+        {
+          path: "browserPolicy.firstFatal.actionScope",
+          code: diagnosticCode,
+          message: firstFatalDiagnostic.actionScope ?? "none",
+        },
+        {
+          path: "browserPolicy.firstFatal.methodClass",
+          code: diagnosticCode,
+          message: firstFatalDiagnostic.methodClass,
+        },
+        {
+          path: "browserPolicy.firstFatal.resourceType",
+          code: diagnosticCode,
+          message: firstFatalDiagnostic.resourceType,
+        },
+        {
+          path: "browserPolicy.firstFatal.mainFrame",
+          code: diagnosticCode,
+          message: firstFatalDiagnostic.mainFrame === null
+            ? "unknown"
+            : String(firstFatalDiagnostic.mainFrame),
+        },
+        {
+          path: "browserPolicy.firstFatal.sameOrigin",
+          code: diagnosticCode,
+          message: firstFatalDiagnostic.sameOrigin === null
+            ? "unknown"
+            : String(firstFatalDiagnostic.sameOrigin),
+        },
+      ]
+    : []
   return new TraceGateError(
     FailureRecordSchema.parse({
       schemaVersion: 1,
@@ -110,7 +179,7 @@ export function blockedByPolicy(
       phase: "browser_policy",
       retryable: false,
       message,
-      fieldIssues: [],
+      fieldIssues,
       causeChain: [],
     }),
   )
