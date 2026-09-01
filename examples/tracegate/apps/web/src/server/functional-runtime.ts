@@ -24,6 +24,7 @@ import {
   UtcDateTimeSchema,
   createControlError,
   redactError,
+  toolCompletionInterfaceUsageDelta,
   type AgentExecutionInputV2,
   type AgentRunResult,
   type AgentRunner,
@@ -790,17 +791,21 @@ class PersistingAgentRunner implements AgentRunner {
     const runId = this.registry.requireRunId(safeTools, this.registry.toolRunIds, "Safe tool surface");
     const config = this.registry.requireConfig(runId);
     const activity = new Map<InterfaceChannel, { invoked: number; succeeded: number; failed: number }>();
+    const completedToolCallIds = new Set<string>();
     const runner = new TraceGateAgentRunner(this.#factory, {
       modelId: DEEPSEEK,
       sampling: config.sampling,
       sink: async (milestone) => {
         const parsed = AgentTraceEventSchema.parse(milestone) as AgentMilestone;
-        if (parsed.type === "run.tool.completed" && parsed.payload.interfaceSource !== "orchestration") {
-          const current = activity.get(parsed.payload.interfaceSource) ?? { invoked: 0, succeeded: 0, failed: 0 };
-          current.invoked += 1;
-          if (parsed.payload.success) current.succeeded += 1;
-          else current.failed += 1;
-          activity.set(parsed.payload.interfaceSource, current);
+        if (parsed.type === "run.tool.completed" && !completedToolCallIds.has(parsed.payload.toolCallId)) {
+          completedToolCallIds.add(parsed.payload.toolCallId);
+          const delta = toolCompletionInterfaceUsageDelta(parsed.payload);
+          if (delta !== null) {
+            const current = activity.get(delta.channel) ?? { invoked: 0, succeeded: 0, failed: 0 };
+            current.invoked += 1;
+            current[delta.outcome] += 1;
+            activity.set(delta.channel, current);
+          }
         }
         const kind: RunStep["kind"] = parsed.type.startsWith("run.tool") ? "tool" : "model";
         const durationMs = parsed.type === "run.tool.completed" ? parsed.payload.durationMs : null;

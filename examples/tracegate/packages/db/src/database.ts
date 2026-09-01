@@ -24,6 +24,7 @@ import {
   RunSchema,
   RunStepSchema,
   redactJson,
+  toolCompletionInterfaceUsageDelta,
   validateRunTransition,
   type BrowserAssertionEvidenceV1,
   type BrowserSessionSummary,
@@ -168,50 +169,59 @@ function channelForDiscoveredKind(
   return kind;
 }
 
-function isInterfaceChannel(value: string): value is InterfaceChannel {
-  return (INTERFACE_CHANNELS as readonly string[]).includes(value);
-}
-
 function projectInterfaceUsage(
   explicit: InterfaceUsageSummary | undefined,
   runEvents: readonly EventEnvelope[],
 ): InterfaceUsageSummary | undefined {
   let latestDiscovery: Extract<EventEnvelope, { readonly type: "run.discovery.completed" }> | undefined;
-  const started = new Map<InterfaceChannel, number>();
-  const succeeded = new Map<InterfaceChannel, number>();
-  const failed = new Map<InterfaceChannel, number>();
+  const tracedChannels = new Set<InterfaceChannel>();
+  const completedToolCallIds = new Set<string>();
+  const completed = new Map<InterfaceChannel, { invoked: number; succeeded: number; failed: number }>();
 
   for (const event of runEvents) {
     if (event.type === "run.discovery.completed") latestDiscovery = event;
-    if (event.type === "run.tool.started" && isInterfaceChannel(event.payload.interfaceSource)) {
-      started.set(event.payload.interfaceSource, (started.get(event.payload.interfaceSource) ?? 0) + 1);
-    }
-    if (event.type === "run.tool.completed" && isInterfaceChannel(event.payload.interfaceSource)) {
-      const counts = event.payload.success ? succeeded : failed;
-      counts.set(event.payload.interfaceSource, (counts.get(event.payload.interfaceSource) ?? 0) + 1);
-    }
+    if (event.type !== "run.tool.started" && event.type !== "run.tool.completed") continue;
+
+    const source = event.payload.interfaceSource;
+    if (source !== "orchestration") tracedChannels.add(source);
+    if (event.type !== "run.tool.completed" || completedToolCallIds.has(event.payload.toolCallId)) continue;
+
+    completedToolCallIds.add(event.payload.toolCallId);
+    const delta = toolCompletionInterfaceUsageDelta(event.payload);
+    if (delta === null) continue;
+    const current = completed.get(delta.channel) ?? { invoked: 0, succeeded: 0, failed: 0 };
+    current.invoked += 1;
+    current[delta.outcome] += 1;
+    completed.set(delta.channel, current);
   }
 
-  if (explicit === undefined && latestDiscovery === undefined && started.size === 0 && succeeded.size === 0 && failed.size === 0) {
-    return undefined;
-  }
+  if (explicit === undefined && latestDiscovery === undefined && tracedChannels.size === 0) return undefined;
 
   return InterfaceUsageSummarySchema.parse({
     schemaVersion: 1,
     metrics: INTERFACE_CHANNELS.map((channel) => {
       const persisted = explicit?.metrics.find((metric) => metric.channel === channel);
-      const invoked = started.get(channel) ?? 0;
+      const terminal = completed.get(channel) ?? { invoked: 0, succeeded: 0, failed: 0 };
+      const usage = tracedChannels.has(channel)
+        ? terminal
+        : {
+          invoked: persisted?.invoked ?? 0,
+          succeeded: persisted?.succeeded ?? 0,
+          failed: persisted?.failed ?? 0,
+        };
       const discovered = latestDiscovery?.payload.interfaces.filter(
         (entry) => channelForDiscoveredKind(entry.kind) === channel,
       ).length ?? 0;
       const admitted = channel === "page_webmcp" && latestDiscovery?.payload.webMcpGate === "admitted_read_only" ? 1 : 0;
       return {
         channel,
-        discovered: persisted !== undefined && persisted.discovered > 0 ? persisted.discovered : Math.max(discovered, invoked > 0 ? 1 : 0),
-        admitted: persisted !== undefined && persisted.admitted > 0 ? persisted.admitted : Math.max(admitted, invoked > 0 ? 1 : 0),
-        invoked: persisted !== undefined && persisted.invoked > 0 ? persisted.invoked : invoked,
-        succeeded: persisted !== undefined && persisted.succeeded > 0 ? persisted.succeeded : succeeded.get(channel) ?? 0,
-        failed: persisted !== undefined && persisted.failed > 0 ? persisted.failed : failed.get(channel) ?? 0,
+        discovered: persisted !== undefined && persisted.discovered > 0
+          ? persisted.discovered
+          : Math.max(discovered, usage.invoked > 0 ? 1 : 0),
+        admitted: persisted !== undefined && persisted.admitted > 0
+          ? persisted.admitted
+          : Math.max(admitted, usage.invoked > 0 ? 1 : 0),
+        ...usage,
       };
     }),
   });

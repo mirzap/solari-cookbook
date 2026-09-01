@@ -9,6 +9,7 @@ import type {
 } from "@tracegate/shared";
 import { InlineNotice, Metric, Panel, StatusBadge } from "@tracegate/ui";
 import { TracegateApiClient } from "../../lib/api-client.ts";
+import { projectInterfaceUsageMetrics } from "../../lib/interface-usage.ts";
 import { useLiveEvaluation } from "../../lib/use-live-evaluation.ts";
 
 export const Route = createFileRoute("/evaluations/$id")({ component: LiveEvaluationPage });
@@ -31,12 +32,6 @@ const INTERFACE_DESCRIPTIONS: Record<InterfaceChannel, string> = {
   visual_fallback: "Rendered-page understanding when no stronger interface helps",
 };
 const INTERFACE_ORDER: readonly InterfaceChannel[] = ["page_webmcp", "configured_mcp", "semantic_ui", "llms_txt", "json_ld", "visual_fallback"];
-
-function channelForDiscoveredKind(kind: "semantic" | "llms_txt" | "json_ld" | "webmcp" | "configured_mcp" | "visual_fallback"): InterfaceChannel {
-  if (kind === "semantic") return "semantic_ui";
-  if (kind === "webmcp") return "page_webmcp";
-  return kind;
-}
 
 async function loadAllEvents(evaluationId: Parameters<TracegateApiClient["events"]>[0], signal: AbortSignal): Promise<readonly EventEnvelope[]> {
   const events: EventEnvelope[] = [];
@@ -99,26 +94,20 @@ function RunCard({ run }: { readonly run: RunSnapshot }) {
 }
 
 function AgentInterfaceInsights({ runs, history }: { readonly runs: readonly RunSnapshot[]; readonly history: readonly EventEnvelope[] | null }) {
-  const totals = useMemo(() => INTERFACE_ORDER.map((channel) => {
-    const runMetrics = runs.flatMap((run) => run.interfaceUsage?.metrics.filter((metric) => metric.channel === channel) ?? []);
-    const discoveryEvents = history?.filter((event) => event.type === "run.discovery.completed") ?? [];
-    const discoveredFromEvents = discoveryEvents.reduce((sum, event) => sum + event.payload.interfaces.filter((entry) => channelForDiscoveredKind(entry.kind) === channel).length, 0);
-    const admittedFromDiscovery = channel === "page_webmcp"
-      ? discoveryEvents.filter((event) => event.payload.webMcpGate === "admitted_read_only").length
-      : 0;
-    const discovered = Math.max(runMetrics.reduce((sum, metric) => sum + metric.discovered, 0), discoveredFromEvents);
-    const admitted = Math.max(runMetrics.reduce((sum, metric) => sum + metric.admitted, 0), admittedFromDiscovery);
-    const started = history?.filter((event) => event.type === "run.tool.started" && event.payload.interfaceSource === channel) ?? [];
-    const completed = history?.filter((event) => event.type === "run.tool.completed" && event.payload.interfaceSource === channel) ?? [];
-    const invoked = started.length;
-    const succeeded = completed.filter((event) => event.type === "run.tool.completed" && event.payload.success).length;
-    const failed = completed.filter((event) => event.type === "run.tool.completed" && !event.payload.success).length;
-    const usedRunIds = new Set(started.flatMap((event) => event.runId === null ? [] : [event.runId]));
-    const usedRuns = runs.filter((run) => usedRunIds.has(run.id));
-    const passedWithUse = usedRuns.filter((run) => run.outcome === "passed").length;
-    const durationMs = completed.reduce((sum, event) => event.type === "run.tool.completed" ? sum + event.payload.durationMs : sum, 0);
-    return { channel, discovered, admitted, invoked, succeeded, failed, usedRuns: usedRuns.length, passedWithUse, durationMs };
-  }), [history, runs]);
+  const totals = useMemo(() => {
+    const projected = projectInterfaceUsageMetrics(runs, history);
+    return INTERFACE_ORDER.map((channel) => {
+      const metric = projected.find((candidate) => candidate.channel === channel);
+      if (metric === undefined) throw new Error(`Missing interface usage projection for ${channel}`);
+      const usedRunIds = new Set(metric.usedRunIds);
+      const usedRuns = runs.filter((run) => usedRunIds.has(run.id));
+      return {
+        ...metric,
+        usedRuns: usedRuns.length,
+        passedWithUse: usedRuns.filter((run) => run.outcome === "passed").length,
+      };
+    });
+  }, [history, runs]);
 
   return (
     <Panel eyebrow="Agent Interfaces" title="How ready is this website for agents?">
@@ -130,7 +119,7 @@ function AgentInterfaceInsights({ runs, history }: { readonly runs: readonly Run
             <header><div><h3>{INTERFACE_LABELS[metric.channel]}</h3><p>{INTERFACE_DESCRIPTIONS[metric.channel]}</p></div><StatusBadge status={state} /></header>
             <dl>
               <Metric label="Actual uses" value={metric.invoked} detail={metric.invoked === 0 ? "Not used in these runs" : `${metric.succeeded} completed · ${metric.failed} failed`} />
-              <Metric label="Time in use" value={metric.invoked === 0 ? "—" : `${(metric.durationMs / 1_000).toFixed(1)}s`} />
+              <Metric label="Time in use" value={metric.invoked === 0 || metric.durationMs === null ? "—" : `${(metric.durationMs / 1_000).toFixed(1)}s`} />
               <Metric label="Reliability when used" value={metric.usedRuns === 0 ? "—" : `${metric.passedWithUse}/${metric.usedRuns}`} detail="Passed runs / runs that used it" />
             </dl>
           </article>;
