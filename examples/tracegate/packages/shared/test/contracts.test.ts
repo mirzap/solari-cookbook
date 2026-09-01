@@ -6,6 +6,10 @@ import {
   EvaluationConfigSchema,
   EventAppendInputSchema,
   EventTypeSchema,
+  DemoChallengeProvisionSchema,
+  DemoGradeEvidenceEnvelopeSchema,
+  DemoMutationRevisionSchema,
+  ObservationRevisionSchema,
   FinalizeRunInputSchema,
   GradeResultSchema,
   PublicEvaluationConfigInputSchema,
@@ -22,6 +26,8 @@ import {
   evaluationConfigFixture,
   failedFailureFixture,
   gradeEvidenceFixture,
+  demoChallengeFixture,
+  demoGradeEvidenceEnvelopeFixture,
   observationFixture,
   passingGradeFixture,
   runFixture,
@@ -91,6 +97,26 @@ test("grades reject contradictory predicates and evidence", () => {
     predicates: passingGradeFixture.predicates.map((predicate, index) => index === 0 ? { ...predicate, passed: false } : predicate),
   }).success, false);
   assert.equal(GradeResultSchema.safeParse({ ...passingGradeFixture, outcome: "inconclusive", failure: null }).success, false);
+});
+
+test("trusted demo mutation revisions are independent from DOM observation revisions", () => {
+  assert.equal(DemoMutationRevisionSchema.parse(0), 0);
+  assert.equal(ObservationRevisionSchema.safeParse(0).success, false);
+  assert.equal(gradeEvidenceFixture.revision, 2);
+  assert.equal(observationFixture.revision, 1);
+  assert.equal(DemoGradeEvidenceEnvelopeSchema.parse(demoGradeEvidenceEnvelopeFixture).runId, runFixture.id);
+  assert.equal(DemoGradeEvidenceEnvelopeSchema.safeParse({
+    ...demoGradeEvidenceEnvelopeFixture,
+    challengeId: "different-challenge-id",
+  }).success, false);
+});
+
+test("challenge navigation is an ephemeral HTTPS server-only value", () => {
+  assert.equal(DemoChallengeProvisionSchema.parse(demoChallengeFixture).navigationUrl.startsWith("https://"), true);
+  assert.equal(DemoChallengeProvisionSchema.safeParse({ ...demoChallengeFixture, navigationUrl: "http://remote.invalid/run/token" }).success, false);
+  assert.equal(DemoChallengeProvisionSchema.safeParse({ ...demoChallengeFixture, navigationUrl: "https://user:password@demo.tracegate.test/run/token" }).success, false);
+  assert.equal(DemoChallengeProvisionSchema.safeParse({ ...demoChallengeFixture, navigationUrl: "https://demo.tracegate.test/run/token#" }).success, false);
+  assert.equal(DemoChallengeProvisionSchema.safeParse({ ...demoChallengeFixture, navigationUrl: "https://demo.tracegate.test/run/token#section" }).success, false);
 });
 
 test("completed run and finalization contracts reject contradictory outcomes", () => {

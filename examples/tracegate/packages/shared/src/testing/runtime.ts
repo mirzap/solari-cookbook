@@ -1,5 +1,11 @@
 import type { AgentRunResult } from "../agent.ts";
 import type { DiscoveryEvidence } from "../discovery.ts";
+import type {
+  CreateDemoChallengeRequest,
+  DemoChallengeProvision,
+  DemoGradeEvidenceEnvelope,
+  GetDemoGradeEvidenceRequest,
+} from "../demo.ts";
 import type { FailureAnalysis, GradeResult } from "../grading.ts";
 import {
   EvaluationIdSchema,
@@ -15,6 +21,7 @@ import type {
   AgentRunner,
   DiscoveryContext,
   DiscoveryController,
+  DemoAdminPort,
   FailureAnalysisContext,
   FailureAnalyzer,
   GradeContext,
@@ -79,6 +86,40 @@ export class FakeGrader implements Grader {
     throwIfAborted(signal);
     this.calls.push(clone(context));
     return clone(this.#result);
+  }
+}
+
+export class FakeDemoAdminPort implements DemoAdminPort {
+  readonly createCalls: CreateDemoChallengeRequest[] = [];
+  readonly evidenceCalls: GetDemoGradeEvidenceRequest[] = [];
+  #challenge: DemoChallengeProvision;
+  #evidence: DemoGradeEvidenceEnvelope;
+
+  constructor(challenge: DemoChallengeProvision, evidence: DemoGradeEvidenceEnvelope) {
+    this.#challenge = clone(challenge);
+    this.#evidence = clone(evidence);
+  }
+
+  async createChallenge(request: CreateDemoChallengeRequest, signal: AbortSignal): Promise<DemoChallengeProvision> {
+    throwIfAborted(signal);
+    this.createCalls.push(clone(request));
+    if (
+      request.evaluationId !== this.#challenge.evaluationId
+      || request.runId !== this.#challenge.runId
+      || request.challengeId !== this.#challenge.challengeId
+    ) {
+      throw new Error("Configured Demo challenge does not match the create request identity");
+    }
+    return clone(this.#challenge);
+  }
+
+  async getGradeEvidence(request: GetDemoGradeEvidenceRequest, signal: AbortSignal): Promise<DemoGradeEvidenceEnvelope> {
+    throwIfAborted(signal);
+    this.evidenceCalls.push(clone(request));
+    if (request.runId !== this.#evidence.runId || request.challengeId !== this.#evidence.challengeId) {
+      throw new Error("Configured Demo grade evidence does not match the request identity");
+    }
+    return clone(this.#evidence);
   }
 }
 

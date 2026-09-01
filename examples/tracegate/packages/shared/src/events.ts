@@ -7,7 +7,7 @@ import {
   EventCursorSchema,
   EvaluationIdSchema,
   EventIdSchema,
-  ObservationRevisionSchema,
+  DemoMutationRevisionSchema,
   RunIdSchema,
   RunSequenceSchema,
   ToolCallIdSchema,
@@ -125,7 +125,7 @@ export const RunEventSchema = z.discriminatedUnion("type", [
       totalTokens: z.number().int().nonnegative(),
     }),
   ),
-  event("run.grade.started", z.object({ evidenceRevision: ObservationRevisionSchema })),
+  event("run.grade.started", z.object({ evidenceRevision: DemoMutationRevisionSchema })),
   event("run.grade.completed", GradeResultSchema),
   event("run.passed", z.object({ outcome: z.literal("passed") })),
   event(

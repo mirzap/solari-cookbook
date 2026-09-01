@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { FailureRecordSchema } from "./errors.ts";
-import { ObservationRevisionSchema, UtcDateTimeSchema } from "./ids.ts";
+import { DemoMutationRevisionSchema, UtcDateTimeSchema } from "./ids.ts";
 import { RunOutcomeSchema } from "./states.ts";
 import { ScenarioIdSchema } from "./config.ts";
 import { ChallengeIdSchema } from "./ids.ts";
@@ -29,7 +29,7 @@ export const DemoCartLineSchema = z.object({
 export const DemoGradeEvidenceSchema = z.object({
   schemaVersion: z.literal(1),
   challengeId: ChallengeIdSchema,
-  revision: ObservationRevisionSchema,
+  revision: DemoMutationRevisionSchema,
   cart: z.array(DemoCartLineSchema).max(100),
   capturedAt: UtcDateTimeSchema,
 });
@@ -39,7 +39,7 @@ const requiredPredicates = new Set(GradePredicateNameSchema.options);
 export const GradeResultSchema = z.object({
   schemaVersion: z.literal(1),
   scenarioId: ScenarioIdSchema,
-  evidenceRevision: ObservationRevisionSchema.nullable(),
+  evidenceRevision: DemoMutationRevisionSchema.nullable(),
   outcome: RunOutcomeSchema,
   predicates: z.array(GradePredicateSchema).max(4),
   failure: FailureRecordSchema.nullable(),

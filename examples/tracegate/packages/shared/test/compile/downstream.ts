@@ -2,6 +2,7 @@ import type {
   AgentRunner,
   BrowserProvider,
   DiscoveryController,
+  DemoAdminPort,
   EvaluationRepository,
   EventRepository,
   FailureAnalyzer,
@@ -15,6 +16,7 @@ import { evaluationConfigFixture, type DeterministicClock } from "@tracegate/sha
 export interface DownstreamComposition {
   browserProvider: BrowserProvider;
   discovery: DiscoveryController;
+  demoAdmin: DemoAdminPort;
   agent: AgentRunner;
   grader: Grader;
   failureAnalyzer: FailureAnalyzer;

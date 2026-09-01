@@ -4,9 +4,10 @@ This file records the green TG-006 contract and architecture checkpoint. Paths a
 
 ## Frozen checkpoint
 
-- Checkpoint: `TG-006`, 2026-09-01.
+- Base checkpoint: `TG-006`, 2026-09-01.
+- Exceptional shared-contract checkpoint: TG-007 impact note `docs/evidence/tg-007-shared-contract-impact.md`, 2026-09-01.
 - `packages/shared` Zod v4 schemas and inferred TypeScript types are the authoritative cross-lane contract.
-- Frozen shared Git tree: `3e20d4d03de31e9ef1caae34e655b8b3a13e4760`.
+- Frozen shared Git tree: `63cb741672f75f39884788c2fd59fb0f58185591`.
 - Public consumers import only `@tracegate/shared` or `@tracegate/shared/testing`; they do not import another lane's concrete internals.
 - After this checkpoint, only Agent A may edit `packages/shared`, TraceGate root workspace configuration, or `pnpm-lock.yaml`.
 - TG-006 authorizes the planned Wave 1 fan-out under these ownership rules; it does not claim TG-007+ features are already implemented.

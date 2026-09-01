@@ -1,12 +1,14 @@
 import { AgentObservationSchema } from "../agent.ts";
 import { EvaluationConfigSchema } from "../config.ts";
 import { DiscoveryEvidenceSchema } from "../discovery.ts";
+import { DemoChallengeProvisionSchema, DemoGradeEvidenceEnvelopeSchema } from "../demo.ts";
 import { EvaluationSchema, RunSchema } from "../entities.ts";
 import { FailureRecordSchema, RunWarningSchema } from "../errors.ts";
 import { EventAppendInputSchema, EventEnvelopeSchema } from "../events.ts";
 import { DemoGradeEvidenceSchema, GradeResultSchema } from "../grading.ts";
 import {
   ChallengeIdSchema,
+  DemoMutationRevisionSchema,
   EventCursorSchema,
   EvaluationIdSchema,
   EventIdSchema,
@@ -19,6 +21,7 @@ export const FIXTURE_EVALUATION_ID = EvaluationIdSchema.parse("01890f00-0000-700
 export const FIXTURE_RUN_ID = RunIdSchema.parse("01890f00-0000-7000-8000-000000000002");
 export const FIXTURE_EVENT_ID = EventIdSchema.parse("01890f00-0000-7000-8000-000000000003");
 export const FIXTURE_CHALLENGE_ID = ChallengeIdSchema.parse("challenge-fixture-0001");
+export const FIXTURE_DEMO_MUTATION_REVISION = DemoMutationRevisionSchema.parse(2);
 
 export const evaluationConfigFixture = EvaluationConfigSchema.parse({
   schemaVersion: 1,
@@ -119,15 +122,32 @@ export const inconclusiveFailureFixture = FailureRecordSchema.parse({
 export const gradeEvidenceFixture = DemoGradeEvidenceSchema.parse({
   schemaVersion: 1,
   challengeId: FIXTURE_CHALLENGE_ID,
-  revision: 2,
+  revision: FIXTURE_DEMO_MUTATION_REVISION,
   cart: [{ productSlug: "classic-tee", productName: "Classic Tee", variant: { size: "M" }, quantity: 1 }],
   capturedAt: FIXTURE_NOW,
+});
+
+export const demoChallengeFixture = DemoChallengeProvisionSchema.parse({
+  schemaVersion: 1,
+  evaluationId: FIXTURE_EVALUATION_ID,
+  runId: FIXTURE_RUN_ID,
+  challengeId: FIXTURE_CHALLENGE_ID,
+  navigationUrl: "https://demo.tracegate.test/runs/challenge-fixture-0001",
+  initialMutationRevision: DemoMutationRevisionSchema.parse(0),
+  expiresAt: "2026-09-01T12:05:00.000Z",
+});
+
+export const demoGradeEvidenceEnvelopeFixture = DemoGradeEvidenceEnvelopeSchema.parse({
+  schemaVersion: 1,
+  runId: FIXTURE_RUN_ID,
+  challengeId: FIXTURE_CHALLENGE_ID,
+  evidence: gradeEvidenceFixture,
 });
 
 export const passingGradeFixture = GradeResultSchema.parse({
   schemaVersion: 1,
   scenarioId: "classic-tee-size-m-v1",
-  evidenceRevision: 2,
+  evidenceRevision: FIXTURE_DEMO_MUTATION_REVISION,
   outcome: "passed",
   predicates: [
     { name: "exactly_one_line_item", passed: true, expected: "1", actual: "1" },

@@ -14,7 +14,7 @@ import type {
 import { cleanupWarningFixture } from "./fixtures.ts";
 
 export type ScriptedBrowserOperation =
-  | "connect" | "navigate" | "observe" | "click" | "type" | "select" | "pressKey" | "scroll" | "wait" | "callNativeTool";
+  | "connect" | "close" | "navigate" | "observe" | "click" | "type" | "select" | "pressKey" | "scroll" | "wait" | "callNativeTool";
 
 export interface ScriptedBrowserStep {
   readonly operation: ScriptedBrowserOperation;
@@ -30,6 +30,7 @@ const throwIfAborted = (signal: AbortSignal) => {
 export class ScriptedBrowserController implements BrowserController {
   readonly calls: Array<{ operation: ScriptedBrowserOperation; input: unknown }> = [];
   #steps: ScriptedBrowserStep[];
+  #closed = false;
 
   constructor(steps: readonly ScriptedBrowserStep[]) {
     this.#steps = [...steps];
@@ -47,6 +48,12 @@ export class ScriptedBrowserController implements BrowserController {
   }
 
   async connect(lease: BrowserLease, signal: AbortSignal): Promise<void> { this.#take("connect", lease.providerSessionId, signal); }
+  async close(signal: AbortSignal): Promise<void> {
+    throwIfAborted(signal);
+    if (this.#closed) return;
+    this.#take("close", null, signal);
+    this.#closed = true;
+  }
   async navigate(url: string, signal: AbortSignal): Promise<AgentObservation> { return this.#observation("navigate", url, signal); }
   async observe(signal: AbortSignal): Promise<AgentObservation> { return this.#observation("observe", null, signal); }
   async click(input: ElementActionInput, signal: AbortSignal): Promise<AgentObservation> { return this.#observation("click", input, signal); }

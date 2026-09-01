@@ -18,6 +18,7 @@ export const UtcDateTimeSchema = z.iso.datetime({ offset: false });
 export const EventCursorSchema = z.string().regex(/^[1-9][0-9]*$/, "cursor must be a positive canonical decimal string");
 export const RunSequenceSchema = z.number().int().safe().nonnegative();
 export const ObservationRevisionSchema = z.number().int().safe().positive();
+export const DemoMutationRevisionSchema = z.number().int().safe().nonnegative().brand<"DemoMutationRevision">();
 export const ElementRefSchema = z.string().regex(/^e:[1-9][0-9]*:[0-9]+$/);
 
 export type EvaluationId = z.infer<typeof EvaluationIdSchema>;
@@ -31,4 +32,5 @@ export type UtcDateTime = z.infer<typeof UtcDateTimeSchema>;
 export type EventCursor = z.infer<typeof EventCursorSchema>;
 export type RunSequence = z.infer<typeof RunSequenceSchema>;
 export type ObservationRevision = z.infer<typeof ObservationRevisionSchema>;
+export type DemoMutationRevision = z.infer<typeof DemoMutationRevisionSchema>;
 export type ElementRef = z.infer<typeof ElementRefSchema>;

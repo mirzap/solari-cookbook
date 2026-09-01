@@ -3,6 +3,7 @@ export * from "./api.ts";
 export * from "./capabilities.ts";
 export * from "./config.ts";
 export * from "./discovery.ts";
+export * from "./demo.ts";
 export * from "./entities.ts";
 export * from "./env.ts";
 export * from "./errors.ts";

@@ -1,6 +1,12 @@
 import type { AgentObservation, AgentRunResult } from "./agent.ts";
 import type { InterfaceMode, PublicEvaluationConfigInput } from "./config.ts";
 import type { DiscoveryEvidence } from "./discovery.ts";
+import type {
+  CreateDemoChallengeRequest,
+  DemoChallengeProvision,
+  DemoGradeEvidenceEnvelope,
+  GetDemoGradeEvidenceRequest,
+} from "./demo.ts";
 import type { BrowserSessionSummary, Evaluation, Run } from "./entities.ts";
 import type { ControlError, FailureRecord, RunWarning } from "./errors.ts";
 import { EventAppendInputSchema, type EventAppendInput, type EventEnvelope } from "./events.ts";
@@ -70,6 +76,7 @@ export interface ElementActionInput {
 
 export interface BrowserController {
   connect(lease: BrowserLease, signal: AbortSignal): Promise<void>;
+  close(signal: AbortSignal): Promise<void>;
   navigate(url: string, signal: AbortSignal): Promise<AgentObservation>;
   observe(signal: AbortSignal): Promise<AgentObservation>;
   click(input: ElementActionInput, signal: AbortSignal): Promise<AgentObservation>;
@@ -110,11 +117,15 @@ export interface GradeContext {
   readonly run: Run;
   readonly challengeId: ChallengeId;
   readonly evidence: DemoGradeEvidence;
-  readonly expectedRevision: ObservationRevision;
 }
 
 export interface Grader {
   grade(context: GradeContext, signal: AbortSignal): Promise<GradeResult>;
+}
+
+export interface DemoAdminPort {
+  createChallenge(request: CreateDemoChallengeRequest, signal: AbortSignal): Promise<DemoChallengeProvision>;
+  getGradeEvidence(request: GetDemoGradeEvidenceRequest, signal: AbortSignal): Promise<DemoGradeEvidenceEnvelope>;
 }
 
 export interface FailureAnalysisContext {
