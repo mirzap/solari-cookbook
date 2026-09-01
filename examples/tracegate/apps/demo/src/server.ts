@@ -5,6 +5,7 @@ import {
   ConnectivityState,
   handleConnectivityRequest,
 } from "./__connectivity.js"
+import { handleJobBoardFixture } from "./job-board-fixture.js"
 
 export interface ConnectivityServerOptions {
   adminSecret: string
@@ -30,6 +31,9 @@ export function createConnectivityServer(options: ConnectivityServerOptions): Se
       ) {
         return
       }
+      if (handleJobBoardFixture(request, response)) {
+        return
+      }
       response.writeHead(404, {
         "content-type": "text/plain; charset=utf-8",
         "x-content-type-options": "nosniff",
@@ -51,7 +55,11 @@ async function main(): Promise<void> {
 
   const host = process.env.HOST ?? "127.0.0.1"
   const port = Number.parseInt(process.env.PORT ?? "4317", 10)
-  const server = createConnectivityServer({ adminSecret, host, port })
+  const server = createConnectivityServer({
+    adminSecret,
+    host,
+    port,
+  })
 
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject)
