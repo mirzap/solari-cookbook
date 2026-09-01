@@ -137,7 +137,7 @@ function AgentInterfaceInsights({ runs, history }: { readonly runs: readonly Run
 
 function successCriterionDescription(assertion: EvaluationReportProjection["assertions"][number]): string {
   if (assertion.kind === "url" && assertion.operator === "origin_path_and_query_parameter_equals") {
-    return `Registration page ${assertion.expectedUrl} with exactly one ${assertion.queryParameter.name}=${assertion.queryParameter.value}`;
+    return `Final page ${assertion.expectedUrl} with exactly one ${assertion.queryParameter.name}=${assertion.queryParameter.value}`;
   }
   if (assertion.kind === "url") return `Final page ${assertion.expectedUrl}`;
   if (assertion.kind === "text") return `Visible text includes “${assertion.expected}”`;
@@ -186,6 +186,7 @@ function LiveEvaluationPage() {
   const [report, setReport] = useState<EvaluationReportProjection | null>(null);
   const [trace, setTrace] = useState<AgentTraceProjection | null>(null);
   const [history, setHistory] = useState<readonly EventEnvelope[] | null>(null);
+  const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {
     if (snapshot === null) return undefined;
@@ -202,7 +203,21 @@ function LiveEvaluationPage() {
     return () => controller.abort();
   }, [snapshot?.evaluationId, snapshot?.latestCursor]);
 
+  useEffect(() => {
+    if (snapshot === null || !["queued", "running", "cancelling"].includes(snapshot.status)) return undefined;
+    const timer = setInterval(() => setNow(Date.now()), 5_000);
+    return () => clearInterval(timer);
+  }, [snapshot?.status]);
+
   const completed = snapshot === null ? 0 : snapshot.aggregate.passed + snapshot.aggregate.failed + snapshot.aggregate.inconclusive + snapshot.aggregate.cancelled;
+  const evaluationFailure = history === null ? undefined : [...history].reverse().find((event) => event.type === "evaluation.failed");
+  const latestMilestone = history?.at(-1);
+  const quietForMs = latestMilestone === undefined ? 0 : Math.max(0, now - Date.parse(latestMilestone.recordedAt));
+  const quietThresholdMs = snapshot === null ? Number.POSITIVE_INFINITY : Math.max(30_000, snapshot.config.budgets.toolTimeoutMs * 2);
+  const progressDelayed = snapshot !== null
+    && ["queued", "running", "cancelling"].includes(snapshot.status)
+    && latestMilestone !== undefined
+    && quietForMs >= quietThresholdMs;
 
   return (
     <main id="main-content" className="tg-shell">
@@ -213,6 +228,8 @@ function LiveEvaluationPage() {
       </header>
 
       {live.error === null ? null : <InlineNotice tone="warning">Live updates paused. TraceGate is reconnecting and will load a fresh durable snapshot.</InlineNotice>}
+      {evaluationFailure?.type === "evaluation.failed" ? <InlineNotice tone="error">Evaluation could not continue. {evaluationFailure.payload.error.message}</InlineNotice> : null}
+      {progressDelayed ? <InlineNotice tone="warning">No new progress has been saved for {Math.floor(quietForMs / 1_000)} seconds. The current step may be taking longer than expected; TraceGate will show the next durable update when it arrives.</InlineNotice> : null}
       {snapshot === null ? <Panel title="Loading evaluation"><p className="tg-muted">Loading the latest saved progress…</p></Panel> : <>
         <section className="tg-summary" aria-label="Reliability summary">
           <dl className="tg-summary__metrics">
