@@ -17,12 +17,14 @@ import {
 } from "@tracegate/shared"
 
 import type {
+  CurrentOriginWebMcpInvocationResult,
   ExpectedCurrentOriginWebMcpTool,
   RawCurrentOriginWebMcpTool,
 } from "./browser-controller.js"
 
 const MAX_RESULT_BYTES = 12_000
 const ROOT_SCHEMA_KEYS = new Set(["type", "properties", "required", "additionalProperties"])
+const PROTOTYPE_SENSITIVE_KEYS = new Set(["__proto__", "constructor", "prototype"])
 const PROPERTY_SCHEMA_KEYS = new Set([
   "type",
   "description",
@@ -40,7 +42,7 @@ interface WebMcpControllerSource {
     expectedTool: ExpectedCurrentOriginWebMcpTool,
     input: Readonly<Record<string, string | number | boolean | null>>,
     signal: AbortSignal,
-  ): Promise<string>
+  ): Promise<CurrentOriginWebMcpInvocationResult>
 }
 
 function asSource(controller: BrowserController): WebMcpControllerSource {
@@ -73,8 +75,9 @@ function sanitizeInputSchema(value: unknown): WebMcpClosedInput | null {
     return null
   }
 
-  const properties: Record<string, unknown> = {}
+  const properties = Object.create(null) as Record<string, unknown>
   for (const [name, rawProperty] of Object.entries(root.properties as Record<string, unknown>)) {
+    if (PROTOTYPE_SENSITIVE_KEYS.has(name)) return null
     const property = record(rawProperty)
     if (!property || Object.keys(property).some((key) => !PROPERTY_SCHEMA_KEYS.has(key))) {
       return null
@@ -106,10 +109,15 @@ function descriptorId(
   return `webmcp:${digest}`
 }
 
+interface AdmittedToolRecord {
+  readonly descriptor: WebMcpToolDescriptorV1
+  readonly rawInputSchema: unknown
+}
+
 function sanitizeTool(
   currentOrigin: PublicHttpsOrigin,
   tool: RawCurrentOriginWebMcpTool,
-): WebMcpToolDescriptorV1 | null {
+): AdmittedToolRecord | null {
   if (!declaredReadOnly(tool.annotations)) return null
   const inputSchema = sanitizeInputSchema(tool.inputSchema)
   if (!inputSchema) return null
@@ -123,7 +131,9 @@ function sanitizeTool(
     trust: "untrusted_page_capability",
     declaredReadOnly: true,
   })
-  return parsed.success ? parsed.data : null
+  return parsed.success
+    ? { descriptor: parsed.data, rawInputSchema: tool.inputSchema }
+    : null
 }
 
 function inputMatchesSchema(
@@ -131,10 +141,12 @@ function inputMatchesSchema(
   schema: WebMcpClosedInput,
 ): boolean {
   const keys = Object.keys(input)
-  if (keys.some((key) => !(key in schema.properties))) return false
-  if (schema.required.some((key) => !(key in input))) return false
+  if (keys.some((key) => !Object.hasOwn(schema.properties, key))) return false
+  if (schema.required.some((key) => !Object.hasOwn(input, key))) return false
   for (const [key, value] of Object.entries(input)) {
-    const property = schema.properties[key]
+    const property = Object.hasOwn(schema.properties, key)
+      ? schema.properties[key]
+      : undefined
     if (!property || value === null) return false
     if (property.type === "string") {
       if (typeof value !== "string") return false
@@ -153,9 +165,12 @@ function inputMatchesSchema(
   return true
 }
 
-function boundedResult(raw: string): { value: unknown; truncated: boolean } {
+function boundedResult(
+  raw: string,
+  upstreamTruncated: boolean,
+): { value: unknown; truncated: boolean } {
   const bytes = Buffer.from(raw, "utf8")
-  const truncated = bytes.length > MAX_RESULT_BYTES
+  const truncated = upstreamTruncated || bytes.length > MAX_RESULT_BYTES
   const text = (truncated ? bytes.subarray(0, MAX_RESULT_BYTES) : bytes).toString("utf8")
   if (!truncated) {
     try {
@@ -170,7 +185,7 @@ function boundedResult(raw: string): { value: unknown; truncated: boolean } {
 export class SolariWebMcpReadOnlyAdapter implements WebMcpReadOnlyAdapterPort {
   readonly #catalogByController = new WeakMap<
     BrowserController,
-    ReadonlyMap<string, WebMcpToolDescriptorV1>
+    ReadonlyMap<string, AdmittedToolRecord>
   >()
 
   async discover(
@@ -188,18 +203,20 @@ export class SolariWebMcpReadOnlyAdapter implements WebMcpReadOnlyAdapterPort {
     if (source.currentBrowserOrigin() !== origin) {
       throw new Error("WebMCP discovery origin changed during catalog retrieval")
     }
-    const admitted: WebMcpToolDescriptorV1[] = []
+    const admitted: AdmittedToolRecord[] = []
     for (const tool of raw) {
-      const descriptor = sanitizeTool(origin, tool)
-      if (descriptor) admitted.push(descriptor)
+      const record = sanitizeTool(origin, tool)
+      if (record) admitted.push(record)
       if (admitted.length > 10) {
         throw new Error("WebMCP admitted tool count exceeds the bounded catalog")
       }
     }
-    const catalog = WebMcpToolCatalogV1Schema.parse(admitted)
+    const catalog = WebMcpToolCatalogV1Schema.parse(
+      admitted.map((record) => record.descriptor),
+    )
     this.#catalogByController.set(
       controller,
-      new Map(catalog.map((descriptor) => [descriptor.id, descriptor])),
+      new Map(admitted.map((record) => [record.descriptor.id, record])),
     )
     return catalog
   }
@@ -220,10 +237,17 @@ export class SolariWebMcpReadOnlyAdapter implements WebMcpReadOnlyAdapterPort {
       parsedRequest.currentOrigin,
       signal,
     )
+    const current = this.#catalogByController.get(controller)?.get(parsedRequest.toolId)
     const descriptor = currentCatalog.find(
       (candidate) => candidate.id === parsedRequest.toolId,
     )
-    if (!descriptor || !previous || JSON.stringify(descriptor) !== JSON.stringify(previous)) {
+    if (
+      !descriptor ||
+      !current ||
+      !previous ||
+      JSON.stringify(descriptor) !== JSON.stringify(previous.descriptor) ||
+      JSON.stringify(current.rawInputSchema) !== JSON.stringify(previous.rawInputSchema)
+    ) {
       throw new Error("WebMCP descriptor changed before invocation")
     }
     if (!inputMatchesSchema(parsedRequest.input, descriptor.inputSchema)) {
@@ -235,7 +259,7 @@ export class SolariWebMcpReadOnlyAdapter implements WebMcpReadOnlyAdapterPort {
       {
         name: descriptor.name,
         description: descriptor.description,
-        inputSchema: descriptor.inputSchema,
+        rawInputSchema: current.rawInputSchema,
         declaredReadOnly: true,
       },
       parsedRequest.input,
@@ -244,7 +268,7 @@ export class SolariWebMcpReadOnlyAdapter implements WebMcpReadOnlyAdapterPort {
     if (source.currentBrowserOrigin() !== parsedRequest.currentOrigin) {
       throw new Error("WebMCP invocation changed the current origin")
     }
-    const output = boundedResult(raw)
+    const output = boundedResult(raw.serialized, raw.truncated)
     const redacted = redactJson(output.value, {
       maxStringLength: 2_000,
       maxDepth: 5,

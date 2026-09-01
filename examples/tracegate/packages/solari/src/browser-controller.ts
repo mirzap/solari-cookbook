@@ -70,6 +70,7 @@ interface ElementSnapshot extends PolicyElementSnapshot {
   readonly checked: boolean | null
   readonly selected: boolean | null
   readonly expanded: boolean | null
+  readonly truncated: boolean
 }
 
 interface RegistryEntry {
@@ -112,8 +113,13 @@ export interface RawCurrentOriginWebMcpTool {
 export interface ExpectedCurrentOriginWebMcpTool {
   readonly name: string
   readonly description: string
-  readonly inputSchema: unknown
+  readonly rawInputSchema: unknown
   readonly declaredReadOnly: true
+}
+
+export interface CurrentOriginWebMcpInvocationResult {
+  readonly serialized: string
+  readonly truncated: boolean
 }
 
 export interface SolariBrowserControllerOptions {
@@ -165,15 +171,42 @@ function ambiguousElement(): TraceGateError {
   )
 }
 
+function abortedBrowserOperation(): TraceGateError {
+  return new TraceGateError(
+    createControlError("operation_aborted", "Browser operation aborted", {
+      category: "cancellation",
+      phase: "browser_action",
+    }),
+  )
+}
+
 function throwIfAborted(signal: AbortSignal): void {
-  if (signal.aborted) {
-    throw new TraceGateError(
-      createControlError("operation_aborted", "Browser operation aborted", {
-        category: "cancellation",
-        phase: "browser_action",
-      }),
-    )
+  if (signal.aborted) throw abortedBrowserOperation()
+}
+
+async function raceWithAbort<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
+  throwIfAborted(signal)
+  let abortHandler: (() => void) | null = null
+  const aborted = new Promise<never>((_resolve, reject) => {
+    abortHandler = () => reject(abortedBrowserOperation())
+    signal.addEventListener("abort", abortHandler, { once: true })
+  })
+  try {
+    return await Promise.race([operation, aborted])
+  } finally {
+    if (abortHandler) signal.removeEventListener("abort", abortHandler)
   }
+}
+
+async function settleWithin(operation: Promise<unknown>, timeoutMs: number): Promise<void> {
+  let timeout: ReturnType<typeof setTimeout> | null = null
+  await Promise.race([
+    operation.catch(() => undefined),
+    new Promise<void>((resolve) => {
+      timeout = setTimeout(resolve, timeoutMs)
+    }),
+  ])
+  if (timeout) clearTimeout(timeout)
 }
 
 function truncateUtf8(value: string, maxBytes: number): { value: string; truncated: boolean } {
@@ -237,10 +270,15 @@ async function readElement(locator: Locator): Promise<ElementSnapshot> {
       element.innerText ??
       element.textContent ??
       ""
+    const normalizedName = name.replace(/\s+/g, " ").trim()
+    let truncated = normalizedName.length > 500
     const attributes: Record<string, string> = {}
     for (const attribute of ["name", "placeholder", "autocomplete", "href", "target"] as const) {
       const value = element.getAttribute(attribute)
-      if (value) attributes[attribute] = value.slice(0, 500)
+      if (value) {
+        if (value.length > 500) truncated = true
+        attributes[attribute] = value.slice(0, 500)
+      }
     }
     if (input) attributes.type = input.type.toLowerCase()
     if (element instanceof HTMLButtonElement) attributes.type = element.type.toLowerCase()
@@ -254,16 +292,19 @@ async function readElement(locator: Locator): Promise<ElementSnapshot> {
       attributes.formmethod = (element.formMethod || element.form.method).toLowerCase()
     }
     if (input && !["password", "file", "email", "tel"].includes(input.type)) {
+      if (input.value.length > 500) truncated = true
       attributes.value = input.value.slice(0, 500)
     } else if (select) {
+      if (select.value.length > 500) truncated = true
       attributes.value = select.value.slice(0, 500)
     } else if (element instanceof HTMLTextAreaElement) {
+      if (element.value.length > 500) truncated = true
       attributes.value = element.value.slice(0, 500)
     }
     return {
       tag,
       role: explicitRole || inferredRole,
-      name: name.replace(/\s+/g, " ").trim().slice(0, 500),
+      name: normalizedName.slice(0, 500),
       disabled: "disabled" in element ? Boolean((element as HTMLButtonElement).disabled) : null,
       checked:
         input && ["checkbox", "radio"].includes(input.type)
@@ -282,6 +323,7 @@ async function readElement(locator: Locator): Promise<ElementSnapshot> {
           ? null
           : element.getAttribute("aria-expanded") === "true",
       attributes,
+      truncated,
     }
   })
 }
@@ -304,6 +346,7 @@ export class SolariCdpBrowserController implements BrowserController {
   #fatalPolicyCount = 0
   #passivePolicyCodes: PolicyDenyCode[] = []
   #fatalPolicyCodes: PolicyDenyCode[] = []
+  #closePromise: Promise<void> | null = null
 
   constructor(
     options: SolariBrowserControllerOptions,
@@ -322,6 +365,7 @@ export class SolariCdpBrowserController implements BrowserController {
   async connect(lease: BrowserLease, signal: AbortSignal): Promise<void> {
     throwIfAborted(signal)
     if (this.#browser) throw new Error("Browser controller is already connected")
+    if (this.#closePromise) throw new Error("Browser controller is already closed")
 
     let browser: Browser | null = null
     let context: BrowserContext | null = null
@@ -358,22 +402,30 @@ export class SolariCdpBrowserController implements BrowserController {
       this.#page = null
       this.#observedDocumentSequence = null
       this.#registry.clear()
-      await context?.close().catch(() => {})
-      await browser?.close().catch(() => {})
+      if (context) await settleWithin(context.close(), 5_000)
+      if (browser) await settleWithin(browser.close(), 5_000)
       throw error
     }
   }
 
-  async close(_signal: AbortSignal): Promise<void> {
-    const context = this.#context
-    const browser = this.#browser
-    this.#browser = null
-    this.#context = null
-    this.#page = null
-    this.#observedDocumentSequence = null
-    this.#registry.clear()
-    await context?.close().catch(() => {})
-    await browser?.close().catch(() => {})
+  async close(signal: AbortSignal): Promise<void> {
+    if (!this.#closePromise) {
+      const context = this.#context
+      const browser = this.#browser
+      this.#browser = null
+      this.#context = null
+      this.#page = null
+      this.#observedDocumentSequence = null
+      this.#registry.clear()
+      this.#closePromise = (async () => {
+        try {
+          if (context) await settleWithin(context.close(), 5_000)
+        } finally {
+          if (browser) await settleWithin(browser.close(), 5_000)
+        }
+      })()
+    }
+    await raceWithAbort(this.#closePromise, signal)
   }
 
   async navigate(url: string, signal: AbortSignal): Promise<UntrustedAgentObservation> {
@@ -402,9 +454,10 @@ export class SolariCdpBrowserController implements BrowserController {
     this.#registry.clear()
 
     const url = page.url()
-    const title = (await page.title()).slice(0, 500)
+    const rawTitle = await page.title()
+    const title = rawTitle.slice(0, 500)
     const elements: CompactElement[] = []
-    let truncated = false
+    let truncated = rawTitle.length > 500
     const envelope = (visibleText: string, candidateElements: readonly CompactElement[]) => ({
       schemaVersion: 2 as const,
       trust: "untrusted_page_content" as const,
@@ -429,6 +482,7 @@ export class SolariCdpBrowserController implements BrowserController {
       if (!(await locator.isVisible().catch(() => false))) continue
       const snapshot = await readElement(locator).catch(() => null)
       if (!snapshot) continue
+      if (snapshot.truncated) truncated = true
       const ref = `e:${revision}:${elements.length}`
       const element: CompactElement = {
         ref,
@@ -609,7 +663,7 @@ export class SolariCdpBrowserController implements BrowserController {
     throwIfAborted(signal)
     this.#assertCurrentOrigin()
     this.#assertObservedDocument()
-    const tools = await this.#requirePage().evaluate(async () => {
+    const retrieval = this.#requirePage().evaluate(async () => {
       const modelContext = (
         document as Document & {
           modelContext?: {
@@ -643,6 +697,13 @@ export class SolariCdpBrowserController implements BrowserController {
         }
       })
     })
+    let tools: readonly RawCurrentOriginWebMcpTool[]
+    try {
+      tools = await raceWithAbort(retrieval, signal)
+    } catch (error) {
+      if (signal.aborted) await this.close(AbortSignal.timeout(5_000)).catch(() => {})
+      throw error
+    }
     this.#assertCurrentOrigin()
     this.#assertObservedDocument()
     throwIfAborted(signal)
@@ -659,7 +720,7 @@ export class SolariCdpBrowserController implements BrowserController {
     expectedTool: ExpectedCurrentOriginWebMcpTool,
     input: Readonly<Record<string, string | number | boolean | null>>,
     signal: AbortSignal,
-  ): Promise<string> {
+  ): Promise<CurrentOriginWebMcpInvocationResult> {
     throwIfAborted(signal)
     this.#assertCurrentOrigin()
     this.#assertObservedDocument()
@@ -695,25 +756,48 @@ export class SolariCdpBrowserController implements BrowserController {
         if (
           description !== expected.description ||
           annotations?.readOnlyHint !== expected.declaredReadOnly ||
-          JSON.stringify(tool.inputSchema) !== JSON.stringify(expected.inputSchema)
+          JSON.stringify(tool.inputSchema) !== JSON.stringify(expected.rawInputSchema)
         ) {
           throw new Error("WebMCP tool changed before invocation")
         }
         const raw = await modelContext.executeTool(tool, toolInput)
+        if (typeof raw === "string") {
+          const encoded = new TextEncoder().encode(raw)
+          if (encoded.byteLength <= 12_000) return { serialized: raw, truncated: false }
+          return {
+            serialized: new TextDecoder().decode(encoded.subarray(0, 12_000)),
+            truncated: true,
+          }
+        }
         let visited = 0
+        let truncated = false
         const seen = new WeakSet<object>()
         const normalize = (value: unknown, depth: number): unknown => {
           visited += 1
-          if (visited > 500) return "[TRUNCATED]"
+          if (visited > 500) {
+            truncated = true
+            return "[TRUNCATED]"
+          }
           if (value === null || typeof value === "boolean") return value
           if (typeof value === "number") return Number.isFinite(value) ? value : "[NON_FINITE]"
-          if (typeof value === "string") return value.slice(0, 2_000)
-          if (typeof value !== "object" || depth >= 5) return "[TRUNCATED]"
+          if (typeof value === "string") {
+            if (value.length > 2_000) truncated = true
+            return value.slice(0, 2_000)
+          }
+          if (typeof value !== "object" || depth >= 5) {
+            truncated = true
+            return "[TRUNCATED]"
+          }
           if (seen.has(value)) return "[CIRCULAR]"
           seen.add(value)
-          if (Array.isArray(value)) return value.slice(0, 50).map((item) => normalize(item, depth + 1))
+          if (Array.isArray(value)) {
+            if (value.length > 50) truncated = true
+            return value.slice(0, 50).map((item) => normalize(item, depth + 1))
+          }
           const output: Record<string, unknown> = {}
-          for (const [key, nested] of Object.entries(value).slice(0, 50)) {
+          const entries = Object.entries(value)
+          if (entries.length > 50) truncated = true
+          for (const [key, nested] of entries.slice(0, 50)) {
             output[key.slice(0, 200)] = normalize(nested, depth + 1)
           }
           return output
@@ -725,28 +809,24 @@ export class SolariCdpBrowserController implements BrowserController {
           serialized = "[unserializable WebMCP result]"
         }
         const encoded = new TextEncoder().encode(serialized)
-        if (encoded.byteLength <= 12_000) return serialized
-        return new TextDecoder().decode(encoded.subarray(0, 12_000))
+        if (encoded.byteLength <= 12_000) return { serialized, truncated }
+        return {
+          serialized: new TextDecoder().decode(encoded.subarray(0, 12_000)),
+          truncated: true,
+        }
       },
       { expected: expectedTool, toolInput: input },
     )
-    let abortHandler: (() => void) | null = null
-    const aborted = new Promise<never>((_resolve, reject) => {
-      abortHandler = () => reject(new DOMException("WebMCP invocation aborted", "AbortError"))
-      signal.addEventListener("abort", abortHandler, { once: true })
-    })
     try {
-      const result = await Promise.race([execution, aborted])
+      const result = await raceWithAbort(execution, signal)
       this.#throwIfFatalPolicyViolation()
       this.#assertCurrentOrigin()
       this.#assertObservedDocument()
       throwIfAborted(signal)
       return result
     } catch (error) {
-      if (signal.aborted) await this.close(AbortSignal.timeout(5_000))
+      if (signal.aborted) await this.close(AbortSignal.timeout(5_000)).catch(() => {})
       throw error
-    } finally {
-      if (abortHandler) signal.removeEventListener("abort", abortHandler)
     }
   }
 
@@ -940,13 +1020,23 @@ export class SolariCdpBrowserController implements BrowserController {
     })
     await context.route("**/*", async (route) => {
       const request = route.request()
+      let mainFrameNavigation = false
+      if (request.isNavigationRequest()) {
+        const requestFrame = request.frame()
+        const requestPage = requestFrame.page()
+        if (requestPage !== page) {
+          this.#recordPolicy("popup_forbidden")
+          await route.abort("blockedbyclient").catch(() => {})
+          return
+        }
+        mainFrameNavigation = requestFrame === requestPage.mainFrame()
+      }
       const denyCode = classifyObservableRequest(
         {
           url: request.url(),
           method: request.method(),
           hasBody: request.postData() !== null,
-          mainFrameNavigation:
-            request.isNavigationRequest() && request.frame() === page.mainFrame(),
+          mainFrameNavigation,
         },
         this.#allowedOrigins,
       )
