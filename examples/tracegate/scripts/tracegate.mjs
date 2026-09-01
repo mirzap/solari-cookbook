@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { mkdir, stat } from "node:fs/promises";
+import { createServer } from "node:net";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -8,6 +9,7 @@ const root = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
 const sharedEntry = path.join(root, "packages/shared/dist/index.js");
 const webBuildOutput = path.join(root, "apps/web/dist/server");
 const command = process.argv[2];
+const hasExplicitTraceGatePort = process.env.TRACEGATE_PORT !== undefined;
 
 const pnpmInvocation = (args) => ({
   executable: process.env.npm_execpath ?? "pnpm",
@@ -95,8 +97,47 @@ async function migrateDatabase(env) {
   await pnpm(["--filter", "@tracegate/db", "db:migrate"], env);
 }
 
+const PORT_SCAN_ATTEMPTS = 50;
+
+function loopbackUrl(host, port) {
+  const displayHost = host.includes(":") ? `[${host}]` : host;
+  return `http://${displayHost}:${port}`;
+}
+
+async function isPortAvailable(host, port) {
+  return await new Promise((resolve, reject) => {
+    const server = createServer();
+    server.unref();
+    server.once("error", (error) => {
+      if (error?.code === "EADDRINUSE" || error?.code === "EACCES") {
+        resolve(false);
+        return;
+      }
+      reject(error);
+    });
+    server.listen({ host, port, exclusive: true }, () => {
+      server.close((error) => error ? reject(error) : resolve(true));
+    });
+  });
+}
+
+async function selectDevPort(host, preferredPort) {
+  if (hasExplicitTraceGatePort) {
+    if (!await isPortAvailable(host, preferredPort)) {
+      throw new Error(`TRACEGATE_PORT=${preferredPort} is unavailable on ${host}; choose another port`);
+    }
+    return preferredPort;
+  }
+  const finalCandidate = Math.min(65_535, preferredPort + PORT_SCAN_ATTEMPTS - 1);
+  for (let candidate = preferredPort; candidate <= finalCandidate; candidate += 1) {
+    if (await isPortAvailable(host, candidate)) return candidate;
+  }
+  throw new Error(`No available loopback port found from ${preferredPort} through ${finalCandidate}`);
+}
+
 async function serve(mode, env, host, port) {
   const viteCommand = mode === "dev" ? "dev" : "preview";
+  console.log(`TraceGate: ${loopbackUrl(host, port)}`);
   await pnpm([
     "--filter", "@tracegate/web", "exec", "vite", viteCommand,
     "--host", host,
@@ -132,7 +173,9 @@ async function main() {
       await buildWorkspace();
       const { parsed, childEnv } = await validatedEnvironment();
       await migrateDatabase(childEnv);
-      await serve("dev", childEnv, parsed.TRACEGATE_BIND_HOST, parsed.TRACEGATE_PORT);
+      const port = await selectDevPort(parsed.TRACEGATE_BIND_HOST, parsed.TRACEGATE_PORT);
+      const devEnv = { ...childEnv, TRACEGATE_PORT: String(port) };
+      await serve("dev", devEnv, parsed.TRACEGATE_BIND_HOST, port);
       return;
     }
     case "start": {
