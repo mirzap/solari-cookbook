@@ -98,7 +98,12 @@ const terminalFailure = (
   code: FailureRecord["code"],
   message: string,
   phase: string,
-  options: { policyCode?: FailureRecord["policyCode"]; potentialSessionLeak?: boolean } = {},
+  options: {
+    policyCode?: FailureRecord["policyCode"];
+    potentialSessionLeak?: boolean;
+    retryable?: boolean;
+    causeChain?: FailureRecord["causeChain"];
+  } = {},
 ): ExpectedRunFailure => {
   const semantics = {
     assertion_failed: ["incorrect_state", "failed"],
@@ -121,11 +126,11 @@ const terminalFailure = (
     category,
     code,
     phase,
-    retryable: false,
+    retryable: options.retryable ?? false,
     outcome,
     message,
     fieldIssues: [],
-    causeChain: [],
+    causeChain: options.causeChain ?? [],
     policyCode: options.policyCode ?? null,
   }), options.potentialSessionLeak ?? false);
 };
@@ -270,18 +275,33 @@ export class FunctionalRunExecutor {
         failure = error.failure;
         potentialSessionLeak ||= error.potentialSessionLeak;
       } else {
-        const code = currentStatus === "running_agent"
-          ? "provider_protocol_error"
-          : currentStatus === "discovering" || currentStatus === "grading"
-            ? "target_evidence_lost"
-            : currentStatus === "connecting_browser"
-              ? "target_unavailable"
-              : "solari_unavailable";
-        failure = terminalFailure(
-          code,
-          "Run execution stopped before trustworthy browser evidence was available.",
-          currentStatus,
-        ).failure;
+        const safeFailure = isTraceGateError(error)
+          ? FailureRecordSchema.safeParse(error.safe)
+          : null;
+        if (safeFailure?.success) {
+          failure = safeFailure.data;
+        } else {
+          const code = currentStatus === "running_agent"
+            ? "provider_protocol_error"
+            : currentStatus === "discovering" || currentStatus === "grading"
+              ? "target_evidence_lost"
+              : currentStatus === "connecting_browser"
+                ? "target_unavailable"
+                : "solari_unavailable";
+          const safeError = isTraceGateError(error) ? error.safe : null;
+          const failureOptions = safeError === null
+            ? {}
+            : {
+                retryable: "retryable" in safeError ? safeError.retryable : false,
+                causeChain: safeError.causeChain,
+              };
+          failure = terminalFailure(
+            code,
+            safeError?.message ?? "Run execution stopped before trustworthy browser evidence was available.",
+            safeError?.phase ?? currentStatus,
+            failureOptions,
+          ).failure;
+        }
       }
     } finally {
       if (lease !== null) {
