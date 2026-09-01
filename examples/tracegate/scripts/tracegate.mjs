@@ -68,7 +68,7 @@ async function validatedEnvironment() {
     NODE_ENV: process.env.NODE_ENV,
     OPENROUTER_API_KEY: process.env.OPENROUTER_API_KEY,
     SOLARI_API_KEY: process.env.SOLARI_API_KEY,
-    DATABASE_URL: process.env.DATABASE_URL,
+    DATABASE_URL: process.env.DATABASE_URL ?? "file:./.tracegate/tracegate.db",
     TRACEGATE_BIND_HOST: process.env.TRACEGATE_BIND_HOST,
     TRACEGATE_PORT: process.env.TRACEGATE_PORT,
     TRACEGATE_LOG_LEVEL: process.env.TRACEGATE_LOG_LEVEL,
@@ -88,7 +88,7 @@ async function databaseEnvironment() {
 }
 
 async function buildWorkspace() {
-  await pnpm(["exec", "turbo", "run", "build"]);
+  await pnpm(["exec", "turbo", "run", "build", "--filter=!@tracegate/e2e"]);
 }
 
 async function migrateDatabase(env) {

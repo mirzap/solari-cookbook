@@ -21,9 +21,17 @@ export type ServerEnv = z.infer<typeof ServerEnvSchema>;
 export const parseServerEnv = (input: Record<string, string | undefined>): ServerEnv => {
   const result = ServerEnvSchema.safeParse(input);
   if (result.success) return result.data;
+  const variableLabels = [...new Set(result.error.issues
+    .map((issue) => issue.path[0])
+    .filter((label): label is string | number => typeof label === "string" || typeof label === "number")
+    .map(String))]
+    .sort();
+  const message = variableLabels.length > 0
+    ? `Server environment validation failed for: ${variableLabels.join(", ")}`
+    : "Server environment validation failed";
   throw new TraceGateError(createControlError(
     "validation_failed",
-    "Server environment validation failed",
+    message,
     { category: "unknown", phase: "configuration", fieldIssues: zodIssuesToFieldIssues(result.error) },
   ));
 };

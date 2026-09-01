@@ -1,6 +1,10 @@
 import { z } from "zod";
 import { AssertionIdSchema, AssertionSetV1Schema } from "./assertions.ts";
-import { AssertionUnverifiableCodeSchema, BrowserAssertionEvidenceV1Schema } from "./evidence.ts";
+import {
+  AssertionUnverifiableCodeSchema,
+  BrowserAssertionEvidenceV1Schema,
+  TransientCanonicalCaptureV1Schema,
+} from "./evidence.ts";
 import { FailureRecordSchema } from "./errors.ts";
 import { EvidenceHashSchema, UtcDateTimeSchema } from "./ids.ts";
 import { SafetyPolicyVersionV1Schema } from "./policy.ts";
@@ -41,12 +45,22 @@ export const GradeResultV2Schema = z.object({
 
 export const GradeInputV2Schema = z.object({
   assertions: AssertionSetV1Schema,
+  transient: TransientCanonicalCaptureV1Schema.optional(),
   evidence: BrowserAssertionEvidenceV1Schema,
 }).strict().superRefine((value, context) => {
   const expected = value.assertions.map((assertion) => assertion.id);
   const actual = value.evidence.assertions.map((item) => item.assertionId);
   if (JSON.stringify(expected) !== JSON.stringify(actual)) {
     context.addIssue({ code: "custom", path: ["evidence", "assertions"], message: "evidence must match submitted assertion IDs exactly and in order" });
+  }
+  if (value.transient !== undefined && value.transient.evidenceHash !== value.evidence.evidenceHash) {
+    context.addIssue({ code: "custom", path: ["transient", "evidenceHash"], message: "transient and persisted evidence must share one canonical hash" });
+  }
+  if (
+    value.transient !== undefined
+    && JSON.stringify(value.transient.assertionObservations) !== JSON.stringify(value.evidence.assertions)
+  ) {
+    context.addIssue({ code: "custom", path: ["transient", "assertionObservations"], message: "transient and persisted assertion observations must match" });
   }
 });
 

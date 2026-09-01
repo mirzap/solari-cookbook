@@ -9,6 +9,7 @@ import {
   createControlError,
   isBrowserProviderConcurrencyLimitError,
   isTraceGateError,
+  summarizeAssertionExpectation,
   type AdmittedPublicTarget,
   type AgentRunResult,
   type AgentRunner,
@@ -256,7 +257,11 @@ export class FunctionalRunExecutor {
       );
       await transition("grading", {}, signal);
       const captured = await dependencies.capture.capture(controller, { assertions: config.assertions }, signal);
-      grade = await dependencies.grader.grade({ assertions: config.assertions, evidence: captured.evidence }, signal);
+      grade = await dependencies.grader.grade({
+        assertions: config.assertions,
+        transient: captured.transient,
+        evidence: captured.evidence,
+      }, signal);
       failure = grade.failure;
     } catch (error) {
       if (signal.aborted) {
@@ -408,7 +413,7 @@ export class FunctionalRunExecutor {
       assertions: config.assertions.map((assertion) => ({
         assertionId: assertion.id,
         status: "unverifiable",
-        expectedSummary: assertion.kind,
+        expectedSummary: summarizeAssertionExpectation(assertion),
         actualSummary: "No trustworthy final browser evidence was available.",
         code: "evidence_invalid",
       })),
