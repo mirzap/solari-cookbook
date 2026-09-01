@@ -3,6 +3,7 @@ import type {
   AgentExecutionInputV2, AgentRunResult, SafeAgentAction, SafeAgentToolResult, SafeAgentToolSurface,
   UntrustedAgentObservation,
 } from "./agent.ts";
+import { TokenUsageSchema } from "./agent.ts";
 import { AssertionSetV1Schema } from "./assertions.ts";
 import type { InterfaceMode } from "./config.ts";
 import type { DiscoveryEvidence } from "./discovery.ts";
@@ -196,15 +197,30 @@ export type IntermediateRunTransitionResult = z.infer<typeof IntermediateRunTran
 export interface RunTransitionRepository { transactionallyApply(input: IntermediateRunTransitionInput, signal: AbortSignal): Promise<IntermediateRunTransitionResult>; }
 
 const FinalizableRunStatusSchema = RunStatusSchema.exclude(["completed", "cancelled"]);
+export const RunCompletionPatchSchema = z.object({
+  resolvedProvider: z.string().min(1).max(200).nullable(),
+  iterations: z.number().int().nonnegative(),
+  toolCalls: z.number().int().nonnegative(),
+  browserActions: z.number().int().nonnegative(),
+  usage: TokenUsageSchema,
+  releaseStatus: ReleaseStatusSchema,
+  replayStatus: z.enum(["not_requested", "unsupported", "recording", "pending", "ready", "failed"]),
+  potentialSessionLeak: z.boolean(),
+}).strict();
+export type RunCompletionPatch = z.infer<typeof RunCompletionPatchSchema>;
 export const FinalizeRunInputSchema = z.object({
   runId: RunIdSchema, expectedStatus: FinalizableRunStatusSchema, context: RunTransitionContextSchema, outcome: RunOutcomeSchema,
-  grade: GradeResultV2Schema, failure: FailureRecordSchema.nullable(), warnings: z.array(RunWarningSchema).max(50), finishedAt: UtcDateTimeSchema, event: EventAppendInputSchema,
+  grade: GradeResultV2Schema, failure: FailureRecordSchema.nullable(), warnings: z.array(RunWarningSchema).max(50), finishedAt: UtcDateTimeSchema,
+  resultPatch: RunCompletionPatchSchema.optional(), event: EventAppendInputSchema,
 }).strict().superRefine((value, context) => {
   if (!validateRunTransition(value.expectedStatus, "completed", value.context).ok) context.addIssue({ code: "custom", path: ["context"], message: "terminalization requires a legal lease-safe completion transition" });
   if (value.grade.outcome !== value.outcome) context.addIssue({ code: "custom", path: ["grade", "outcome"], message: "grade outcome must match" });
   if (value.outcome === "passed" ? value.failure !== null : value.failure?.outcome !== value.outcome) context.addIssue({ code: "custom", path: ["failure"], message: "failure must be null for pass or match outcome" });
   if (JSON.stringify(value.grade.failure) !== JSON.stringify(value.failure)) context.addIssue({ code: "custom", path: ["failure"], message: "grade and terminalization must use the same authoritative failure" });
   if (value.event.runId !== value.runId || value.event.type !== `run.${value.outcome}` || value.event.runSequence === null || value.event.runSequence === 0) context.addIssue({ code: "custom", path: ["event"], message: "terminal event must match run/outcome and use a non-zero sequence" });
+  if (value.resultPatch !== undefined && value.context.leaseDisposition === "released" && value.resultPatch.releaseStatus !== "released") {
+    context.addIssue({ code: "custom", path: ["resultPatch", "releaseStatus"], message: "released lease disposition requires confirmed released result state" });
+  }
 });
 export type FinalizeRunInput = z.infer<typeof FinalizeRunInputSchema>;
 export interface FinalizeRunResult { readonly applied: boolean; readonly run: Run | null; readonly event: EventEnvelope | null; }

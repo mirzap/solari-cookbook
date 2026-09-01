@@ -200,11 +200,23 @@ test("run finalization remains compare-and-set and event-coupled", async () => {
     failure: null,
     warnings: [],
     finishedAt: gradingRun.createdAt,
+    resultPatch: {
+      resolvedProvider: "openrouter",
+      iterations: 2,
+      toolCalls: 3,
+      browserActions: 1,
+      usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
+      releaseStatus: "released" as const,
+      replayStatus: "not_requested" as const,
+      potentialSessionLeak: false,
+    },
     event: terminalEvent,
   };
   await assert.rejects(runs.transactionallyFinalize({ ...input, context: { mode: "normal", leaseDisposition: "may_exist" } }, signal()));
   const results = await Promise.all([runs.transactionallyFinalize(input, signal()), runs.transactionallyFinalize(input, signal())]);
   assert.equal(results.filter((result) => result.applied).length, 1);
+  assert.equal(results.find((result) => result.applied)?.run?.resolvedProvider, "openrouter");
+  assert.equal(results.find((result) => result.applied)?.run?.usage.totalTokens, 15);
   assert.equal((await events.listAfter(evaluationFixture.id, null, 10, signal())).length, 1);
 });
 

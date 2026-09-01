@@ -178,6 +178,7 @@ export class InMemoryRunRepository implements RunRepository, RunTransitionReposi
       if (!current || current.status !== validated.expectedStatus) return { applied: false, run: current ? clone(current) : null, event: null };
       const run = RunSchema.parse({
         ...current,
+        ...(validated.resultPatch ?? {}),
         status: "completed",
         outcome: validated.outcome,
         grade: validated.grade,
