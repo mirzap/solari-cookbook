@@ -70,6 +70,11 @@ function runStatus(run: RunSnapshot): string {
   return run.status;
 }
 
+function replayStatusLabel(status: RunSnapshot["replayStatus"]): string {
+  if (status === "pending") return "requested, not yet verified";
+  return status.replaceAll("_", " ");
+}
+
 function RunCard({ run }: { readonly run: RunSnapshot }) {
   const activeStep = progressIndex(run);
   return (
@@ -82,13 +87,13 @@ function RunCard({ run }: { readonly run: RunSnapshot }) {
         {PIPELINE_STEPS.map((step, index) => <li key={step} data-state={index < activeStep || run.outcome === "passed" ? "done" : index === activeStep ? "active" : "waiting"}>{step}</li>)}
       </ol>
       <dl className="tg-run-metrics">
-        <Metric label="Steps" value={run.toolCalls} />
+        <Metric label="Tool calls" value={run.toolCalls} />
         <Metric label="Time" value={run.durationMs === null ? "—" : `${(run.durationMs / 1_000).toFixed(1)}s`} />
       </dl>
       {run.failure === null ? null : <InlineNotice tone={run.outcome === "inconclusive" ? "warning" : "error"}>{run.failure.message}</InlineNotice>}
       {run.warnings.map((warning, index) => <InlineNotice key={`${warning.code}-${index}`} tone="warning">{warning.message}</InlineNotice>)}
       {run.potentialSessionLeak ? <InlineNotice tone="warning">Browser cleanup could not be confirmed, so this run is not presented as conclusive.</InlineNotice> : null}
-      <details className="tg-inline-details"><summary>Run details</summary><p>Model iterations: {run.iterations} · Browser actions: {run.browserActions} · Cleanup: {run.releaseStatus.replaceAll("_", " ")}</p></details>
+      <details className="tg-inline-details"><summary>Run details</summary><p>Model iterations: {run.iterations} · Browser actions: {run.browserActions} · Cleanup: {run.releaseStatus.replaceAll("_", " ")} · Replay: {replayStatusLabel(run.replayStatus)}</p></details>
     </article>
   );
 }

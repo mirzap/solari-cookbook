@@ -235,7 +235,7 @@ function ConfigurePage() {
                         ? [...current, id]
                         : current.length === 1 ? current : current.filter((item) => item !== id))}
                     />
-                    {MODEL_LABELS[id]} · {capability?.status === "verified" ? "live verified" : capability?.status === "pending" ? "checked during first run" : "unavailable"}
+                    {MODEL_LABELS[id]} · {capability?.status === "verified" ? "live verified" : capability?.status === "pending" ? "requested · not yet live verified" : "unavailable"}
                   </label>;
                 })}
               </fieldset>

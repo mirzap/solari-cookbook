@@ -756,6 +756,8 @@ class RuntimeSafeToolFactory implements SafeAgentToolFactory {
 
 class PersistingAgentRunner implements AgentRunner {
   readonly #factory: ReturnType<typeof createDeepSeekOpenRouterDriverFactory>;
+  #modelVerification: Promise<void> | undefined;
+
   constructor(
     apiKey: string,
     private readonly registry: RunRuntimeRegistry,
@@ -764,6 +766,25 @@ class PersistingAgentRunner implements AgentRunner {
     private readonly ids: UuidV7Generator,
     private readonly clock: Clock,
   ) { this.#factory = createDeepSeekOpenRouterDriverFactory(apiKey); }
+
+  async #verifyPersistedModelUsage(): Promise<void> {
+    if (this.#modelVerification === undefined) {
+      const verification = this.capabilities.upsert(RuntimeCapabilitySchema.parse({
+        schemaVersion: 1,
+        kind: "model",
+        subject: DEEPSEEK,
+        status: "verified",
+        details: { configured: true, adapter: "TanStack AI + OpenRouter", verification: "persisted live model usage milestone" },
+        checkedAt: this.clock.nowIso(),
+        error: null,
+      }), AbortSignal.timeout(5_000)).then(() => undefined);
+      this.#modelVerification = verification.catch((error: unknown) => {
+        this.#modelVerification = undefined;
+        throw error;
+      });
+    }
+    await this.#modelVerification;
+  }
 
   async run(input: AgentExecutionInputV2, safeTools: SafeAgentToolPort, signal: AbortSignal): Promise<AgentRunResult> {
     const runId = this.registry.requireRunId(safeTools, this.registry.toolRunIds, "Safe tool surface");
@@ -784,18 +805,10 @@ class PersistingAgentRunner implements AgentRunner {
         const kind: RunStep["kind"] = parsed.type.startsWith("run.tool") ? "tool" : "model";
         const durationMs = parsed.type === "run.tool.completed" ? parsed.payload.durationMs : null;
         await appendRunStep(this.server, this.registry, this.ids, this.clock, runId, parsed, { kind, interactionMode: "safe_tool", observationRevision: null, durationMs }, signal);
+        if (parsed.type === "run.usage.updated") await this.#verifyPersistedModelUsage();
       },
     });
     const result = await runner.run(input, safeTools, signal);
-    await this.capabilities.upsert(RuntimeCapabilitySchema.parse({
-      schemaVersion: 1,
-      kind: "model",
-      subject: DEEPSEEK,
-      status: "verified",
-      details: { configured: true, adapter: "TanStack AI + OpenRouter", verification: "live model invocation completed" },
-      checkedAt: this.clock.nowIso(),
-      error: null,
-    }), signal);
     const readiness = this.registry.readiness.get(runId) ?? new Map();
     const channels: readonly InterfaceChannel[] = ["semantic_ui", "page_webmcp", "configured_mcp", "llms_txt", "json_ld", "visual_fallback"];
     const metrics: InterfaceUsageMetric[] = channels.map((channel) => {
@@ -984,24 +997,33 @@ export class FunctionalTracegateRuntime {
 
 export async function persistBootCapabilities(database: TracegateDatabase, clock: Clock): Promise<void> {
   const checkedAt = clock.nowIso();
-  await database.upsertCapability(RuntimeCapabilitySchema.parse({
-    schemaVersion: 1,
-    kind: "model",
-    subject: DEEPSEEK,
-    status: "pending",
-    details: { configured: true, adapter: "TanStack AI + OpenRouter", verification: "awaiting live invocation" },
-    checkedAt,
-    error: null,
-  }), AbortSignal.timeout(5_000));
-  await database.upsertCapability(RuntimeCapabilitySchema.parse({
-    schemaVersion: 1,
-    kind: "solari",
-    subject: "browser-session-runtime",
-    status: "pending",
-    details: { configured: true, provider: "Solari Browser", verification: "awaiting live session" },
-    checkedAt,
-    error: null,
-  }), AbortSignal.timeout(5_000));
+  const durable = await database.listCapabilities(AbortSignal.timeout(5_000));
+  const isDurablyVerified = (kind: "model" | "solari", subject: string) => durable.some(
+    (capability) => capability.kind === kind && capability.subject === subject && capability.status === "verified",
+  );
+
+  if (!isDurablyVerified("model", DEEPSEEK)) {
+    await database.upsertCapability(RuntimeCapabilitySchema.parse({
+      schemaVersion: 1,
+      kind: "model",
+      subject: DEEPSEEK,
+      status: "pending",
+      details: { configured: true, adapter: "TanStack AI + OpenRouter", verification: "requested, not yet verified by persisted live usage" },
+      checkedAt,
+      error: null,
+    }), AbortSignal.timeout(5_000));
+  }
+  if (!isDurablyVerified("solari", "browser-session-runtime")) {
+    await database.upsertCapability(RuntimeCapabilitySchema.parse({
+      schemaVersion: 1,
+      kind: "solari",
+      subject: "browser-session-runtime",
+      status: "pending",
+      details: { configured: true, provider: "Solari Browser", verification: "requested, not yet verified by a live session" },
+      checkedAt,
+      error: null,
+    }), AbortSignal.timeout(5_000));
+  }
   await database.upsertCapability(RuntimeCapabilitySchema.parse({
     schemaVersion: 1,
     kind: "webmcp",

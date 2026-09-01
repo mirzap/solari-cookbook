@@ -14,6 +14,7 @@ import {
   GradeResultSchema,
   IntermediateRunTransitionInputSchema,
   IntermediateRunTransitionResultSchema,
+  InterfaceUsageSummarySchema,
   ProviderCreateAttemptRecordSchema,
   RuntimeCapabilitySchema,
   EventAppendInputSchema,
@@ -42,6 +43,8 @@ import {
   type GradeResult,
   type IntermediateRunTransitionInput,
   type IntermediateRunTransitionResult,
+  type InterfaceChannel,
+  type InterfaceUsageSummary,
   type ProviderCreateAttemptRecord,
   type ProviderCreateAttemptStatus,
   type CreateAttemptCorrelationId,
@@ -49,6 +52,7 @@ import {
   type RuntimeCapability,
   type Run,
   type RunId,
+  type RunSnapshot,
   type RunStatus,
   type RunStep,
   type RunStatusPatch,
@@ -146,6 +150,118 @@ class SerializedWriter {
 const throwIfAborted = (signal: AbortSignal): void => signal.throwIfAborted();
 
 const parseJson = (value: string): unknown => JSON.parse(value) as unknown;
+
+const INTERFACE_CHANNELS: readonly InterfaceChannel[] = [
+  "semantic_ui",
+  "page_webmcp",
+  "configured_mcp",
+  "llms_txt",
+  "json_ld",
+  "visual_fallback",
+];
+
+function channelForDiscoveredKind(
+  kind: "semantic" | "llms_txt" | "json_ld" | "webmcp" | "configured_mcp" | "visual_fallback",
+): InterfaceChannel {
+  if (kind === "semantic") return "semantic_ui";
+  if (kind === "webmcp") return "page_webmcp";
+  return kind;
+}
+
+function isInterfaceChannel(value: string): value is InterfaceChannel {
+  return (INTERFACE_CHANNELS as readonly string[]).includes(value);
+}
+
+function projectInterfaceUsage(
+  explicit: InterfaceUsageSummary | undefined,
+  runEvents: readonly EventEnvelope[],
+): InterfaceUsageSummary | undefined {
+  let latestDiscovery: Extract<EventEnvelope, { readonly type: "run.discovery.completed" }> | undefined;
+  const started = new Map<InterfaceChannel, number>();
+  const succeeded = new Map<InterfaceChannel, number>();
+  const failed = new Map<InterfaceChannel, number>();
+
+  for (const event of runEvents) {
+    if (event.type === "run.discovery.completed") latestDiscovery = event;
+    if (event.type === "run.tool.started" && isInterfaceChannel(event.payload.interfaceSource)) {
+      started.set(event.payload.interfaceSource, (started.get(event.payload.interfaceSource) ?? 0) + 1);
+    }
+    if (event.type === "run.tool.completed" && isInterfaceChannel(event.payload.interfaceSource)) {
+      const counts = event.payload.success ? succeeded : failed;
+      counts.set(event.payload.interfaceSource, (counts.get(event.payload.interfaceSource) ?? 0) + 1);
+    }
+  }
+
+  if (explicit === undefined && latestDiscovery === undefined && started.size === 0 && succeeded.size === 0 && failed.size === 0) {
+    return undefined;
+  }
+
+  return InterfaceUsageSummarySchema.parse({
+    schemaVersion: 1,
+    metrics: INTERFACE_CHANNELS.map((channel) => {
+      const persisted = explicit?.metrics.find((metric) => metric.channel === channel);
+      const invoked = started.get(channel) ?? 0;
+      const discovered = latestDiscovery?.payload.interfaces.filter(
+        (entry) => channelForDiscoveredKind(entry.kind) === channel,
+      ).length ?? 0;
+      const admitted = channel === "page_webmcp" && latestDiscovery?.payload.webMcpGate === "admitted_read_only" ? 1 : 0;
+      return {
+        channel,
+        discovered: persisted !== undefined && persisted.discovered > 0 ? persisted.discovered : Math.max(discovered, invoked > 0 ? 1 : 0),
+        admitted: persisted !== undefined && persisted.admitted > 0 ? persisted.admitted : Math.max(admitted, invoked > 0 ? 1 : 0),
+        invoked: persisted !== undefined && persisted.invoked > 0 ? persisted.invoked : invoked,
+        succeeded: persisted !== undefined && persisted.succeeded > 0 ? persisted.succeeded : succeeded.get(channel) ?? 0,
+        failed: persisted !== undefined && persisted.failed > 0 ? persisted.failed : failed.get(channel) ?? 0,
+      };
+    }),
+  });
+}
+
+function projectRunSnapshot(run: Run, committedEvents: readonly EventEnvelope[]): RunSnapshot {
+  const runEvents = committedEvents.filter((event) => event.runId === run.id);
+  let maxIteration = 0;
+  let startedToolCalls = 0;
+  let latestUsage: Run["usage"] | undefined;
+
+  for (const event of runEvents) {
+    if (event.type === "run.agent.iteration") maxIteration = Math.max(maxIteration, event.payload.iteration);
+    if (event.type === "run.tool.started") startedToolCalls += 1;
+    if (event.type === "run.usage.updated") latestUsage = event.payload;
+  }
+
+  const hasPopulatedTerminalUsage = (run.usage.promptTokens ?? 0) > 0
+    || (run.usage.completionTokens ?? 0) > 0
+    || (run.usage.totalTokens ?? 0) > 0;
+  const usage = hasPopulatedTerminalUsage
+    ? {
+      promptTokens: run.usage.promptTokens ?? latestUsage?.promptTokens ?? null,
+      completionTokens: run.usage.completionTokens ?? latestUsage?.completionTokens ?? null,
+      totalTokens: run.usage.totalTokens ?? latestUsage?.totalTokens ?? null,
+    }
+    : latestUsage ?? run.usage;
+
+  return {
+    id: run.id,
+    runIndex: run.runIndex,
+    modelId: run.modelId,
+    status: run.status,
+    outcome: run.outcome,
+    startedAt: run.startedAt,
+    finishedAt: run.finishedAt,
+    durationMs: run.durationMs,
+    iterations: run.iterations > 0 ? run.iterations : maxIteration,
+    toolCalls: run.toolCalls > 0 ? run.toolCalls : startedToolCalls,
+    browserActions: run.browserActions,
+    interfaceUsage: projectInterfaceUsage(run.interfaceUsage, runEvents),
+    usage,
+    failure: run.failure,
+    grade: run.grade,
+    warnings: run.warnings,
+    releaseStatus: run.releaseStatus,
+    replayStatus: run.replayStatus,
+    potentialSessionLeak: run.potentialSessionLeak,
+  };
+}
 
 export class TracegateDatabase {
   private readonly writer = new SerializedWriter();
@@ -922,15 +1038,16 @@ export class TracegateDatabase {
       const [evaluationRow] = await tx.select().from(evaluations).where(eq(evaluations.id, evaluationId)).limit(1);
       if (evaluationRow === undefined) return null;
       const runRows = await tx.select().from(runs).where(eq(runs.evaluationId, evaluationId)).orderBy(asc(runs.runIndex));
-      const [latest] = await tx.select({ cursor: events.cursor }).from(events)
-        .where(eq(events.evaluationId, evaluationId)).orderBy(desc(events.cursor)).limit(1);
+      const eventRows = await tx.select().from(events).where(eq(events.evaluationId, evaluationId)).orderBy(asc(events.cursor));
+      const latest = eventRows.at(-1);
       throwIfAborted(signal);
-      return { evaluationRow, runRows, latest };
+      return { evaluationRow, runRows, eventRows, latest };
     });
     if (snapshotRows === null) return null;
-    const { evaluationRow, runRows, latest } = snapshotRows;
+    const { evaluationRow, runRows, eventRows, latest } = snapshotRows;
     const evaluation = EvaluationSchema.parse(parseJson(evaluationRow.entityJson));
     const parsedRuns = runRows.map((row) => RunSchema.parse(parseJson(row.entityJson)));
+    const committedEvents = eventRows.map((row) => this.eventEnvelopeFromRow(row));
 
     const passed = parsedRuns.filter((run) => run.outcome === "passed").length;
     const failed = parsedRuns.filter((run) => run.outcome === "failed").length;
@@ -964,27 +1081,7 @@ export class TracegateDatabase {
           value: passed + failed === 0 ? null : passed / (passed + failed),
         },
       },
-      runs: parsedRuns.map((run) => ({
-        id: run.id,
-        runIndex: run.runIndex,
-        modelId: run.modelId,
-        status: run.status,
-        outcome: run.outcome,
-        startedAt: run.startedAt,
-        finishedAt: run.finishedAt,
-        durationMs: run.durationMs,
-        iterations: run.iterations,
-        toolCalls: run.toolCalls,
-        browserActions: run.browserActions,
-        interfaceUsage: run.interfaceUsage,
-        usage: run.usage,
-        failure: run.failure,
-        grade: run.grade,
-        warnings: run.warnings,
-        releaseStatus: run.releaseStatus,
-        replayStatus: run.replayStatus,
-        potentialSessionLeak: run.potentialSessionLeak,
-      })),
+      runs: parsedRuns.map((run) => projectRunSnapshot(run, committedEvents)),
       latestCursor: latest === undefined ? null : EventCursorSchema.parse(String(latest.cursor)),
     });
   }
