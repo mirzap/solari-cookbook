@@ -1,6 +1,7 @@
 import {
   CreateEvaluationRequestSchema,
   type CreateEvaluationRequest,
+  type InterfaceMode,
   type ModelId,
 } from "@tracegate/shared";
 
@@ -22,7 +23,12 @@ export interface EvaluationFormDraft {
   readonly runsPerModel: number;
   readonly concurrency: number;
   readonly recordingRequested: boolean;
+  readonly interfaceMode?: InterfaceMode;
   readonly webMcpReadOnlyEnabled: boolean;
+  readonly configuredMcpEnabled?: boolean;
+  readonly configuredMcpLabel?: string;
+  readonly configuredMcpEndpointUrl?: string;
+  readonly configuredMcpSelectedToolsText?: string;
 }
 
 export function assertionFromDraft(draft: AssertionDraft, index: number) {
@@ -59,8 +65,17 @@ export function createEvaluationRequestFromDraft(draft: EvaluationFormDraft): Cr
     modelIds: draft.modelIds,
     requestedRunsPerModel: draft.runsPerModel,
     requestedConcurrency: draft.concurrency,
-    interfaceMode: "auto",
+    interfaceMode: draft.interfaceMode ?? "auto",
     webMcpReadOnlyEnabled: draft.webMcpReadOnlyEnabled,
+    configuredMcpEndpoints: draft.configuredMcpEnabled === true ? [{
+      schemaVersion: 1,
+      id: "developer-mcp",
+      label: draft.configuredMcpLabel ?? "Configured MCP",
+      endpointUrl: draft.configuredMcpEndpointUrl ?? "",
+      transport: "streamable-http",
+      authentication: "none",
+      selectedTools: (draft.configuredMcpSelectedToolsText ?? "").split(/[\n,]/).map((name) => name.trim()).filter(Boolean),
+    }] : undefined,
     recordingRequested: draft.recordingRequested,
   });
 }

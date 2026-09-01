@@ -8,6 +8,8 @@ import {
   EventAppendInputSchema,
   EventListResponseSchema,
   HealthResponseSchema,
+  ConfiguredMcpReadinessV1Schema,
+  InterfaceUsageSummarySchema,
   RunQueuedEventAppendInputSchema,
   RunSchema,
   RuntimeCapabilitiesSchema,
@@ -27,17 +29,24 @@ import {
   type EventCursor,
   type EventEnvelope,
   type EventListResponse,
+  type Evaluation,
   type FinalizeRunInput,
   type FinalizeRunResult,
   type HealthResponse,
   type IdGenerator,
   type IntermediateRunTransitionInput,
   type IntermediateRunTransitionResult,
+  type InterfaceChannel,
+  type InterfaceUsageSummary,
+  type Run,
+  type RunSnapshot,
   type RuntimeCapabilities,
   type UtcDateTime,
 } from "@tracegate/shared";
 import {
   TracegateDatabase,
+  type PersistRunEventStepInput,
+  type PersistedRunEventStep,
   type PersistRunMilestoneInput,
   type PersistedRunMilestone,
 } from "@tracegate/db";
@@ -56,7 +65,14 @@ class PersistedMilestoneBus implements MilestoneSubscriptionSource {
   publish(event: EventEnvelope): void {
     const subscribers = this.#subscribers.get(event.evaluationId);
     if (subscribers === undefined) return;
-    for (const subscriber of [...subscribers]) subscriber(event);
+    for (const subscriber of [...subscribers]) {
+      try {
+        subscriber(event);
+      } catch {
+        subscribers.delete(subscriber);
+      }
+    }
+    if (subscribers.size === 0) this.#subscribers.delete(event.evaluationId);
   }
 
   subscribe(evaluationId: EvaluationId, subscriber: MilestoneSubscriber): () => void {
@@ -74,28 +90,73 @@ class PersistedMilestoneBus implements MilestoneSubscriptionSource {
   }
 }
 
+const FUNCTIONAL_MODEL_IDS = new Set(["deepseek/deepseek-v4-flash-0731"]);
+
+const INTERFACE_CHANNELS: readonly InterfaceChannel[] = [
+  "semantic_ui",
+  "page_webmcp",
+  "configured_mcp",
+  "llms_txt",
+  "json_ld",
+  "visual_fallback",
+];
+
+function summarizeInterfaceUsage(runs: readonly RunSnapshot[], events: readonly EventEnvelope[] = []): InterfaceUsageSummary {
+  return InterfaceUsageSummarySchema.parse({
+    schemaVersion: 1,
+    metrics: INTERFACE_CHANNELS.map((channel) => {
+      const metrics = runs.flatMap((run) => run.interfaceUsage?.metrics.filter((metric) => metric.channel === channel) ?? []);
+      const started = events.filter((event) => event.type === "run.tool.started" && event.payload.interfaceSource === channel);
+      const completed = events.filter((event) => event.type === "run.tool.completed" && event.payload.interfaceSource === channel);
+      return {
+        channel,
+        discovered: metrics.reduce((total, metric) => total + metric.discovered, 0),
+        admitted: metrics.reduce((total, metric) => total + metric.admitted, 0),
+        invoked: events.length > 0 ? started.length : metrics.reduce((total, metric) => total + metric.invoked, 0),
+        succeeded: events.length > 0 ? completed.filter((event) => event.type === "run.tool.completed" && event.payload.success).length : metrics.reduce((total, metric) => total + metric.succeeded, 0),
+        failed: events.length > 0 ? completed.filter((event) => event.type === "run.tool.completed" && !event.payload.success).length : metrics.reduce((total, metric) => total + metric.failed, 0),
+      };
+    }),
+  });
+}
+
+function stringArray(value: unknown): readonly string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === "string") ? value : [];
+}
+
+function deniedToolArray(value: unknown): readonly { readonly name: string; readonly code: string }[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    if (typeof item !== "object" || item === null || !("name" in item) || !("code" in item)) return [];
+    return typeof item.name === "string" && typeof item.code === "string" ? [{ name: item.name, code: item.code }] : [];
+  });
+}
+
 export interface TracegateServerOptions {
   readonly ids?: IdGenerator;
   readonly now?: () => Date;
+  readonly onEvaluationCreated?: (evaluation: Evaluation, runs: readonly Run[]) => void;
 }
 
 export class TracegateServer {
   readonly #milestones = new PersistedMilestoneBus();
   readonly #ids: IdGenerator;
   readonly #now: () => Date;
+  readonly #onEvaluationCreated: ((evaluation: Evaluation, runs: readonly Run[]) => void) | undefined;
   readonly database: TracegateDatabase;
 
   constructor(database: TracegateDatabase, options: TracegateServerOptions = {}) {
     this.database = database;
     this.#ids = options.ids ?? new UuidV7Generator();
     this.#now = options.now ?? (() => new Date());
+    this.#onEvaluationCreated = options.onEvaluationCreated;
   }
 
   async createEvaluation(inputValue: unknown, signal: AbortSignal): Promise<CreateEvaluationResponse> {
     const input = CreateEvaluationRequestSchema.parse(inputValue);
     const capabilities = await this.getCapabilities(signal);
-    const unavailableModels = input.modelIds.filter((modelId) => !capabilities.checks.some(
-      (check) => check.kind === "model" && check.subject === modelId && check.status === "verified",
+    const unavailableModels = input.modelIds.filter((modelId) => !FUNCTIONAL_MODEL_IDS.has(modelId) || !capabilities.checks.some(
+      (check) => check.kind === "model" && check.subject === modelId && (check.status === "pending" || check.status === "verified"),
     ));
     if (capabilities.blockerCodes.length > 0 || unavailableModels.length > 0) {
       throw new TraceGateError(createControlError(
@@ -164,6 +225,7 @@ export class TracegateServer {
     }));
     const persisted = await this.database.transactionallyCreateSubmission({ evaluation, runs, queuedEvents }, signal);
     this.#publishPersisted(persisted.queuedEvents);
+    this.#onEvaluationCreated?.(evaluation, runs);
     return CreateEvaluationResponseSchema.parse({
       evaluationId,
       status: evaluation.status,
@@ -184,6 +246,23 @@ export class TracegateServer {
     url.password = "";
     url.search = "";
     url.hash = "";
+    const configuredMcp = persisted.snapshot.config.configuredMcpEndpoints?.flatMap((endpoint) => {
+      const match = [...persisted.interfaces].reverse().find((item) => item.kind === "configured_mcp"
+        && item.metadata.endpointId === endpoint.id
+        && item.metadata.status !== "unavailable");
+      if (match === undefined) return [];
+      const readiness = ConfiguredMcpReadinessV1Schema.safeParse({
+        schemaVersion: 1,
+        endpointId: endpoint.id,
+        label: endpoint.label,
+        transport: endpoint.transport,
+        selectedTools: stringArray(match.metadata.selectedTools),
+        admittedTools: stringArray(match.metadata.admittedTools),
+        deniedTools: deniedToolArray(match.metadata.deniedTools),
+      });
+      return readiness.success ? [readiness.data] : [];
+    }) ?? [];
+    const interfaceUsage = summarizeInterfaceUsage(persisted.snapshot.runs, persisted.events);
     return EvaluationReportProjectionSchema.parse({
       schemaVersion: 2,
       evaluationId,
@@ -195,6 +274,12 @@ export class TracegateServer {
       assertions: persisted.snapshot.config.assertions,
       aggregate: persisted.snapshot.aggregate,
       runs: persisted.snapshot.runs,
+      interfaceReadiness: {
+        mode: persisted.snapshot.config.interfaceMode,
+        pageWebMcpEnabled: persisted.snapshot.config.webMcpReadOnlyEnabled,
+        configuredMcp,
+        usage: interfaceUsage,
+      },
       observableStateLimitation: "PASS proves declared browser-observable assertions only, not arbitrary backend business truth.",
     });
   }
@@ -217,6 +302,8 @@ export class TracegateServer {
       schemaVersion: 1,
       evaluationId,
       items: items.slice(0, 200),
+      interfaceMode: persisted.snapshot.config.interfaceMode,
+      interfaceUsage: summarizeInterfaceUsage(persisted.snapshot.runs, persisted.events),
       truncated: items.length > 200,
       nextCursor: items.length > 200 ? items[199]?.cursor ?? null : null,
     });
@@ -269,22 +356,25 @@ export class TracegateServer {
     const checks = [databaseCheck, ...persisted.filter((check) => check.kind !== "database")];
     const blockerCodes: string[] = [];
     if (databaseCheck.status !== "verified") blockerCodes.push("database_unhealthy");
-    if (!checks.some((check) => check.kind === "model" && check.status === "verified")) blockerCodes.push("no_verified_model");
-    if (!checks.some((check) => check.kind === "solari" && check.status === "verified")) blockerCodes.push("solari_unavailable");
+    if (!checks.some((check) => check.kind === "model" && (check.status === "pending" || check.status === "verified"))) blockerCodes.push("no_verified_model");
+    if (!checks.some((check) => check.kind === "solari" && (check.status === "pending" || check.status === "verified"))) blockerCodes.push("solari_unavailable");
     return RuntimeCapabilitiesSchema.parse({ schemaVersion: 1, checks, blockerCodes, checkedAt });
   }
 
   async health(signal: AbortSignal): Promise<HealthResponse> {
     const capabilities = await this.getCapabilities(signal);
     const database = capabilities.checks.find((check) => check.kind === "database");
-    const status = database?.status !== "verified" ? "unavailable" : capabilities.blockerCodes.length === 0 ? "ok" : "degraded";
+    const model = capabilities.checks.find((check) => check.kind === "model" && (check.status === "pending" || check.status === "verified"));
+    const solari = capabilities.checks.find((check) => check.kind === "solari" && (check.status === "pending" || check.status === "verified"));
+    const hasPendingLiveCheck = model?.status === "pending" || solari?.status === "pending";
+    const status = database?.status !== "verified" ? "unavailable" : capabilities.blockerCodes.length > 0 || hasPendingLiveCheck ? "degraded" : "ok";
     return HealthResponseSchema.parse({
       status,
       checkedAt: capabilities.checkedAt,
       dependencies: {
         database: database?.status === "verified" ? "ok" : "unavailable",
-        model: capabilities.blockerCodes.includes("no_verified_model") ? "unavailable" : "ok",
-        solari: capabilities.blockerCodes.includes("solari_unavailable") ? "unavailable" : "ok",
+        model: capabilities.blockerCodes.includes("no_verified_model") ? "unavailable" : model?.status === "verified" ? "ok" : "degraded",
+        solari: capabilities.blockerCodes.includes("solari_unavailable") ? "unavailable" : solari?.status === "verified" ? "ok" : "degraded",
         webmcp: capabilities.checks.some((check) => check.kind === "webmcp" && check.status === "verified") ? "ok" : "degraded",
       },
     });
@@ -292,6 +382,12 @@ export class TracegateServer {
 
   async persistMilestone(input: PersistRunMilestoneInput, signal: AbortSignal): Promise<PersistedRunMilestone> {
     const persisted = await this.database.persistRunMilestone(input, signal);
+    this.#publishPersisted([persisted.event]);
+    return persisted;
+  }
+
+  async appendRunEventStep(input: PersistRunEventStepInput, signal: AbortSignal): Promise<PersistedRunEventStep> {
+    const persisted = await this.database.appendRunEventStep(input, signal);
     this.#publishPersisted([persisted.event]);
     return persisted;
   }

@@ -104,6 +104,16 @@ export interface PersistedRunMilestone {
   readonly event: EventEnvelope;
 }
 
+export interface PersistRunEventStepInput {
+  readonly step: RunStep;
+  readonly event: EventAppendInput;
+}
+
+export interface PersistedRunEventStep {
+  readonly step: RunStep;
+  readonly event: EventEnvelope;
+}
+
 export interface PersistedCleanupState {
   readonly evaluationId: EvaluationId;
   readonly browserSessions: readonly BrowserSessionSummary[];
@@ -359,6 +369,36 @@ export class TracegateDatabase {
     });
   }
 
+  async appendRunEventStep(input: PersistRunEventStepInput, signal: AbortSignal): Promise<PersistedRunEventStep> {
+    throwIfAborted(signal);
+    const step = this.sanitizeStep(input.step);
+    const event = this.sanitizeEvent(input.event);
+    if (event.runId === null || event.runSequence === null || event.runId !== step.runId || event.runSequence !== step.sequence) {
+      throw new Error("Run step and event must share the same run scope and sequence");
+    }
+    return this.writer.enqueue(async () => this.db.transaction(async (tx) => {
+      throwIfAborted(signal);
+      const [owner] = await tx.select({ evaluationId: runs.evaluationId }).from(runs)
+        .where(eq(runs.id, step.runId)).limit(1);
+      if (owner === undefined || owner.evaluationId !== event.evaluationId) {
+        throw new Error("Run step event must belong to the referenced run evaluation");
+      }
+      await tx.insert(runSteps).values({
+        runId: step.runId,
+        sequence: step.sequence,
+        kind: step.kind,
+        payloadJson: JSON.stringify(step.payload),
+        interactionMode: step.interactionMode,
+        observationRevision: step.observationRevision,
+        durationMs: step.durationMs,
+        occurredAt: step.occurredAt,
+      });
+      const [inserted] = await tx.insert(events).values(this.eventValues(event, this.nowIso())).returning();
+      if (inserted === undefined) throw new Error("Run step event insert returned no row");
+      return { step, event: this.eventEnvelopeFromRow(inserted) };
+    }));
+  }
+
   async createEvaluation(evaluationInput: Evaluation, signal: AbortSignal): Promise<Evaluation> {
     throwIfAborted(signal);
     const evaluation = this.sanitizeEvaluation(evaluationInput);
@@ -495,8 +535,11 @@ export class TracegateDatabase {
       }));
       const [evidenceRow] = await tx.select({ evidenceHash: assertionEvidence.evidenceHash }).from(assertionEvidence)
         .where(eq(assertionEvidence.runId, input.runId)).limit(1);
-      if (evidenceRow === undefined || evidenceRow.evidenceHash !== run.grade?.evidenceHash) {
-        throw new Error("A run may be finalized only from its committed canonical assertion evidence");
+      const isNoEvidenceInconclusive = run.outcome === "inconclusive"
+        && run.failure !== null
+        && run.grade?.evidenceHash === "0".repeat(64);
+      if (!isNoEvidenceInconclusive && (evidenceRow === undefined || evidenceRow.evidenceHash !== run.grade?.evidenceHash)) {
+        throw new Error("A gradeable run may be finalized only from its committed canonical assertion evidence");
       }
       const changed = await tx.update(runs).set(this.runValues(run))
         .where(and(eq(runs.id, input.runId), eq(runs.status, input.expectedStatus))).returning({ id: runs.id });
@@ -933,6 +976,7 @@ export class TracegateDatabase {
         iterations: run.iterations,
         toolCalls: run.toolCalls,
         browserActions: run.browserActions,
+        interfaceUsage: run.interfaceUsage,
         usage: run.usage,
         failure: run.failure,
         grade: run.grade,

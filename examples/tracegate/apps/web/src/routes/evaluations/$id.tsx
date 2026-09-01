@@ -1,59 +1,142 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, createFileRoute } from "@tanstack/react-router";
-import type { AgentTraceProjection, EvaluationReportProjection, EventListResponse, RunSnapshot } from "@tracegate/shared";
+import type {
+  AgentTraceProjection,
+  EvaluationReportProjection,
+  EventEnvelope,
+  InterfaceChannel,
+  RunSnapshot,
+} from "@tracegate/shared";
 import { InlineNotice, Metric, Panel, StatusBadge } from "@tracegate/ui";
 import { TracegateApiClient } from "../../lib/api-client.ts";
 import { useLiveEvaluation } from "../../lib/use-live-evaluation.ts";
 
 export const Route = createFileRoute("/evaluations/$id")({ component: LiveEvaluationPage });
 const client = new TracegateApiClient();
-const PIPELINE_STEPS = ["provision", "discover", "act", "capture", "grade", "cleanup"] as const;
+const PIPELINE_STEPS = ["Prepare", "Explore", "Work", "Verify", "Finish"] as const;
+const INTERFACE_LABELS: Record<InterfaceChannel, string> = {
+  page_webmcp: "WebMCP",
+  configured_mcp: "Configured MCP",
+  semantic_ui: "Semantic UI",
+  llms_txt: "llms.txt",
+  json_ld: "JSON-LD",
+  visual_fallback: "Visual fallback",
+};
+const INTERFACE_DESCRIPTIONS: Record<InterfaceChannel, string> = {
+  page_webmcp: "Read-only tools offered by the website",
+  configured_mcp: "Read-only tools from your optional endpoint",
+  semantic_ui: "Accessible names, roles, and page structure",
+  llms_txt: "Agent guidance published by the website",
+  json_ld: "Structured page data",
+  visual_fallback: "Rendered-page understanding when no stronger interface helps",
+};
+const INTERFACE_ORDER: readonly InterfaceChannel[] = ["page_webmcp", "configured_mcp", "semantic_ui", "llms_txt", "json_ld", "visual_fallback"];
+
+async function loadAllEvents(evaluationId: Parameters<TracegateApiClient["events"]>[0], signal: AbortSignal): Promise<readonly EventEnvelope[]> {
+  const events: EventEnvelope[] = [];
+  let cursor: Parameters<TracegateApiClient["events"]>[1] = null;
+  for (let pageNumber = 0; pageNumber < 10; pageNumber += 1) {
+    const page = await client.events(evaluationId, cursor, signal);
+    events.push(...page.events);
+    if (!page.truncated || page.nextCursor === null) break;
+    cursor = page.nextCursor;
+  }
+  return events;
+}
+
+function progressIndex(run: RunSnapshot): number {
+  if (run.status === "acquiring_browser" || run.status === "connecting_browser") return 0;
+  if (run.status === "discovering") return 1;
+  if (run.status === "running_agent") return 2;
+  if (run.status === "grading") return 3;
+  if (run.status === "releasing_browser") return 4;
+  return -1;
+}
+
+function runStatus(run: RunSnapshot): string {
+  if (run.outcome !== null) return run.outcome;
+  if (run.status === "queued") return "waiting";
+  if (run.status === "acquiring_browser" || run.status === "connecting_browser") return "preparing";
+  if (run.status === "discovering") return "exploring";
+  if (run.status === "running_agent") return "working";
+  if (run.status === "grading") return "verifying";
+  if (run.status === "releasing_browser") return "finishing";
+  return run.status;
+}
 
 function RunCard({ run }: { readonly run: RunSnapshot }) {
-  const activeStep = run.status === "acquiring_browser" || run.status === "connecting_browser" ? 0
-    : run.status === "discovering" ? 1
-      : run.status === "running_agent" ? 2
-        : run.status === "grading" ? 4
-          : run.status === "releasing_browser" ? 5
-            : -1;
-
+  const activeStep = progressIndex(run);
   return (
     <article className="tg-run-card">
       <header className="tg-run-card__header">
-        <div><p className="tg-eyebrow">Run {run.runIndex + 1}</p><h3>{run.modelId}</h3></div>
-        <StatusBadge status={run.outcome ?? run.status} />
+        <div><p className="tg-eyebrow">Run {run.runIndex + 1}</p><h3>{run.modelId.split("/").at(-1)?.replaceAll("-", " ")}</h3></div>
+        <StatusBadge status={runStatus(run)} />
       </header>
-      <ol className="tg-pipeline" aria-label={`Run ${run.runIndex + 1} pipeline`}>
-        {PIPELINE_STEPS.map((step, index) => <li key={step} data-state={index < activeStep || run.finishedAt !== null ? "done" : index === activeStep ? "active" : "waiting"}>{step}</li>)}
+      <ol className="tg-pipeline" aria-label={`Run ${run.runIndex + 1} progress`}>
+        {PIPELINE_STEPS.map((step, index) => <li key={step} data-state={index < activeStep || run.outcome === "passed" ? "done" : index === activeStep ? "active" : "waiting"}>{step}</li>)}
       </ol>
       <dl className="tg-run-metrics">
-        <Metric label="Iterations" value={run.iterations} />
-        <Metric label="Tool calls" value={run.toolCalls} />
-        <Metric label="Browser actions" value={run.browserActions} />
-        <Metric label="Duration" value={run.durationMs === null ? "—" : `${run.durationMs} ms`} />
-        <Metric label="Cleanup" value={run.releaseStatus} detail={run.releaseStatus === "released" ? "Provider release confirmed" : "Not confirmed released"} />
+        <Metric label="Steps" value={run.toolCalls} />
+        <Metric label="Time" value={run.durationMs === null ? "—" : `${(run.durationMs / 1_000).toFixed(1)}s`} />
       </dl>
       {run.failure === null ? null : <InlineNotice tone={run.outcome === "inconclusive" ? "warning" : "error"}>{run.failure.message}</InlineNotice>}
       {run.warnings.map((warning, index) => <InlineNotice key={`${warning.code}-${index}`} tone="warning">{warning.message}</InlineNotice>)}
-      {run.potentialSessionLeak ? <InlineNotice tone="warning">Potential unacknowledged browser session leak; this run cannot be presented as conclusive.</InlineNotice> : null}
+      {run.potentialSessionLeak ? <InlineNotice tone="warning">Browser cleanup could not be confirmed, so this run is not presented as conclusive.</InlineNotice> : null}
+      <details className="tg-inline-details"><summary>Run details</summary><p>Model iterations: {run.iterations} · Browser actions: {run.browserActions} · Cleanup: {run.releaseStatus.replaceAll("_", " ")}</p></details>
     </article>
+  );
+}
+
+function AgentInterfaceInsights({ runs, history }: { readonly runs: readonly RunSnapshot[]; readonly history: readonly EventEnvelope[] | null }) {
+  const totals = useMemo(() => INTERFACE_ORDER.map((channel) => {
+    const runMetrics = runs.flatMap((run) => run.interfaceUsage?.metrics.filter((metric) => metric.channel === channel) ?? []);
+    const discovered = runMetrics.reduce((sum, metric) => sum + metric.discovered, 0);
+    const admitted = runMetrics.reduce((sum, metric) => sum + metric.admitted, 0);
+    const started = history?.filter((event) => event.type === "run.tool.started" && event.payload.interfaceSource === channel) ?? [];
+    const completed = history?.filter((event) => event.type === "run.tool.completed" && event.payload.interfaceSource === channel) ?? [];
+    const invoked = started.length;
+    const succeeded = completed.filter((event) => event.type === "run.tool.completed" && event.payload.success).length;
+    const failed = completed.filter((event) => event.type === "run.tool.completed" && !event.payload.success).length;
+    const usedRunIds = new Set(started.flatMap((event) => event.runId === null ? [] : [event.runId]));
+    const usedRuns = runs.filter((run) => usedRunIds.has(run.id));
+    const passedWithUse = usedRuns.filter((run) => run.outcome === "passed").length;
+    const durationMs = completed.reduce((sum, event) => event.type === "run.tool.completed" ? sum + event.payload.durationMs : sum, 0);
+    return { channel, discovered, admitted, invoked, succeeded, failed, usedRuns: usedRuns.length, passedWithUse, durationMs };
+  }), [history, runs]);
+
+  return (
+    <Panel eyebrow="Agent Interfaces" title="How ready is this website for agents?">
+      <p className="tg-section-copy">Availability shows what TraceGate found. Usage shows what agents actually relied on; it does not imply that an interface caused a pass.</p>
+      <div className="tg-interface-grid">
+        {totals.map((metric) => {
+          const state = metric.invoked > 0 ? "used" : metric.discovered > 0 || metric.admitted > 0 ? "available" : "not observed";
+          return <article className="tg-interface-card" key={metric.channel}>
+            <header><div><h3>{INTERFACE_LABELS[metric.channel]}</h3><p>{INTERFACE_DESCRIPTIONS[metric.channel]}</p></div><StatusBadge status={state} /></header>
+            <dl>
+              <Metric label="Actual uses" value={metric.invoked} detail={metric.invoked === 0 ? "Not used in these runs" : `${metric.succeeded} completed · ${metric.failed} failed`} />
+              <Metric label="Time in use" value={metric.invoked === 0 ? "—" : `${(metric.durationMs / 1_000).toFixed(1)}s`} />
+              <Metric label="Reliability when used" value={metric.usedRuns === 0 ? "—" : `${metric.passedWithUse}/${metric.usedRuns}`} detail="Passed runs / runs that used it" />
+            </dl>
+          </article>;
+        })}
+      </div>
+    </Panel>
   );
 }
 
 function GradingReport({ report }: { readonly report: EvaluationReportProjection }) {
   return (
-    <Panel eyebrow="Independent grading panel" title="Fresh browser-observable evidence">
+    <Panel eyebrow="Reliability results" title="Did agents reach the outcome?">
       <p>{report.observableStateLimitation}</p>
-      <p className="tg-code">{report.target.redactedDisplayUrl}</p>
       <div className="tg-report-runs">
         {report.runs.map((run) => (
           <section key={run.id} className="tg-report-run">
             <header><strong>Run {run.runIndex + 1}</strong><StatusBadge status={run.outcome ?? run.status} /></header>
-            {run.grade === null ? <p className="tg-muted">No deterministic grade is committed yet.</p> : (
+            {run.grade === null ? <p className="tg-muted">Waiting for fresh, independent verification.</p> : (
               <table className="tg-result-table">
-                <thead><tr><th>Assertion</th><th>Result</th><th>Observed</th></tr></thead>
-                <tbody>{run.grade.assertions.map((result) => <tr key={result.assertionId}>
-                  <td>{result.assertionId}</td><td><StatusBadge status={result.status} /></td><td>{result.actualSummary}</td>
+                <thead><tr><th>Success criterion</th><th>Result</th><th>What TraceGate observed</th></tr></thead>
+                <tbody>{run.grade.assertions.map((result, index) => <tr key={result.assertionId}>
+                  <td>Criterion {index + 1}</td><td><StatusBadge status={result.status} /></td><td>{result.actualSummary}</td>
                 </tr>)}</tbody>
               </table>
             )}
@@ -65,19 +148,13 @@ function GradingReport({ report }: { readonly report: EvaluationReportProjection
 }
 
 function AgentTrace({ trace }: { readonly trace: AgentTraceProjection }) {
-  return (
-    <Panel eyebrow="Assertion-blind agent trace" title="Bounded redacted execution milestones">
-      <p className="tg-field-help">This panel contains model/tool summaries only. Assertion definitions and grading evidence are deliberately separate.</p>
-      {trace.items.length === 0 ? <p className="tg-muted">No agent milestones committed yet.</p> : <ol className="tg-trace">
-        {trace.items.map((item) => <li key={`${item.runId}-${item.runSequence}`}>
-          <time>{new Date(item.occurredAt).toLocaleTimeString()}</time>
-          <strong>{item.event.type.replaceAll(".", " ")}</strong>
-          <span>{"summary" in item.event.payload ? item.event.payload.summary : "resultSummary" in item.event.payload ? item.event.payload.resultSummary : "usage milestone"}</span>
-        </li>)}
-      </ol>}
-      {trace.truncated ? <InlineNotice tone="warning">Trace is bounded and truncated. Fetch the next cursor to continue.</InlineNotice> : null}
-    </Panel>
-  );
+  return trace.items.length === 0 ? <p className="tg-muted">No execution milestones have been committed yet.</p> : <ol className="tg-trace">
+    {trace.items.map((item) => <li key={`${item.runId}-${item.runSequence}`}>
+      <time>{new Date(item.occurredAt).toLocaleTimeString()}</time>
+      <strong>{item.event.type.replaceAll(".", " ")}</strong>
+      <span>{"summary" in item.event.payload ? item.event.payload.summary : "resultSummary" in item.event.payload ? item.event.payload.resultSummary : "Execution milestone"}</span>
+    </li>)}
+  </ol>;
 }
 
 function LiveEvaluationPage() {
@@ -86,7 +163,7 @@ function LiveEvaluationPage() {
   const snapshot = live.snapshot;
   const [report, setReport] = useState<EvaluationReportProjection | null>(null);
   const [trace, setTrace] = useState<AgentTraceProjection | null>(null);
-  const [history, setHistory] = useState<EventListResponse | null>(null);
+  const [history, setHistory] = useState<readonly EventEnvelope[] | null>(null);
 
   useEffect(() => {
     if (snapshot === null) return undefined;
@@ -94,7 +171,7 @@ function LiveEvaluationPage() {
     void Promise.all([
       client.report(snapshot.evaluationId, controller.signal),
       client.trace(snapshot.evaluationId, null, controller.signal),
-      client.events(snapshot.evaluationId, null, controller.signal),
+      loadAllEvents(snapshot.evaluationId, controller.signal),
     ]).then(([nextReport, nextTrace, nextHistory]) => {
       setReport(nextReport);
       setTrace(nextTrace);
@@ -103,58 +180,66 @@ function LiveEvaluationPage() {
     return () => controller.abort();
   }, [snapshot?.evaluationId, snapshot?.latestCursor]);
 
+  const completed = snapshot === null ? 0 : snapshot.aggregate.passed + snapshot.aggregate.failed + snapshot.aggregate.inconclusive + snapshot.aggregate.cancelled;
+
   return (
     <main id="main-content" className="tg-shell">
-      <nav className="tg-breadcrumb" aria-label="Breadcrumb"><Link to="/">New evaluation</Link><span>/</span><span>Live evaluation</span></nav>
+      <nav className="tg-breadcrumb" aria-label="Breadcrumb"><Link to="/">New evaluation</Link><span>/</span><span>Reliability</span></nav>
       <header className="tg-page-header">
-        <div><p className="tg-eyebrow">Authoritative snapshot + committed milestones</p><h1>Evaluation dashboard</h1><p className="tg-code">{id}</p></div>
-        <div className="tg-status-stack"><StatusBadge status={snapshot?.status ?? "loading"} /><span className="tg-connection" data-state={live.connection}><span aria-hidden="true" />{live.connection}</span></div>
+        <div><p className="tg-eyebrow">Live evaluation</p><h1>Progress and reliability</h1><p className="tg-lede">Results recover from the durable snapshot after refresh or reconnect; live updates only announce milestones that are already committed.</p></div>
+        <div className="tg-status-stack"><StatusBadge status={snapshot?.status ?? "loading"} /><span className="tg-connection" data-state={live.connection}><span aria-hidden="true" />{live.connection === "live" ? "Live updates" : live.connection}</span></div>
       </header>
 
-      {live.error === null ? null : <InlineNotice tone="warning">{live.error} Reconnecting through the subscribe-first snapshot handshake.</InlineNotice>}
-      {snapshot === null ? <Panel title="Loading evaluation"><p className="tg-muted">Subscribing, then reading the durable evaluation snapshot…</p></Panel> : <>
-        <section className="tg-summary" aria-label="Evaluation summary">
+      {live.error === null ? null : <InlineNotice tone="warning">Live updates paused. TraceGate is reconnecting and will load a fresh durable snapshot.</InlineNotice>}
+      {snapshot === null ? <Panel title="Loading evaluation"><p className="tg-muted">Loading the latest saved progress…</p></Panel> : <>
+        <section className="tg-summary" aria-label="Reliability summary">
           <dl className="tg-summary__metrics">
-            <Metric label="Started" value={`${snapshot.aggregate.started}/${snapshot.aggregate.requested}`} />
-            <Metric label="Passed" value={snapshot.aggregate.passed} />
-            <Metric label="Failed" value={snapshot.aggregate.failed} />
-            <Metric label="Inconclusive" value={snapshot.aggregate.inconclusive} />
-            <Metric label="End-to-end pass rate" value={snapshot.aggregate.endToEndPassRate.value === null ? "—" : `${Math.round(snapshot.aggregate.endToEndPassRate.value * 100)}%`} detail="Passed / all requested runs" />
-            <Metric label="Gradeable success" value={snapshot.aggregate.gradeableObservableStateSuccess.value === null ? "—" : `${Math.round(snapshot.aggregate.gradeableObservableStateSuccess.value * 100)}%`} detail="Passed / (passed + failed)" />
+            <Metric label="Progress" value={`${completed}/${snapshot.aggregate.requested}`} detail="Completed runs / requested runs" />
+            <Metric label="Reliable outcomes" value={`${snapshot.aggregate.passed}/${snapshot.aggregate.requested}`} detail="Passed runs / all requested runs" />
+            <Metric label="Inconclusive" value={snapshot.aggregate.inconclusive} detail="Could not be verified safely" />
+            <Metric label="Reliability" value={snapshot.aggregate.endToEndPassRate.value === null ? "—" : `${Math.round(snapshot.aggregate.endToEndPassRate.value * 100)}%`} detail="Passed / all requested runs" />
           </dl>
-          <div className="tg-cursor"><span>Latest persisted cursor</span><strong>{snapshot.latestCursor ?? "none"}</strong></div>
         </section>
 
-        <Panel eyebrow="Task" title="User-authored prompt">
-          <p>{snapshot.config.prompt}</p>
-          <p className="tg-code">{snapshot.config.target.startUrl}</p>
-          <p className="tg-field-help">Allowed origins: {snapshot.config.target.allowedNavigationOrigins.join(", ")}</p>
-          <p className="tg-field-help">Experimental read-only WebMCP: {snapshot.config.webMcpReadOnlyEnabled ? "opted in; admitted tools only" : "off"}. Results remain untrusted and never grade directly.</p>
+        <Panel eyebrow="Website → Task → Success criteria" title="What TraceGate is measuring">
+          <p className="tg-target-url">{snapshot.config.target.startUrl}</p>
+          <blockquote className="tg-task-quote">{snapshot.config.prompt}</blockquote>
+          <p>{snapshot.config.assertions.length} independently checked success {snapshot.config.assertions.length === 1 ? "criterion" : "criteria"} across {snapshot.aggregate.requested} {snapshot.aggregate.requested === 1 ? "run" : "runs"}.</p>
         </Panel>
 
-        <section className="tg-runs" aria-labelledby="runs-heading">
-          <div className="tg-section-heading"><p className="tg-eyebrow">Execution</p><h2 id="runs-heading">Runs</h2></div>
+        <section className="tg-runs" aria-labelledby="progress-heading">
+          <div className="tg-section-heading"><p className="tg-eyebrow">Progress</p><h2 id="progress-heading">Repeated runs</h2></div>
           <div className="tg-run-grid">{snapshot.runs.map((run) => <RunCard key={run.id} run={run} />)}</div>
         </section>
 
-        {history === null ? null : <Panel eyebrow="Execution environment" title="Persisted generic run evidence">
-          {history.events.filter((event) => event.type === "run.environment.recorded").length === 0
-            ? <p className="tg-muted">No execution-environment milestone is committed yet.</p>
-            : <dl className="tg-environment-list">{history.events.filter((event) => event.type === "run.environment.recorded").map((event) => {
-                const environment = event.payload;
-                return <div key={event.eventId}>
-                  <dt>Run {event.runId ?? "evaluation"}</dt>
-                  <dd>Node {environment.nodeVersion} · pnpm {environment.pnpmVersion} · {environment.browserProvider} ({environment.browserRegion ?? "default region"}) · {environment.modelId} via {environment.resolvedProvider ?? "provider unresolved"}</dd>
-                </div>;
-              })}</dl>}
-          <p className="tg-field-help">Environment evidence is a committed, redacted milestone. Provider session identifiers and secret-bearing connection URLs are never projected here.</p>
-        </Panel>}
-        {trace === null ? null : <AgentTrace trace={trace} />}
+        <AgentInterfaceInsights runs={snapshot.runs} history={history} />
         {report === null ? null : <GradingReport report={report} />}
 
-        <Panel eyebrow="Known limitations" title="What this result does not prove">
-          <ul className="tg-limitations"><li>PASS is limited to declared fresh browser-observable assertions.</li><li>P0 does not guarantee whole-browser egress confinement or perfect DNS-rebinding prevention.</li><li>Page semantics and admitted WebMCP output are untrusted content, not safety authorization.</li></ul>
-        </Panel>
+        <details className="tg-details">
+          <summary>Execution evidence and limitations</summary>
+          <div className="tg-details__body">
+            <section>
+              <h2>Assertion-blind trace</h2>
+              <p className="tg-field-help">This bounded, redacted history contains execution summaries only. Success criteria and grading evidence stay separate.</p>
+              {trace === null ? <p className="tg-muted">Loading execution evidence…</p> : <AgentTrace trace={trace} />}
+            </section>
+            <section>
+              <h2>Environment and cleanup</h2>
+              {history?.filter((event) => event.type === "run.environment.recorded").length
+                ? <p>Execution environment evidence was committed for {history.filter((event) => event.type === "run.environment.recorded").length} {history.filter((event) => event.type === "run.environment.recorded").length === 1 ? "run" : "runs"}. Secret-bearing connection details are never shown.</p>
+                : <p className="tg-muted">No environment evidence is committed yet.</p>}
+              <p>Cleanup is shown on every run. An unconfirmed browser release makes that run inconclusive.</p>
+            </section>
+            <section>
+              <h2>Known limitations</h2>
+              <ul className="tg-limitations">
+                <li>A pass proves only the declared, fresh browser-observable outcome—not arbitrary backend business truth.</li>
+                <li>TraceGate does not guarantee whole-browser network confinement or perfect DNS-rebinding prevention.</li>
+                <li>Website and MCP content remains untrusted even when it is useful to an agent.</li>
+              </ul>
+            </section>
+          </div>
+        </details>
       </>}
     </main>
   );
