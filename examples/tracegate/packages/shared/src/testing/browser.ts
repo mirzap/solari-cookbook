@@ -11,7 +11,7 @@ import type {
   ReleaseResult,
   SensitiveBrowserEndpoint,
 } from "../ports.ts";
-import { warningFixture } from "./fixtures.ts";
+import { cleanupWarningFixture } from "./fixtures.ts";
 
 export type ScriptedBrowserOperation =
   | "connect" | "navigate" | "observe" | "click" | "type" | "select" | "pressKey" | "scroll" | "wait" | "callNativeTool";
@@ -94,7 +94,7 @@ class FakeBrowserLease implements BrowserLease {
     this.#releaseResult = {
       status: this.#failRelease ? "failed" : "released",
       releasedAt: this.#clock.nowIso(),
-      warning: this.#failRelease ? warningFixture : null,
+      warning: this.#failRelease ? cleanupWarningFixture : null,
     };
     return this.#releaseResult;
   }

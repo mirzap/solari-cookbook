@@ -65,6 +65,15 @@ export const warningFixture = RunWarningSchema.parse({
   occurredAt: FIXTURE_NOW,
 });
 
+export const cleanupWarningFixture = RunWarningSchema.parse({
+  schemaVersion: 1,
+  code: "cleanup_failed",
+  category: "infrastructure",
+  phase: "browser_release",
+  retryable: true,
+  message: "The fake browser session release failed.",
+});
+
 export const discoveryFixture = DiscoveryEvidenceSchema.parse({
   schemaVersion: 1,
   observationRevision: 1,
