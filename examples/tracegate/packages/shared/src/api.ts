@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { TokenUsageSchema } from "./agent.ts";
 import { AssertionSetV1Schema } from "./assertions.ts";
 import { PublicEvaluationConfigV2Schema } from "./config.ts";
 import { ControlErrorSchema, FailureRecordSchema, RunWarningSchema } from "./errors.ts";
@@ -7,7 +8,7 @@ import { GradeResultV2Schema } from "./grading.ts";
 import { EventCursorSchema, EvaluationIdSchema, RunIdSchema, UtcDateTimeSchema } from "./ids.ts";
 import { ModelIdSchema } from "./models.ts";
 import { PublicHttpsOriginSchema } from "./targets.ts";
-import { EvaluationStatusSchema, RunOutcomeSchema, RunStatusSchema } from "./states.ts";
+import { EvaluationStatusSchema, ReleaseStatusSchema, ReplayStatusSchema, RunOutcomeSchema, RunStatusSchema } from "./states.ts";
 
 export const CreateEvaluationRequestSchema = PublicEvaluationConfigV2Schema;
 export type CreateEvaluationRequest = z.infer<typeof CreateEvaluationRequestSchema>;
@@ -21,8 +22,10 @@ export type CreateEvaluationResponse = z.infer<typeof CreateEvaluationResponseSc
 export const RunSnapshotSchema = z.object({
   id: RunIdSchema, runIndex: z.number().int().nonnegative(), modelId: ModelIdSchema,
   status: RunStatusSchema, outcome: RunOutcomeSchema.nullable(), startedAt: UtcDateTimeSchema.nullable(), finishedAt: UtcDateTimeSchema.nullable(),
+  durationMs: z.number().int().nonnegative().nullable(), usage: TokenUsageSchema,
   iterations: z.number().int().nonnegative(), toolCalls: z.number().int().nonnegative(), browserActions: z.number().int().nonnegative(),
-  failure: FailureRecordSchema.nullable(), grade: GradeResultV2Schema.nullable(), warnings: z.array(RunWarningSchema).max(50), potentialSessionLeak: z.boolean(),
+  failure: FailureRecordSchema.nullable(), grade: GradeResultV2Schema.nullable(), warnings: z.array(RunWarningSchema).max(50),
+  releaseStatus: ReleaseStatusSchema, replayStatus: ReplayStatusSchema, potentialSessionLeak: z.boolean(),
 }).strict();
 export type RunSnapshot = z.infer<typeof RunSnapshotSchema>;
 

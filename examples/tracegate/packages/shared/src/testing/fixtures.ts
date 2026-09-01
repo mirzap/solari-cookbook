@@ -1,4 +1,5 @@
 import { AgentExecutionInputV2Schema, AgentRunResultSchema, UntrustedAgentObservationSchema } from "../agent.ts";
+import { RunSnapshotSchema } from "../api.ts";
 import { PublicEvaluationConfigV2Schema } from "../config.ts";
 import { DiscoveryEvidenceSchema } from "../discovery.ts";
 import { EvaluationSchema, RunSchema } from "../entities.ts";
@@ -193,6 +194,26 @@ export const runFixture = RunSchema.parse({
   createdAt: FIXTURE_NOW, startedAt: null, finishedAt: null, durationMs: null,
   iterations: 0, toolCalls: 0, browserActions: 0, usage: { promptTokens: null, completionTokens: null, totalTokens: null },
   failure: null, grade: null, replayStatus: "not_requested", releaseStatus: "not_started", warnings: [], potentialSessionLeak: false,
+});
+export const runSnapshotFixture = RunSnapshotSchema.parse({
+  id: runFixture.id,
+  runIndex: runFixture.runIndex,
+  modelId: runFixture.modelId,
+  status: runFixture.status,
+  outcome: runFixture.outcome,
+  startedAt: runFixture.startedAt,
+  finishedAt: runFixture.finishedAt,
+  durationMs: runFixture.durationMs,
+  usage: runFixture.usage,
+  iterations: runFixture.iterations,
+  toolCalls: runFixture.toolCalls,
+  browserActions: runFixture.browserActions,
+  failure: runFixture.failure,
+  grade: runFixture.grade,
+  warnings: runFixture.warnings,
+  releaseStatus: runFixture.releaseStatus,
+  replayStatus: runFixture.replayStatus,
+  potentialSessionLeak: runFixture.potentialSessionLeak,
 });
 export const eventInputFixture = EventAppendInputSchema.parse({
   schemaVersion: 1, eventId: FIXTURE_EVENT_ID, evaluationId: FIXTURE_EVALUATION_ID, runId: FIXTURE_RUN_ID,

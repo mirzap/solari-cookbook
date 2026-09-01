@@ -23,6 +23,7 @@ import {
   ReleaseResultSchema,
   SafeAgentToolExchangeSchema,
   PublicEvaluationConfigV2Schema,
+  RunSnapshotSchema,
   PublicHttpsOriginSchema,
   PublicHttpsUrlSchema,
   RunStatusSchema,
@@ -52,6 +53,7 @@ import {
   observationFixture,
   passingGradeFixture,
   runFixture,
+  runSnapshotFixture,
   webMcpResultFixture,
   webMcpToolDescriptorFixture,
 } from "../src/testing/index.ts";
@@ -63,6 +65,8 @@ test("canonical V2 fixtures satisfy authoritative schemas", () => {
   assert.equal(BrowserAssertionEvidenceV1Schema.parse(browserAssertionEvidenceFixture).requiredIdenticalCaptures, 2);
   assert.equal(eventEnvelopeFixture.cursor, "1");
   assert.equal(runFixture.status, "queued");
+  assert.equal(RunSnapshotSchema.parse(runSnapshotFixture).releaseStatus, "not_started");
+  assert.equal(RunSnapshotSchema.parse(runSnapshotFixture).usage.totalTokens, null);
 });
 
 test("public target and config are bounded, exact-origin, and V2-only", () => {
