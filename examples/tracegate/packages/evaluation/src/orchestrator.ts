@@ -22,6 +22,12 @@ export interface EvaluationExecutionResult {
   readonly completed: boolean;
 }
 
+type SettledRun = { readonly index: number; readonly result?: RunExecutionResult; readonly error?: unknown };
+type SystemicFailure = {
+  readonly phase: "evaluation_capacity" | "evaluation_execution" | "evaluation_cleanup";
+  readonly message: string;
+};
+
 export class FunctionalEvaluationExecutor {
   readonly #evaluations: EvaluationRepository;
   readonly #runExecutor: RunExecutorPort;
@@ -42,91 +48,177 @@ export class FunctionalEvaluationExecutor {
 
   async execute(evaluation: Evaluation, runs: readonly Run[], signal: AbortSignal): Promise<EvaluationExecutionResult> {
     if (evaluation.status !== "queued") throw new Error("functional evaluation executor requires a queued evaluation");
-    if (runs.length === 0 || runs.some((run) => run.evaluationId !== evaluation.id)) throw new Error("evaluation runs must be non-empty and belong to the evaluation");
+    if (runs.length === 0 || runs.some((run) => run.evaluationId !== evaluation.id) || new Set(runs.map((run) => run.id)).size !== runs.length) {
+      throw new Error("evaluation runs must be non-empty, unique, and belong to the evaluation");
+    }
     const startedAt = this.#clock.nowIso();
     if (!await this.#evaluations.compareAndSetStatus(evaluation.id, "queued", "running", { startedAt }, signal)) {
       throw new Error("evaluation start lost compare-and-set");
     }
 
     const results: Array<RunExecutionResult | undefined> = new Array(runs.length);
-    const active = new Map<number, Promise<{ index: number; result?: RunExecutionResult; error?: unknown }>>();
+    const active = new Map<number, Promise<SettledRun>>();
     let next = 0;
-    let firstError: unknown = null;
+    let systemicFailure: SystemicFailure | null = null;
+
+    const noteSystemicFailure = (failure: SystemicFailure): void => {
+      systemicFailure ??= failure;
+    };
+    const acceptSettled = (settled: SettledRun): void => {
+      active.delete(settled.index);
+      if (settled.error !== undefined) {
+        noteSystemicFailure({
+          phase: "evaluation_execution",
+          message: "A run could not persist a trustworthy terminal state.",
+        });
+        return;
+      }
+      const result = settled.result;
+      if (result === undefined) {
+        noteSystemicFailure({
+          phase: "evaluation_execution",
+          message: "A run executor returned without a result.",
+        });
+        return;
+      }
+      results[settled.index] = result;
+      if (!result.terminalized || result.run === null) {
+        noteSystemicFailure({
+          phase: "evaluation_cleanup",
+          message: "A dispatched run could not confirm lease-safe terminal cleanup.",
+        });
+        return;
+      }
+      if (result.run.id !== runs[settled.index]?.id || result.run.evaluationId !== evaluation.id) {
+        noteSystemicFailure({
+          phase: "evaluation_execution",
+          message: "A run executor returned a terminal record for the wrong run.",
+        });
+      }
+    };
+    const drainActive = async (): Promise<void> => {
+      while (active.size > 0) acceptSettled(await Promise.race(active.values()));
+    };
 
     try {
-      while ((next < runs.length && !signal.aborted && firstError === null) || active.size > 0) {
-        if (!signal.aborted && firstError === null) {
-          const state = await this.#capacity.current(signal);
-          const limit = Math.min(evaluation.config.requestedConcurrency, state.effectiveCapacity, runs.length);
-          while (next < runs.length && active.size < limit) {
+      while ((next < runs.length && !signal.aborted && systemicFailure === null) || active.size > 0) {
+        if (!signal.aborted && systemicFailure === null) {
+          let effectiveCapacity: number;
+          try {
+            const state = await this.#capacity.current(signal);
+            effectiveCapacity = Math.min(evaluation.config.requestedConcurrency, state.effectiveCapacity, runs.length);
+          } catch {
+            if (!signal.aborted) {
+              noteSystemicFailure({
+                phase: "evaluation_capacity",
+                message: "Provider capacity could not be read reliably.",
+              });
+            }
+            effectiveCapacity = 0;
+          }
+          if (signal.aborted) {
+            effectiveCapacity = 0;
+          } else if (effectiveCapacity <= 0 && active.size === 0 && next < runs.length) {
+            noteSystemicFailure({
+              phase: "evaluation_capacity",
+              message: "No trustworthy run capacity was available for the configured sample.",
+            });
+          }
+          while (!signal.aborted && systemicFailure === null && next < runs.length && active.size < effectiveCapacity) {
             const index = next;
             const run = runs[index]!;
             next += 1;
             const task = this.#runExecutor.execute(run, evaluation.config, signal)
-              .then((result) => ({ index, result }), (error: unknown) => ({ index, error }));
+              .then((result): SettledRun => ({ index, result }), (error: unknown): SettledRun => ({ index, error }));
             active.set(index, task);
           }
         }
         if (active.size === 0) break;
-        const settled = await Promise.race(active.values());
-        active.delete(settled.index);
-        if (settled.error !== undefined) firstError ??= settled.error;
-        else results[settled.index] = settled.result;
+        acceptSettled(await Promise.race(active.values()));
       }
-    } catch (error) {
-      firstError ??= error;
-      // A capacity/cancellation race must not abandon already-dispatched run cleanup.
-      while (active.size > 0) {
-      const settled = await Promise.race(active.values());
-      active.delete(settled.index);
-      if (settled.error !== undefined) firstError ??= settled.error;
-      else results[settled.index] = settled.result;
+    } catch {
+      noteSystemicFailure({
+        phase: "evaluation_execution",
+        message: "Evaluation orchestration stopped before all runs could be dispatched safely.",
+      });
+    }
+
+    await drainActive();
+    const completeResults = results.filter((item): item is RunExecutionResult => item !== undefined);
+
+    if (systemicFailure !== null) {
+      return this.#failEvaluation(evaluation, completeResults, systemicFailure);
+    }
+
+    const hasCompleteConfiguredSample = results.every((result, index) =>
+      result !== undefined
+      && result.terminalized
+      && result.run !== null
+      && result.run.id === runs[index]?.id
+      && result.run.evaluationId === evaluation.id
+      && result.run.status === "completed"
+      && result.run.outcome !== null,
+    );
+    if (hasCompleteConfiguredSample) {
+      const terminalResults = results as RunExecutionResult[];
+      const terminalRuns = terminalResults.map((result) => result.run!);
+      const aggregate = deriveEvaluationAggregate(terminalRuns);
+      if (!await this.#evaluations.compareAndSetStatus(evaluation.id, "running", "completed", {
+        finishedAt: this.#clock.nowIso(),
+        failure: null,
+      }, AbortSignal.timeout(5_000))) {
+        throw new Error("evaluation completion lost compare-and-set");
       }
+      return {
+        evaluation: await this.#evaluations.get(evaluation.id, AbortSignal.timeout(5_000)),
+        runs: terminalResults,
+        aggregate,
+        completed: true,
+      };
     }
 
     if (signal.aborted) {
-      const cancellationResults = results.filter((item): item is RunExecutionResult => item !== undefined);
-      if (cancellationResults.some((result) => !result.terminalized)) {
-        await this.#evaluations.compareAndSetStatus(evaluation.id, "running", "failed", {
-          finishedAt: this.#clock.nowIso(),
-          failure: createControlError("internal_error", "Cancellation cleanup left at least one run nonterminal.", {
-            category: "infrastructure",
-            phase: "evaluation_cancellation",
-            retryable: true,
-          }),
-        }, AbortSignal.timeout(5_000));
-        return { evaluation: await this.#evaluations.get(evaluation.id, AbortSignal.timeout(5_000)), runs: cancellationResults, aggregate: null, completed: false };
+      if (!await this.#evaluations.compareAndSetStatus(evaluation.id, "running", "cancelling", {}, AbortSignal.timeout(5_000))) {
+        throw new Error("evaluation cancellation start lost compare-and-set");
       }
-      await this.#evaluations.compareAndSetStatus(evaluation.id, "running", "cancelling", {}, AbortSignal.timeout(5_000));
-      await this.#evaluations.compareAndSetStatus(evaluation.id, "cancelling", "cancelled", { finishedAt: this.#clock.nowIso() }, AbortSignal.timeout(5_000));
-      return { evaluation: await this.#evaluations.get(evaluation.id, AbortSignal.timeout(5_000)), runs: cancellationResults, aggregate: null, completed: false };
-    }
-
-    const completeResults = results.filter((item): item is RunExecutionResult => item !== undefined);
-    const allTerminal = firstError === null && completeResults.length === runs.length && completeResults.every((result) => result.terminalized && result.run !== null);
-    if (!allTerminal) {
-      await this.#evaluations.compareAndSetStatus(evaluation.id, "running", "failed", {
+      if (!await this.#evaluations.compareAndSetStatus(evaluation.id, "cancelling", "cancelled", {
         finishedAt: this.#clock.nowIso(),
-        failure: createControlError("internal_error", "At least one run did not reach a durable terminal state.", {
-          category: "infrastructure",
-          phase: "evaluation_execution",
-          retryable: true,
-          causeChain: firstError instanceof Error ? [firstError.message.slice(0, 500)] : [],
-        }),
-      }, AbortSignal.timeout(5_000));
-      return { evaluation: await this.#evaluations.get(evaluation.id, AbortSignal.timeout(5_000)), runs: completeResults, aggregate: null, completed: false };
+      }, AbortSignal.timeout(5_000))) {
+        throw new Error("evaluation cancellation completion lost compare-and-set");
+      }
+      return {
+        evaluation: await this.#evaluations.get(evaluation.id, AbortSignal.timeout(5_000)),
+        runs: completeResults,
+        aggregate: null,
+        completed: false,
+      };
     }
 
-    const terminalRuns = completeResults.map((result) => result.run!);
-    const aggregate = deriveEvaluationAggregate(terminalRuns);
-    if (!await this.#evaluations.compareAndSetStatus(evaluation.id, "running", "completed", { finishedAt: this.#clock.nowIso(), failure: null }, signal)) {
-      throw new Error("evaluation completion lost compare-and-set");
-    }
+    return this.#failEvaluation(evaluation, completeResults, {
+      phase: "evaluation_execution",
+      message: "At least one configured run did not reach a durable terminal state.",
+    });
+  }
+
+  async #failEvaluation(
+    evaluation: Evaluation,
+    results: readonly RunExecutionResult[],
+    failure: SystemicFailure,
+  ): Promise<EvaluationExecutionResult> {
+    const committed = await this.#evaluations.compareAndSetStatus(evaluation.id, "running", "failed", {
+      finishedAt: this.#clock.nowIso(),
+      failure: createControlError("internal_error", failure.message, {
+        category: "infrastructure",
+        phase: failure.phase,
+        retryable: true,
+      }),
+    }, AbortSignal.timeout(5_000));
+    if (!committed) throw new Error("evaluation failure terminalization lost compare-and-set");
     return {
-      evaluation: await this.#evaluations.get(evaluation.id, signal),
-      runs: completeResults,
-      aggregate,
-      completed: true,
+      evaluation: await this.#evaluations.get(evaluation.id, AbortSignal.timeout(5_000)),
+      runs: results,
+      aggregate: null,
+      completed: false,
     };
   }
 }

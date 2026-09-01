@@ -5,6 +5,7 @@ import {
   GradeResultV2Schema,
   RunStatusChangedEventAppendInputSchema,
   RunWarningSchema,
+  TERMINAL_FAILURE_SEMANTICS,
   buildAgentExecutionInputV2,
   createControlError,
   isBrowserProviderConcurrencyLimitError,
@@ -94,6 +95,18 @@ class ExpectedRunFailure extends Error {
   }
 }
 
+class SystemicRunError extends Error {
+  readonly phase: string;
+  constructor(phase: string, options: { cause?: unknown } = {}) {
+    super(`Durable run orchestration failed during ${phase}.`, options);
+    this.name = "SystemicRunError";
+    this.phase = phase;
+  }
+}
+
+const systemicRunError = (phase: string, error: unknown): SystemicRunError =>
+  error instanceof SystemicRunError ? error : new SystemicRunError(phase, { cause: error });
+
 const terminalFailure = (
   code: FailureRecord["code"],
   message: string,
@@ -105,29 +118,14 @@ const terminalFailure = (
     causeChain?: FailureRecord["causeChain"];
   } = {},
 ): ExpectedRunFailure => {
-  const semantics = {
-    assertion_failed: ["incorrect_state", "failed"],
-    assertion_unverifiable: ["grading", "inconclusive"],
-    unsafe_action_blocked: ["policy", "inconclusive"],
-    target_admission_failed: ["infrastructure", "inconclusive"],
-    budget_exhausted: ["timeout", "inconclusive"],
-    stale_element_exhausted: ["tool_error", "inconclusive"],
-    solari_unavailable: ["infrastructure", "inconclusive"],
-    target_unavailable: ["infrastructure", "inconclusive"],
-    target_evidence_lost: ["infrastructure", "inconclusive"],
-    provider_protocol_error: ["model_provider", "inconclusive"],
-    invalid_evidence: ["grading", "inconclusive"],
-    session_create_ambiguous: ["infrastructure", "inconclusive"],
-    session_release_unconfirmed: ["infrastructure", "inconclusive"],
-  } as const;
-  const [category, outcome] = semantics[code];
+  const semantics = TERMINAL_FAILURE_SEMANTICS[code];
   return new ExpectedRunFailure(FailureRecordSchema.parse({
     schemaVersion: 1,
-    category,
+    category: semantics.category,
     code,
     phase,
     retryable: options.retryable ?? false,
-    outcome,
+    outcome: semantics.outcome,
     message,
     fieldIssues: [],
     causeChain: options.causeChain ?? [],
@@ -166,41 +164,50 @@ export class FunctionalRunExecutor {
     let agentResult: AgentRunResult | null = null;
     let failure: FailureRecord | null = null;
     let potentialSessionLeak = false;
+    let executionPhase = "run_precondition";
+    let systemicFailure: SystemicRunError | null = null;
     const warnings: RunWarning[] = [];
     const startedAt = dependencies.clock.nowIso();
 
     const transition = async (nextStatus: Exclude<RunStatus, "completed" | "cancelled">, patch: Record<string, unknown>, transitionSignal: AbortSignal): Promise<void> => {
-      sequence += 1;
-      const result = await dependencies.transitions.transactionallyApply({
-        runId: run.id,
-        expectedStatus: currentStatus as Exclude<RunStatus, "completed" | "cancelled">,
-        nextStatus,
-        context: { mode: "normal", leaseDisposition: lease === null ? "none" : nextStatus === "releasing_browser" ? "may_exist" : "may_exist" },
-        patch,
-        event: RunStatusChangedEventAppendInputSchema.parse({
-          schemaVersion: 1,
-          eventId: dependencies.ids.eventId(),
-          evaluationId: run.evaluationId,
+      try {
+        sequence += 1;
+        const result = await dependencies.transitions.transactionallyApply({
           runId: run.id,
-          runSequence: sequence,
-          occurredAt: dependencies.clock.nowIso(),
-          type: "run.status_changed",
-          payload: { previous: currentStatus, next: nextStatus, mode: "normal" },
-        }),
-      }, transitionSignal);
-      if (!result.applied) throw new Error(`run transition lost compare-and-set: ${currentStatus} -> ${nextStatus}`);
-      currentStatus = nextStatus;
+          expectedStatus: currentStatus as Exclude<RunStatus, "completed" | "cancelled">,
+          nextStatus,
+          context: { mode: "normal", leaseDisposition: lease === null ? "none" : "may_exist" },
+          patch,
+          event: RunStatusChangedEventAppendInputSchema.parse({
+            schemaVersion: 1,
+            eventId: dependencies.ids.eventId(),
+            evaluationId: run.evaluationId,
+            runId: run.id,
+            runSequence: sequence,
+            occurredAt: dependencies.clock.nowIso(),
+            type: "run.status_changed",
+            payload: { previous: currentStatus, next: nextStatus, mode: "normal" },
+          }),
+        }, transitionSignal);
+        if (!result.applied) throw new Error("run transition lost compare-and-set");
+        currentStatus = nextStatus;
+      } catch (error) {
+        if (transitionSignal.aborted) throw error;
+        throw systemicRunError("run_transition", error);
+      }
     };
 
     try {
       if (run.status !== "queued") throw new Error("functional executor requires a queued run");
       await transition("acquiring_browser", { startedAt }, signal);
 
+      executionPhase = "target_admission";
       const admission = await dependencies.admission.assess(config.target, signal);
       if (admission.status === "rejected") {
         throw terminalFailure("target_admission_failed", admission.message, "target_admission");
       }
 
+      executionPhase = "browser_acquire";
       try {
         lease = await dependencies.browserProvider.acquire({
           evaluationId: run.evaluationId,
@@ -211,7 +218,12 @@ export class FunctionalRunExecutor {
         }, signal);
       } catch (error) {
         if (isBrowserProviderConcurrencyLimitError(error)) {
-          await dependencies.capacity.reduceAfterLimit(error.safe.retryAfterMs, signal);
+          try {
+            await dependencies.capacity.reduceAfterLimit(error.safe.retryAfterMs, signal);
+          } catch (capacityError) {
+            if (signal.aborted) throw capacityError;
+            throw systemicRunError("provider_capacity", capacityError);
+          }
           throw terminalFailure("solari_unavailable", "The provider declined this single create attempt because its concurrency limit was reached.", "browser_acquire");
         }
         if (isTraceGateError(error) && error.safe.code === "session_create_ambiguous") {
@@ -221,6 +233,7 @@ export class FunctionalRunExecutor {
       }
 
       acquiredAt = dependencies.clock.nowIso();
+      executionPhase = "browser_session_persist";
       await dependencies.browserSessions.upsert(BrowserSessionSummarySchema.parse({
         schemaVersion: 2,
         runId: run.id,
@@ -235,10 +248,13 @@ export class FunctionalRunExecutor {
       }), signal);
 
       await transition("connecting_browser", {}, signal);
+      executionPhase = "browser_connect";
       controller = await dependencies.controllerFactory.create(lease, signal);
       await controller.connect(lease, signal);
+      executionPhase = "navigation";
       const initialObservation = await controller.navigate(admission.target.startUrl, signal);
       await transition("discovering", {}, signal);
+      executionPhase = "discovery";
       const discovery = await dependencies.discovery.discover({
         runId: run.id,
         observation: initialObservation,
@@ -246,6 +262,7 @@ export class FunctionalRunExecutor {
         admittedTarget: admission.target,
       }, signal);
       await transition("running_agent", {}, signal);
+      executionPhase = "agent_setup";
       safeToolRuntime = await dependencies.safeToolFactory.create({
         controller,
         admittedTarget: admission.target,
@@ -255,13 +272,16 @@ export class FunctionalRunExecutor {
         configuredMcpEndpoints: config.configuredMcpEndpoints ?? [],
       }, signal);
       const surface = await safeToolRuntime.tools.surface(initialObservation.revision, signal);
+      executionPhase = "agent_execution";
       agentResult = await dependencies.agent.run(
         buildAgentExecutionInputV2(config, initialObservation, surface.tools),
         safeToolRuntime.tools,
         signal,
       );
       await transition("grading", {}, signal);
+      executionPhase = "assertion_capture";
       const captured = await dependencies.capture.capture(controller, { assertions: config.assertions }, signal);
+      executionPhase = "grading";
       grade = await dependencies.grader.grade({
         assertions: config.assertions,
         transient: captured.transient,
@@ -269,7 +289,9 @@ export class FunctionalRunExecutor {
       }, signal);
       failure = grade.failure;
     } catch (error) {
-      if (signal.aborted) {
+      if (error instanceof SystemicRunError) {
+        systemicFailure = error;
+      } else if (signal.aborted) {
         failure = null;
       } else if (error instanceof ExpectedRunFailure) {
         failure = error.failure;
@@ -278,30 +300,13 @@ export class FunctionalRunExecutor {
         const safeFailure = isTraceGateError(error)
           ? FailureRecordSchema.safeParse(error.safe)
           : null;
-        if (safeFailure?.success) {
-          failure = safeFailure.data;
-        } else {
-          const code = currentStatus === "running_agent"
-            ? "provider_protocol_error"
-            : currentStatus === "discovering" || currentStatus === "grading"
-              ? "target_evidence_lost"
-              : currentStatus === "connecting_browser"
-                ? "target_unavailable"
-                : "solari_unavailable";
-          const safeError = isTraceGateError(error) ? error.safe : null;
-          const failureOptions = safeError === null
-            ? {}
-            : {
-                retryable: "retryable" in safeError ? safeError.retryable : false,
-                causeChain: safeError.causeChain,
-              };
-          failure = terminalFailure(
-            code,
-            safeError?.message ?? "Run execution stopped before trustworthy browser evidence was available.",
-            safeError?.phase ?? currentStatus,
-            failureOptions,
-          ).failure;
-        }
+        failure = safeFailure?.success
+          ? safeFailure.data
+          : terminalFailure(
+              "unexpected_run_error",
+              "Run execution stopped unexpectedly before a trustworthy outcome was established.",
+              executionPhase,
+            ).failure;
       }
     } finally {
       if (lease !== null) {
@@ -309,7 +314,7 @@ export class FunctionalRunExecutor {
           try {
             await transition("releasing_browser", { releaseStatus: "releasing", potentialSessionLeak }, AbortSignal.timeout(15_000));
           } catch (error) {
-            warnings.push(warning("cleanup_failed", "run_transition", error instanceof Error ? error.message : "Could not enter cleanup state.", true));
+            systemicFailure ??= systemicRunError("run_transition", error);
           }
         }
         if (safeToolRuntime !== null) {
@@ -337,37 +342,88 @@ export class FunctionalRunExecutor {
           };
         }
         if (release.warning !== null) warnings.push(release.warning);
-        await dependencies.browserSessions.upsert(BrowserSessionSummarySchema.parse({
-          schemaVersion: 2,
-          runId: run.id,
-          providerSessionId: lease.providerSessionId,
-          region: lease.region,
-          acquiredAt: acquiredAt ?? startedAt,
-          releasedAt: release.releasedAt,
-          releaseStatus: release.status,
-          releaseConfirmed: release.confirmation === "confirmed_released",
-          replayStatus: config.recordingRequested ? "pending" : "not_requested",
-          recordingRequested: config.recordingRequested,
-        }), AbortSignal.timeout(15_000));
+        try {
+          await dependencies.browserSessions.upsert(BrowserSessionSummarySchema.parse({
+            schemaVersion: 2,
+            runId: run.id,
+            providerSessionId: lease.providerSessionId,
+            region: lease.region,
+            acquiredAt: acquiredAt ?? startedAt,
+            releasedAt: release.releasedAt,
+            releaseStatus: release.status,
+            releaseConfirmed: release.confirmation === "confirmed_released",
+            replayStatus: config.recordingRequested ? "pending" : "not_requested",
+            recordingRequested: config.recordingRequested,
+          }), AbortSignal.timeout(15_000));
+        } catch (error) {
+          systemicFailure ??= systemicRunError("browser_session_persist", error);
+        }
       }
     }
 
+    if (systemicFailure !== null) throw systemicFailure;
+
+    if (lease !== null && release?.confirmation !== "confirmed_released") {
+      throw systemicRunError("browser_release", new Error("acknowledged browser session release was not confirmed"));
+    }
+
     if (signal.aborted) {
-      if (lease !== null && release?.confirmation !== "confirmed_released") {
-        const cleanupFailure = terminalFailure("session_release_unconfirmed", "The acknowledged Solari session release was not confirmed after cancellation.", "browser_release").failure;
-        return { run: await dependencies.runs.get(run.id, AbortSignal.timeout(5_000)), terminalized: false, release, failure: cleanupFailure, warnings };
+      try {
+        const reason = createControlError("user_requested", "The evaluation was cancelled.", { category: "cancellation", phase: "evaluation_execution" });
+        sequence += 1;
+        const cancelled = await dependencies.runs.transactionallyCancel({
+          runId: run.id,
+          expectedStatus: currentStatus as Exclude<RunStatus, "completed" | "cancelled">,
+          context: { mode: "normal", leaseDisposition: lease === null ? "none" : "released" },
+          reason,
+          finishedAt: dependencies.clock.nowIso(),
+          releaseStatus: lease === null ? "not_started" : "released",
+          warnings,
+          potentialSessionLeak,
+          event: EventAppendInputSchema.parse({
+            schemaVersion: 1,
+            eventId: dependencies.ids.eventId(),
+            evaluationId: run.evaluationId,
+            runId: run.id,
+            runSequence: sequence,
+            occurredAt: dependencies.clock.nowIso(),
+            type: "run.cancelled",
+            payload: { reason },
+          }),
+        }, AbortSignal.timeout(5_000));
+        if (!cancelled.applied || cancelled.run === null) throw new Error("run cancellation lost compare-and-set");
+        return { run: cancelled.run, terminalized: true, release, failure: null, warnings };
+      } catch (error) {
+        throw systemicRunError("run_cancellation", error);
       }
-      const reason = createControlError("user_requested", "The evaluation was cancelled.", { category: "cancellation", phase: "evaluation_execution" });
-      sequence += 1;
-      const cancelled = await dependencies.runs.transactionallyCancel({
+    }
+
+    if (failure !== null && grade === null) grade = this.#inconclusiveGrade(config, failure);
+    if (grade === null) throw systemicRunError("run_finalization", new Error("run completed execution without a grade"));
+    failure = grade.failure;
+    const leaseDisposition = lease === null ? "none" : "released";
+    sequence += 1;
+    try {
+      const result = await dependencies.runs.transactionallyFinalize({
         runId: run.id,
         expectedStatus: currentStatus as Exclude<RunStatus, "completed" | "cancelled">,
-        context: { mode: "normal", leaseDisposition: lease === null ? "none" : "released" },
-        reason,
-        finishedAt: dependencies.clock.nowIso(),
-        releaseStatus: lease === null ? "not_started" : "released",
+        context: { mode: "normal", leaseDisposition },
+        outcome: grade.outcome,
+        grade,
+        failure,
         warnings,
-        potentialSessionLeak,
+        finishedAt: dependencies.clock.nowIso(),
+        resultPatch: {
+          resolvedProvider: agentResult?.resolvedProvider ?? null,
+          iterations: agentResult?.iterations ?? 0,
+          toolCalls: agentResult?.toolCalls ?? 0,
+          browserActions: agentResult?.browserActions ?? 0,
+          interfaceUsage: agentResult?.interfaceUsage,
+          usage: agentResult?.usage ?? { promptTokens: null, completionTokens: null, totalTokens: null },
+          releaseStatus: lease === null ? "not_started" : "released",
+          replayStatus: config.recordingRequested ? "pending" : "not_requested",
+          potentialSessionLeak,
+        },
         event: EventAppendInputSchema.parse({
           schemaVersion: 1,
           eventId: dependencies.ids.eventId(),
@@ -375,53 +431,15 @@ export class FunctionalRunExecutor {
           runId: run.id,
           runSequence: sequence,
           occurredAt: dependencies.clock.nowIso(),
-          type: "run.cancelled",
-          payload: { reason },
+          type: `run.${grade.outcome}`,
+          payload: grade.outcome === "passed" ? { outcome: "passed" } : { outcome: grade.outcome, failure },
         }),
       }, AbortSignal.timeout(5_000));
-      return { run: cancelled.run, terminalized: cancelled.applied, release, failure: null, warnings };
+      if (!result.applied || result.run === null) throw new Error("run finalization lost compare-and-set");
+      return { run: result.run, terminalized: true, release, failure: result.run.failure, warnings };
+    } catch (error) {
+      throw systemicRunError("run_finalization", error);
     }
-    if (lease !== null && release?.confirmation !== "confirmed_released") {
-      const cleanupFailure = terminalFailure("session_release_unconfirmed", "The acknowledged Solari session release was not confirmed.", "browser_release").failure;
-      return { run: await dependencies.runs.get(run.id, AbortSignal.timeout(5_000)), terminalized: false, release, failure: cleanupFailure, warnings };
-    }
-    if (failure !== null && grade === null) grade = this.#inconclusiveGrade(config, failure);
-    if (grade === null) throw new Error("run completed execution without a grade");
-    failure = grade.failure;
-    const leaseDisposition = lease === null ? "none" : "released";
-    sequence += 1;
-    const result = await dependencies.runs.transactionallyFinalize({
-      runId: run.id,
-      expectedStatus: currentStatus as Exclude<RunStatus, "completed" | "cancelled">,
-      context: { mode: "normal", leaseDisposition },
-      outcome: grade.outcome,
-      grade,
-      failure,
-      warnings,
-      finishedAt: dependencies.clock.nowIso(),
-      resultPatch: {
-        resolvedProvider: agentResult?.resolvedProvider ?? null,
-        iterations: agentResult?.iterations ?? 0,
-        toolCalls: agentResult?.toolCalls ?? 0,
-        browserActions: agentResult?.browserActions ?? 0,
-        interfaceUsage: agentResult?.interfaceUsage,
-        usage: agentResult?.usage ?? { promptTokens: null, completionTokens: null, totalTokens: null },
-        releaseStatus: lease === null ? "not_started" : "released",
-        replayStatus: config.recordingRequested ? "pending" : "not_requested",
-        potentialSessionLeak,
-      },
-      event: EventAppendInputSchema.parse({
-        schemaVersion: 1,
-        eventId: dependencies.ids.eventId(),
-        evaluationId: run.evaluationId,
-        runId: run.id,
-        runSequence: sequence,
-        occurredAt: dependencies.clock.nowIso(),
-        type: `run.${grade.outcome}`,
-        payload: grade.outcome === "passed" ? { outcome: "passed" } : { outcome: grade.outcome, failure },
-      }),
-    }, signal);
-    return { run: result.run, terminalized: result.applied, release, failure, warnings };
   }
 
   #inconclusiveGrade(config: PublicEvaluationConfigV2, failure: FailureRecord): GradeResultV2 {

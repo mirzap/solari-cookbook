@@ -33,6 +33,7 @@ export const TerminalFailureCodeSchema = z.enum([
   "invalid_evidence",
   "session_create_ambiguous",
   "session_release_unconfirmed",
+  "unexpected_run_error",
 ]);
 
 export const WarningCodeSchema = z.enum([
@@ -92,6 +93,7 @@ export const TERMINAL_FAILURE_SEMANTICS = {
   invalid_evidence: { category: "grading", outcome: "inconclusive" },
   session_create_ambiguous: { category: "infrastructure", outcome: "inconclusive" },
   session_release_unconfirmed: { category: "infrastructure", outcome: "inconclusive" },
+  unexpected_run_error: { category: "unknown", outcome: "inconclusive" },
 } as const;
 
 export const FailureRecordSchema = safeErrorBase.extend({
