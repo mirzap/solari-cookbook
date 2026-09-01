@@ -8,7 +8,10 @@ Paths are relative to `examples/tracegate/`.
 - Product boundary: local generic-site functional proof of concept.
 - Generic V2 shared contracts: TG-004R PASS at `89e2c93`.
 - Pivot/rebaseline record: `docs/evidence/generic-site-pivot.md`.
-- B/C/D application WIP and `pnpm-lock.yaml` remain dirty/quarantined until reviewed lane by lane.
+- F1/F2 lane history is integrated through B commit `2756d20`, including A `04eb4e8`, C `fdc7e7e`, and D `66069ae`.
+- The sole pnpm 12 lockfile has been regenerated from all settled manifests; frozen install passes.
+- Compilation, DB, and implemented functional suites pass, but the D-owned `@tracegate/ui` configured test currently reports zero tests and must be corrected before the checkpoint is called fully green.
+- F3 real Solari plus DeepSeek composition has not started and must not be inferred from fake-port or lane-local evidence.
 - Demo Store is test-only and never a production target, composition, or grading dependency.
 - PASS means declared browser-observable assertions passed from fresh evidence; it never claims arbitrary backend business truth.
 
@@ -99,4 +102,4 @@ Never:
 - rewrite measured evidence to improve a result;
 - persist credentials, CDP/replay capability URLs, full DOM, or raw provider payloads.
 
-The immediate next implementation action is lane-local integration of quarantined WIP against TG-004R.
+The immediate next action is to correct the zero-test UI suite, rerun the integration checkpoint, and only then begin an explicitly credentialed F3 composed Solari plus DeepSeek run.

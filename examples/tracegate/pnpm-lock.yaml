@@ -199,12 +199,18 @@ importers:
       '@tracegate/shared':
         specifier: workspace:*
         version: link:../../packages/shared
+      '@tracegate/ui':
+        specifier: workspace:*
+        version: link:../../packages/ui
       react:
         specifier: 19.2.8
         version: 19.2.8
       react-dom:
         specifier: 19.2.8
         version: 19.2.8(react@19.2.8)
+      zod:
+        specifier: 4.5.4
+        version: 4.5.4
     devDependencies:
       '@types/node':
         specifier: 26.4.0
@@ -225,6 +231,25 @@ importers:
         specifier: 8.2.2
         version: 8.2.2(@types/node@26.4.0)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.13)
 
+  packages/agent:
+    dependencies:
+      '@tracegate/shared':
+        specifier: workspace:*
+        version: link:../shared
+      zod:
+        specifier: 4.5.4
+        version: 4.5.4
+    devDependencies:
+      '@types/node':
+        specifier: 26.4.0
+        version: 26.4.0
+      tsx:
+        specifier: 4.23.13
+        version: 4.23.13
+      typescript:
+        specifier: 7.0.2
+        version: 7.0.2
+
   packages/ai:
     dependencies:
       '@tanstack/ai':
@@ -233,6 +258,12 @@ importers:
       '@tanstack/ai-openrouter':
         specifier: 0.19.5
         version: 0.19.5(@tanstack/ai@0.52.0(zod@4.5.4))
+      '@tracegate/agent':
+        specifier: workspace:*
+        version: link:../agent
+      '@tracegate/shared':
+        specifier: workspace:*
+        version: link:../shared
       zod:
         specifier: 4.5.4
         version: 4.5.4
@@ -262,6 +293,48 @@ importers:
       '@types/node':
         specifier: 26.4.0
         version: 26.4.0
+      drizzle-kit:
+        specifier: 0.31.10
+        version: 0.31.10
+      typescript:
+        specifier: 7.0.2
+        version: 7.0.2
+
+  packages/discovery:
+    dependencies:
+      '@tracegate/shared':
+        specifier: workspace:*
+        version: link:../shared
+    devDependencies:
+      '@types/node':
+        specifier: 26.4.0
+        version: 26.4.0
+      typescript:
+        specifier: 7.0.2
+        version: 7.0.2
+
+  packages/evaluation:
+    dependencies:
+      '@tracegate/shared':
+        specifier: workspace:*
+        version: link:../shared
+    devDependencies:
+      '@types/node':
+        specifier: 26.4.0
+        version: 26.4.0
+      typescript:
+        specifier: 7.0.2
+        version: 7.0.2
+
+  packages/grading:
+    dependencies:
+      '@tracegate/shared':
+        specifier: workspace:*
+        version: link:../shared
+    devDependencies:
+      '@types/node':
+        specifier: 26.4.0
+        version: 26.4.0
       typescript:
         specifier: 7.0.2
         version: 7.0.2
@@ -284,12 +357,44 @@ importers:
       '@solarisdk/browser':
         specifier: 0.1.2
         version: 0.1.2
-      '@solarisdk/sdk':
-        specifier: 0.1.2
-        version: 0.1.2
+      '@tracegate/shared':
+        specifier: workspace:*
+        version: link:../shared
       playwright-core:
         specifier: 1.62.1
         version: 1.62.1
+    devDependencies:
+      '@types/node':
+        specifier: 26.4.0
+        version: 26.4.0
+      typescript:
+        specifier: 7.0.2
+        version: 7.0.2
+
+  packages/ui:
+    dependencies:
+      react:
+        specifier: 19.2.8
+        version: 19.2.8
+    devDependencies:
+      '@types/react':
+        specifier: 19.2.18
+        version: 19.2.18
+      typescript:
+        specifier: 7.0.2
+        version: 7.0.2
+
+  tests/e2e:
+    dependencies:
+      '@tracegate/evaluation':
+        specifier: workspace:*
+        version: link:../../packages/evaluation
+      '@tracegate/grading':
+        specifier: workspace:*
+        version: link:../../packages/grading
+      '@tracegate/shared':
+        specifier: workspace:*
+        version: link:../../packages/shared
     devDependencies:
       '@types/node':
         specifier: 26.4.0

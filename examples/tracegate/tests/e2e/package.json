@@ -8,6 +8,7 @@
     "lint": "tsc -p tsconfig.json --noEmit",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "node --test *.test.ts",
+    "test:integration": "node --test functional-fakes.test.ts",
     "test:e2e:local": "node --test functional-fakes.test.ts"
   },
   "dependencies": {
