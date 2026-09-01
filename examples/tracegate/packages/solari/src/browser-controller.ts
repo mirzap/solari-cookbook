@@ -57,6 +57,10 @@ const MAX_INTERNAL_DEADLINE_HEADROOM_MS = 2_000
 const MIN_INTERNAL_DEADLINE_HEADROOM_MS = 250
 const MAX_DOM_CONTENT_LOADED_GRACE_MS = 1_000
 const MAX_DOCUMENT_QUIET_INTERVAL_MS = 150
+const MAX_SEMANTIC_CANDIDATES = 100
+const MAX_ELEMENT_ROLE_CHARACTERS = 100
+const MAX_ELEMENT_FIELD_CHARACTERS = 500
+const MAX_VISIBLE_TEXT_CHARACTERS = 20_000
 
 const ALLOWED_KEYS = new Set([
   "Escape",
@@ -84,6 +88,23 @@ interface RegistryEntry {
   readonly locator: Locator
   readonly identity: Pick<ElementSnapshot, "tag" | "role" | "name">
   readonly snapshot: ElementSnapshot
+}
+
+interface InPageSemanticElement {
+  readonly sourceIndex: number
+  readonly snapshot: ElementSnapshot
+}
+
+interface InPageSemanticSnapshot {
+  readonly url: string
+  readonly title: string
+  readonly titleTruncated: boolean
+  readonly bodyText: string
+  readonly bodyTextTruncated: boolean
+  readonly bodyTextReadFailed: boolean
+  readonly totalCount: number
+  readonly elementReadFailed: boolean
+  readonly elements: readonly InPageSemanticElement[]
 }
 
 export interface CurrentPageDiscoverySnapshot {
@@ -321,7 +342,8 @@ async function readElement(locator: Locator): Promise<ElementSnapshot> {
     const input = element instanceof HTMLInputElement ? element : null
     const select = element instanceof HTMLSelectElement ? element : null
     const option = element instanceof HTMLOptionElement ? element : null
-    const explicitRole = element.getAttribute("role")?.trim()
+    const rawExplicitRole = element.getAttribute("role")?.trim()
+    const explicitRole = rawExplicitRole?.slice(0, MAX_ELEMENT_ROLE_CHARACTERS)
     const inferredRole =
       tag === "a"
         ? "link"
@@ -368,7 +390,9 @@ async function readElement(locator: Locator): Promise<ElementSnapshot> {
       element.textContent ??
       ""
     const normalizedName = name.replace(/\s+/g, " ").trim()
-    let truncated = normalizedName.length > 500
+    let truncated =
+      normalizedName.length > MAX_ELEMENT_FIELD_CHARACTERS ||
+      (rawExplicitRole?.length ?? 0) > MAX_ELEMENT_ROLE_CHARACTERS
     const attributes: Record<string, string> = {}
     for (const attribute of ["name", "placeholder", "autocomplete", "href", "target"] as const) {
       const value = element.getAttribute(attribute)
@@ -634,11 +658,195 @@ export class SolariCdpBrowserController implements BrowserController {
     const revision = ObservationRevisionSchema.parse(this.#revision)
     this.#registry.clear()
 
-    const url = page.url()
-    const rawTitle = await page.title()
-    const title = rawTitle.slice(0, 500)
+    const controls = page.locator(SEMANTIC_SELECTOR)
+    const collection = controls.evaluateAll(
+      (nodes, limits): InPageSemanticSnapshot => {
+        const isVisibleTextNode = (node: Text): boolean => {
+          const range = document.createRange()
+          range.selectNode(node)
+          const rect = range.getBoundingClientRect()
+          return rect.width > 0 && rect.height > 0
+        }
+        const isVisible = (element: Element): boolean => {
+          const style = getComputedStyle(element)
+          if (style.display === "contents") {
+            for (const child of element.childNodes) {
+              if (child.nodeType === Node.ELEMENT_NODE && isVisible(child as Element)) return true
+              if (child.nodeType === Node.TEXT_NODE && isVisibleTextNode(child as Text)) return true
+            }
+            return false
+          }
+          if (typeof element.checkVisibility === "function" && !element.checkVisibility()) return false
+          if (style.visibility !== "visible") return false
+          const rect = element.getBoundingClientRect()
+          return rect.width > 0 && rect.height > 0
+        }
+        const readSnapshot = (node: Element): ElementSnapshot => {
+          const element = node as HTMLElement
+          const tag = element.tagName.toLowerCase()
+          const input = element instanceof HTMLInputElement ? element : null
+          const select = element instanceof HTMLSelectElement ? element : null
+          const option = element instanceof HTMLOptionElement ? element : null
+          const rawExplicitRole = element.getAttribute("role")?.trim()
+          const explicitRole = rawExplicitRole?.slice(0, limits.maximumElementRoleCharacters)
+          const inferredRole =
+            tag === "a"
+              ? "link"
+              : tag === "button"
+                ? "button"
+                : tag === "select"
+                  ? "combobox"
+                  : tag === "textarea"
+                    ? "textbox"
+                    : tag === "option"
+                      ? "option"
+                      : /^h[1-6]$/.test(tag)
+                        ? "heading"
+                        : tag === "main"
+                          ? "main"
+                          : tag === "nav"
+                            ? "navigation"
+                            : tag === "article"
+                              ? "article"
+                              : tag === "li"
+                                ? "listitem"
+                                : tag === "img"
+                                  ? "img"
+                                  : input?.type === "checkbox"
+                                    ? "checkbox"
+                                    : input?.type === "radio"
+                                      ? "radio"
+                                      : input?.type === "submit"
+                                        ? "button"
+                                        : tag === "input" || element.isContentEditable
+                                          ? "textbox"
+                                          : "control"
+          const labelText =
+            input?.labels?.[0]?.textContent ??
+            select?.labels?.[0]?.textContent ??
+            (element instanceof HTMLTextAreaElement ? element.labels?.[0]?.textContent : null)
+          const name =
+            element.getAttribute("aria-label") ??
+            labelText ??
+            element.getAttribute("alt") ??
+            element.getAttribute("title") ??
+            (input?.type === "submit" ? input.value : null) ??
+            element.innerText ??
+            element.textContent ??
+            ""
+          const normalizedName = name.replace(/\s+/g, " ").trim()
+          let truncated =
+            normalizedName.length > limits.maximumElementFieldCharacters ||
+            (rawExplicitRole?.length ?? 0) > limits.maximumElementRoleCharacters
+          const attributes: Record<string, string> = {}
+          for (const attribute of ["name", "placeholder", "autocomplete", "href", "target"] as const) {
+            const value = element.getAttribute(attribute)
+            if (value) {
+              if (value.length > limits.maximumElementFieldCharacters) truncated = true
+              attributes[attribute] = value.slice(0, limits.maximumElementFieldCharacters)
+            }
+          }
+          if (input) attributes.type = input.type.toLowerCase()
+          if (element instanceof HTMLButtonElement) attributes.type = element.type.toLowerCase()
+          if (element instanceof HTMLAnchorElement && element.hasAttribute("download")) {
+            attributes.download = "true"
+          }
+          if (input?.form) {
+            attributes.formmethod = (input.formMethod || input.form.method).toLowerCase()
+          }
+          if (element instanceof HTMLButtonElement && element.form) {
+            attributes.formmethod = (element.formMethod || element.form.method).toLowerCase()
+          }
+          if (input && !["password", "file", "email", "tel"].includes(input.type)) {
+            if (input.value.length > limits.maximumElementFieldCharacters) truncated = true
+            attributes.value = input.value.slice(0, limits.maximumElementFieldCharacters)
+          } else if (select) {
+            if (select.value.length > limits.maximumElementFieldCharacters) truncated = true
+            attributes.value = select.value.slice(0, limits.maximumElementFieldCharacters)
+          } else if (element instanceof HTMLTextAreaElement) {
+            if (element.value.length > limits.maximumElementFieldCharacters) truncated = true
+            attributes.value = element.value.slice(0, limits.maximumElementFieldCharacters)
+          }
+          return {
+            tag,
+            role: explicitRole || inferredRole,
+            name: normalizedName.slice(0, limits.maximumElementFieldCharacters),
+            disabled: "disabled" in element ? Boolean((element as HTMLButtonElement).disabled) : null,
+            checked:
+              input && ["checkbox", "radio"].includes(input.type)
+                ? input.checked
+                : element.getAttribute("aria-checked") === null
+                  ? null
+                  : element.getAttribute("aria-checked") === "true",
+            selected:
+              option
+                ? option.selected
+                : element.getAttribute("aria-selected") === null
+                  ? null
+                  : element.getAttribute("aria-selected") === "true",
+            expanded:
+              element.getAttribute("aria-expanded") === null
+                ? null
+                : element.getAttribute("aria-expanded") === "true",
+            attributes,
+            truncated,
+          }
+        }
+
+        const semanticElements: InPageSemanticElement[] = []
+        let elementReadFailed = false
+        const candidateCount = Math.min(nodes.length, limits.maximumCandidates)
+        for (let sourceIndex = 0; sourceIndex < candidateCount; sourceIndex += 1) {
+          const node = nodes[sourceIndex]
+          if (!node) continue
+          try {
+            if (!isVisible(node)) continue
+            semanticElements.push({ sourceIndex, snapshot: readSnapshot(node) })
+          } catch {
+            elementReadFailed = true
+          }
+        }
+        const title = document.title
+        let bodyText = ""
+        let bodyTextReadFailed = false
+        try {
+          bodyText = (document.body?.innerText ?? "").replace(/\s+/g, " ").trim()
+        } catch {
+          bodyTextReadFailed = true
+        }
+        return {
+          url: location.href,
+          title: title.slice(0, limits.maximumElementFieldCharacters),
+          titleTruncated: title.length > limits.maximumElementFieldCharacters,
+          bodyText: bodyText.slice(0, limits.maximumVisibleTextCharacters + 1),
+          bodyTextTruncated: bodyText.length > limits.maximumVisibleTextCharacters,
+          bodyTextReadFailed,
+          totalCount: nodes.length,
+          elementReadFailed,
+          elements: semanticElements,
+        }
+      },
+      {
+        maximumCandidates: MAX_SEMANTIC_CANDIDATES,
+        maximumElementRoleCharacters: MAX_ELEMENT_ROLE_CHARACTERS,
+        maximumElementFieldCharacters: MAX_ELEMENT_FIELD_CHARACTERS,
+        maximumVisibleTextCharacters: MAX_VISIBLE_TEXT_CHARACTERS,
+      },
+    )
+    const collected = await raceWithAbort(collection, signal)
+    const url = collected.url
+    const snapshotUrl = new URL(url)
+    if (snapshotUrl.protocol !== "https:" || !this.#allowedOrigins.has(snapshotUrl.origin)) {
+      throw blockedByPolicy("origin_not_admitted", "Page left the declared navigation origins")
+    }
+    const title = collected.title
     const elements: CompactElement[] = []
-    let truncated = rawTitle.length > 500
+    let truncated =
+      collected.titleTruncated ||
+      collected.bodyTextTruncated ||
+      collected.bodyTextReadFailed ||
+      collected.totalCount > MAX_SEMANTIC_CANDIDATES ||
+      collected.elementReadFailed
     const envelope = (visibleText: string, candidateElements: readonly CompactElement[]) => ({
       schemaVersion: 2 as const,
       trust: "untrusted_page_content" as const,
@@ -654,15 +862,7 @@ export class SolariCdpBrowserController implements BrowserController {
       throw new Error("Observation envelope exceeds the configured byte budget")
     }
 
-    const controls = page.locator(SEMANTIC_SELECTOR)
-    const totalCount = await controls.count()
-    const count = Math.min(totalCount, 100)
-    truncated = totalCount > count
-    for (let index = 0; index < count; index += 1) {
-      const locator = controls.nth(index)
-      if (!(await locator.isVisible().catch(() => false))) continue
-      const snapshot = await readElement(locator).catch(() => null)
-      if (!snapshot) continue
+    for (const { sourceIndex, snapshot } of collected.elements) {
       if (snapshot.truncated) truncated = true
       const ref = `e:${revision}:${elements.length}`
       const element: CompactElement = {
@@ -684,21 +884,14 @@ export class SolariCdpBrowserController implements BrowserController {
       this.#registry.set(ref, {
         ref,
         revision,
-        locator,
+        locator: controls.nth(sourceIndex),
         identity: { tag: snapshot.tag, role: snapshot.role, name: snapshot.name },
         snapshot,
       })
     }
 
-    const boundedBodyText = await page.locator("body").evaluate(
-      (node, maximumCharacters) =>
-        ((node as HTMLElement).innerText ?? "")
-          .replace(/\s+/g, " ")
-          .trim()
-          .slice(0, maximumCharacters),
-      20_001,
-    ).catch(() => "")
-    const bodyText = boundedBodyText.slice(0, 20_000)
+    const boundedBodyText = collected.bodyText
+    const bodyText = boundedBodyText.slice(0, MAX_VISIBLE_TEXT_CHARACTERS)
     if (bodyText !== boundedBodyText) truncated = true
     const bodyBytes = Buffer.byteLength(bodyText, "utf8")
     let low = 0
@@ -722,6 +915,7 @@ export class SolariCdpBrowserController implements BrowserController {
     }
     throwIfAborted(signal)
     if (this.#documentSequence !== documentSequence) throw staleElement("Document changed during observation")
+    this.#assertCurrentOrigin()
     this.#throwIfFatalPolicyViolation()
     this.#observedDocumentSequence = documentSequence
     return observation
