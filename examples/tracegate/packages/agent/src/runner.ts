@@ -82,6 +82,7 @@ export class TraceGateAgentRunner implements AgentRunner {
         const compacted = history.compact();
         await emitMilestone(this.#sink, { type: "run.agent.iteration", payload: { iteration, summary: "model turn started", historyBytes: compacted.historyBytes } });
         const turn = await awaitWithAbort(driver.runTurn({ messages: compacted.messages, toolSurface: surface, executor, signal }), signal);
+        executor.assertTargetEvidenceAvailable();
         if (!turn.resolvedProvider.trim()) throw terminalError("provider_protocol_error", "Resolved provider is missing", "agent.model");
         if (resolvedProvider && resolvedProvider !== turn.resolvedProvider) throw terminalError("provider_protocol_error", "Provider changed during a run", "agent.model");
         resolvedProvider = turn.resolvedProvider;
@@ -106,6 +107,7 @@ export class TraceGateAgentRunner implements AgentRunner {
     } catch (error) {
       if (externalSignal.aborted) throw abortedError("agent.run");
       if (wall.signal.aborted) throw terminalError("budget_exhausted", "Wall-clock budget exhausted", "agent.run", { cause: error });
+      executor.assertTargetEvidenceAvailable();
       throw error;
     } finally {
       clearTimeout(timer);

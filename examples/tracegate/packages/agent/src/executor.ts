@@ -51,7 +51,7 @@ export class SerializedSafeToolExecutor implements AgentToolExecutor {
   #observation: UntrustedAgentObservation;
   #surface: SafeAgentToolSurface | null = null;
   #finished: { completed: boolean; summary: string } | null = null;
-  #terminalUncertainty = false;
+  #terminalUncertainty: ReturnType<typeof terminalError> | null = null;
 
   constructor(input: {
     tools: SafeAgentToolPort;
@@ -75,7 +75,12 @@ export class SerializedSafeToolExecutor implements AgentToolExecutor {
   get observation(): UntrustedAgentObservation { return this.#observation; }
   get finishBelief(): { completed: boolean; summary: string } | null { return this.#finished; }
 
+  assertTargetEvidenceAvailable(): void {
+    if (this.#terminalUncertainty) throw this.#terminalUncertainty;
+  }
+
   async refreshSurface(signal: AbortSignal): Promise<SafeAgentToolSurface> {
+    this.assertTargetEvidenceAvailable();
     const linked = AbortSignal.any([this.#signal, signal]);
     let surface: SafeAgentToolSurface;
     try {
@@ -95,7 +100,7 @@ export class SerializedSafeToolExecutor implements AgentToolExecutor {
   }
 
   admit(providerCallId: string, toolNameInput: string, rawArguments: string): ToolAdmission {
-    if (this.#terminalUncertainty) throw terminalError("target_evidence_lost", "A prior timed-out tool left browser state uncertain", "agent.tool");
+    this.assertTargetEvidenceAvailable();
     if (this.#admissions.has(providerCallId)) throw terminalError("provider_protocol_error", "Duplicate provider tool-call identifier", "agent.tool");
     if (Buffer.byteLength(rawArguments, "utf8") > 8_192) throw terminalError("provider_protocol_error", "Tool arguments exceed protocol bound", "agent.tool");
     const surface = this.#surface;
@@ -139,7 +144,7 @@ export class SerializedSafeToolExecutor implements AgentToolExecutor {
     const admission = this.#requireAdmission(providerCallId);
     if (this.#completed.has(providerCallId)) throw terminalError("provider_protocol_error", "Tool call was already completed", "agent.tool");
     const run = async () => {
-      if (this.#terminalUncertainty) throw terminalError("target_evidence_lost", "A prior timed-out tool left browser state uncertain", "agent.tool");
+      this.assertTargetEvidenceAvailable();
       const parent = AbortSignal.any([this.#signal, providerSignal]);
       try {
         return await this.#ledger.withToolTimeout(
@@ -147,11 +152,12 @@ export class SerializedSafeToolExecutor implements AgentToolExecutor {
           parent,
         );
       } catch (error) {
-        if (isTraceGateError(error) && error.safe.code === "budget_exhausted" && error.safe.phase === "agent.tool") {
-          this.#terminalUncertainty = true;
-        }
-        await this.failAdmitted(admission.providerCallId, error);
-        throw error;
+        const failure = MUTATING_ACTIONS.has(admission.toolName) && isTraceGateError(error) &&
+            error.safe.code === "budget_exhausted" && error.safe.phase === "agent.tool"
+          ? this.#loseTargetEvidence(error)
+          : error;
+        await this.failAdmitted(admission.providerCallId, failure);
+        throw failure;
       }
     };
     const result = this.#tail.then(run, run);
@@ -222,13 +228,21 @@ export class SerializedSafeToolExecutor implements AgentToolExecutor {
     } catch (error) {
       await this.failAdmitted(admission.providerCallId, error);
       if (dispatched && MUTATING_ACTIONS.has(action.kind)) {
-        this.#terminalUncertainty = true;
-        if (isTraceGateError(error) && (error.safe.code === "operation_aborted" || error.safe.code === "target_evidence_lost")) throw error;
-        throw terminalError("target_evidence_lost", "State-changing tool failed without trustworthy fresh evidence", "agent.tool", { cause: error });
+        const failure = this.#loseTargetEvidence(error);
+        if (isTraceGateError(error) && error.safe.code === "operation_aborted") throw error;
+        throw failure;
       }
       if (isTraceGateError(error)) throw error;
       return JSON.stringify({ schemaVersion: 2, trust: "untrusted_page_or_tool_content", kind: "safe_tool_error", error: "Safe tool failed or returned an invalid bounded result" });
     }
+  }
+
+  #loseTargetEvidence(cause: unknown): ReturnType<typeof terminalError> {
+    if (this.#terminalUncertainty) return this.#terminalUncertainty;
+    this.#terminalUncertainty = isTraceGateError(cause) && cause.safe.code === "target_evidence_lost"
+      ? cause
+      : terminalError("target_evidence_lost", "State-changing tool failed without trustworthy fresh evidence", "agent.tool", { cause });
+    return this.#terminalUncertainty;
   }
 
   #requireAdmission(providerCallId: string): Admission {
