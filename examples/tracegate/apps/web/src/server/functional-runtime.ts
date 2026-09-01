@@ -614,11 +614,14 @@ class RuntimeSafeTools implements SafeAgentToolPort {
       } else if (action.kind === "click") {
         const element = this.#observation.elements.find((item) => item.ref === action.ref);
         if (element === undefined) throw blockedByPolicy("stale_observation", "The selected control is no longer observable");
-        if (element.attributes.href) throw blockedByPolicy("unknown_effect", "Link activation is not an admitted reversible control action");
         const unsafe = obviousUnsafeControl({ tag: element.role, role: element.role, name: element.name, disabled: element.disabled, attributes: element.attributes });
         if (unsafe !== null) throw blockedByPolicy(unsafe, "The selected control is outside the public reversible task boundary");
         observation = await this.controller.click(action, signal);
-        effect = element.role === "checkbox" || element.role === "radio" ? "local_filter_select" : "disclosure_toggle";
+        effect = element.attributes.href
+          ? "admitted_get_navigation"
+          : element.role === "checkbox" || element.role === "radio"
+            ? "local_filter_select"
+            : "disclosure_toggle";
       } else if (action.kind === "type") {
         const element = this.#observation.elements.find((item) => item.ref === action.ref);
         if (element === undefined) throw blockedByPolicy("stale_observation", "The selected field is no longer observable");
