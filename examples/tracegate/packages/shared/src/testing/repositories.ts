@@ -3,6 +3,8 @@ import type { Evaluation, Run } from "../entities.ts";
 import { EventAppendInputSchema, EventEnvelopeSchema, type EventAppendInput, type EventEnvelope } from "../events.ts";
 import type {
   Clock,
+  CancelRunInput,
+  CancelRunResult,
   EvaluationRepository,
   EvaluationStatusPatch,
   EvaluationSubmissionRepository,
@@ -22,6 +24,8 @@ import type {
 import {
   EvaluationSubmissionInputSchema,
   EvaluationSubmissionResultSchema,
+  CancelRunInputSchema,
+  CancelRunResultSchema,
   FinalizeRunInputSchema,
   IntermediateRunTransitionInputSchema,
   IntermediateRunTransitionResultSchema,
@@ -190,6 +194,38 @@ export class InMemoryRunRepository implements RunRepository, RunTransitionReposi
       const event = await this.#events.append(validated.event, signal);
       this.#records.set(run.id, run);
       return { applied: true, run: clone(run), event };
+    } finally {
+      unlock();
+    }
+  }
+
+  async transactionallyCancel(input: CancelRunInput, signal: AbortSignal): Promise<CancelRunResult> {
+    const validated = CancelRunInputSchema.parse(input);
+    let unlock!: () => void;
+    const prior = this.#transactionTail;
+    this.#transactionTail = new Promise<void>((resolve) => { unlock = resolve; });
+    await prior;
+    try {
+      throwIfAborted(signal);
+      const current = this.#records.get(validated.runId);
+      if (!current || current.status !== validated.expectedStatus) {
+        return CancelRunResultSchema.parse({ applied: false, run: current ?? null, event: null });
+      }
+      const run = RunSchema.parse({
+        ...current,
+        status: "cancelled",
+        outcome: null,
+        grade: null,
+        failure: null,
+        finishedAt: validated.finishedAt,
+        durationMs: current.startedAt === null ? null : Math.max(0, Date.parse(validated.finishedAt) - Date.parse(current.startedAt)),
+        releaseStatus: validated.releaseStatus,
+        warnings: validated.warnings,
+        potentialSessionLeak: validated.potentialSessionLeak,
+      });
+      const event = await this.#events.append(validated.event, signal);
+      this.#records.set(run.id, run);
+      return CancelRunResultSchema.parse({ applied: true, run, event });
     } finally {
       unlock();
     }

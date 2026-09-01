@@ -8,10 +8,10 @@ import { AssertionSetV1Schema } from "./assertions.ts";
 import type { InterfaceMode } from "./config.ts";
 import type { DiscoveryEvidence } from "./discovery.ts";
 import { EvaluationSchema, RunSchema, type BrowserSessionSummary, type Evaluation, type Run } from "./entities.ts";
-import { FailureRecordSchema, RunWarningSchema, type ControlError, type FailureRecord, type RunWarning } from "./errors.ts";
+import { ControlErrorSchema, FailureRecordSchema, RunWarningSchema, type ControlError, type FailureRecord, type RunWarning } from "./errors.ts";
 import type { AssertionCaptureResult } from "./evidence.ts";
 import {
-  EventAppendInputSchema, RunQueuedEventAppendInputSchema, RunQueuedEventEnvelopeSchema,
+  EventAppendInputSchema, EventEnvelopeSchema, RunQueuedEventAppendInputSchema, RunQueuedEventEnvelopeSchema,
   RunStatusChangedEventAppendInputSchema, RunStatusChangedEventEnvelopeSchema,
   type EventAppendInput, type EventEnvelope,
 } from "./events.ts";
@@ -224,12 +224,46 @@ export const FinalizeRunInputSchema = z.object({
 });
 export type FinalizeRunInput = z.infer<typeof FinalizeRunInputSchema>;
 export interface FinalizeRunResult { readonly applied: boolean; readonly run: Run | null; readonly event: EventEnvelope | null; }
+
+export const CancelRunInputSchema = z.object({
+  runId: RunIdSchema,
+  expectedStatus: FinalizableRunStatusSchema,
+  context: RunTransitionContextSchema,
+  reason: ControlErrorSchema.nullable(),
+  finishedAt: UtcDateTimeSchema,
+  releaseStatus: ReleaseStatusSchema,
+  warnings: z.array(RunWarningSchema).max(50),
+  potentialSessionLeak: z.boolean(),
+  event: EventAppendInputSchema,
+}).strict().superRefine((value, context) => {
+  if (!validateRunTransition(value.expectedStatus, "cancelled", value.context).ok) {
+    context.addIssue({ code: "custom", path: ["context"], message: "cancellation requires a legal lease-safe transition" });
+  }
+  if (value.context.leaseDisposition === "released" && value.releaseStatus !== "released") {
+    context.addIssue({ code: "custom", path: ["releaseStatus"], message: "released lease disposition requires confirmed released state" });
+  }
+  if (value.event.runId !== value.runId || value.event.type !== "run.cancelled" || value.event.runSequence === null || value.event.runSequence === 0) {
+    context.addIssue({ code: "custom", path: ["event"], message: "cancellation event must match the run and use a non-zero sequence" });
+  } else if (JSON.stringify(value.event.payload.reason) !== JSON.stringify(value.reason)) {
+    context.addIssue({ code: "custom", path: ["event", "payload", "reason"], message: "cancellation event reason must match the committed reason" });
+  }
+});
+export const CancelRunResultSchema = z.object({
+  applied: z.boolean(),
+  run: RunSchema.nullable(),
+  event: EventEnvelopeSchema.nullable(),
+}).strict().superRefine((value, context) => {
+  if (value.applied !== (value.run !== null && value.event !== null)) context.addIssue({ code: "custom", message: "applied cancellation requires committed run and event" });
+});
+export type CancelRunInput = z.infer<typeof CancelRunInputSchema>;
+export type CancelRunResult = z.infer<typeof CancelRunResultSchema>;
 export interface RunRepository {
   create(run: Run, signal: AbortSignal): Promise<Run>;
   get(id: RunId, signal: AbortSignal): Promise<Run | null>;
   compareAndSetStatus(id: RunId, expected: RunStatus, next: RunStatus, patch: RunStatusPatch, signal: AbortSignal): Promise<boolean>;
   listRecoverable(signal: AbortSignal): Promise<readonly Run[]>;
   transactionallyFinalize(input: FinalizeRunInput, signal: AbortSignal): Promise<FinalizeRunResult>;
+  transactionallyCancel(input: CancelRunInput, signal: AbortSignal): Promise<CancelRunResult>;
 }
 export interface EventRepository {
   append(input: EventAppendInput, signal: AbortSignal): Promise<EventEnvelope>;

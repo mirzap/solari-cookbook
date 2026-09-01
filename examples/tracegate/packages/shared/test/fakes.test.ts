@@ -220,6 +220,33 @@ test("run finalization remains compare-and-set and event-coupled", async () => {
   assert.equal((await events.listAfter(evaluationFixture.id, null, 10, signal())).length, 1);
 });
 
+test("run cancellation is lease-safe and event-coupled", async () => {
+  const clock = new DeterministicClock();
+  const events = new InMemoryEventRepository(clock);
+  const runs = new InMemoryRunRepository(events);
+  const releasing = RunSchema.parse({ ...runFixture, status: "releasing_browser", startedAt: runFixture.createdAt, releaseStatus: "releasing" });
+  await runs.create(releasing, signal());
+  const reason = { schemaVersion: 1 as const, category: "cancellation" as const, code: "user_requested" as const, phase: "evaluation_execution", retryable: false, message: "User cancelled the evaluation.", fieldIssues: [], causeChain: [], admissionReason: null };
+  const cancellationEvent = EventAppendInputSchema.parse({
+    ...eventInputFixture,
+    runSequence: 1,
+    type: "run.cancelled",
+    payload: { reason },
+  });
+  await assert.rejects(runs.transactionallyCancel({
+    runId: releasing.id, expectedStatus: "releasing_browser", context: { mode: "normal", leaseDisposition: "may_exist" },
+    reason, finishedAt: releasing.createdAt, releaseStatus: "failed", warnings: [], potentialSessionLeak: true, event: cancellationEvent,
+  }, signal()));
+  const result = await runs.transactionallyCancel({
+    runId: releasing.id, expectedStatus: "releasing_browser", context: { mode: "normal", leaseDisposition: "released" },
+    reason, finishedAt: releasing.createdAt, releaseStatus: "released", warnings: [], potentialSessionLeak: false, event: cancellationEvent,
+  }, signal());
+  assert.equal(result.applied, true);
+  assert.equal(result.run?.status, "cancelled");
+  assert.equal(result.run?.releaseStatus, "released");
+  assert.equal(result.event?.type, "run.cancelled");
+});
+
 test("canonical fakes honor abort signals and controller close retries safely", async () => {
   const aborted = new AbortController();
   aborted.abort();
