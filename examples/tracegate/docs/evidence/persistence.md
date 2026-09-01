@@ -1,114 +1,121 @@
-# TG-005 persistence and SSE feasibility evidence
+# F1 / F2 Agent D persistence, API, SSE, and UI evidence
 
-Date: 2026-09-01  
-Lane: Agent D (`packages/db`, `apps/web`)  
-Scope: TG-005 only; this is not the broad TG-010 API/UI.
+Date: 2026-09-01
+
+Lane: Agent D (`packages/db`, `packages/ui`, `apps/web`)
+
+Plan baseline: functional-app plan commit `a696651`, frozen TG-004R public contracts
+
+Scope: F1 reconciliation followed by Agent D's F2 slice only. No F3 runtime composition is claimed.
 
 ## Result
 
-**PASS.** The spike proved:
+**PASS for the D-owned F2 slice.** The lane now provides:
 
-1. local `file:` libSQL boot with foreign keys, WAL, and a 5-second busy timeout;
-2. Drizzle transactions that durably create an evaluation, run, and initial events;
-3. atomic compare-and-set run status + ordered run-step + ordered event persistence behind one process-local writer queue;
-4. a frozen-contract `EvaluationSnapshot` read from SQLite with the latest authoritative event cursor;
-5. publish-after-commit process-local pub/sub and bounded Fetch/SSE delivery;
-6. disconnect recovery by refetching a fresh snapshot, followed by a new SSE subscription;
-7. repository-boundary redaction and absence of a seeded fake secret in the SQLite database/WAL bytes.
+1. one clean generated V2 Drizzle migration, `packages/db/drizzle/0000_dark_layla_miller.sql`, for ten tables: evaluations, runs, run steps, events, assertion evidence, grades, browser cleanup state, provider-create cleanup attempts, discovered interfaces, and capability checks;
+2. durable canonical evaluation configuration columns (target URL, exact origins, prompt, assertions, full bounded config) plus a SHA-256 specification hash;
+3. frozen-port adapters for evaluation submission, evaluation/run transitions, events, browser sessions, and provider-create attempts, plus D-local evidence, grade, cleanup, capability, and report repositories;
+4. atomic evaluation/run/queued-event creation, atomic transition/event writes, ordered run-step/event milestones, and finalization that refuses a grade unless matching canonical assertion evidence is already committed;
+5. authoritative snapshot, bounded historical report, assertion-blind agent trace, event-page, cleanup, evidence, and grade queries;
+6. TanStack Start health, capabilities, loopback-only create, snapshot, report, trace, and events routes;
+7. the events route as either bounded no-store JSON pagination or process-local SSE, selected by `Accept`;
+8. a private subscribe-only SSE publication boundary: only repository-returned, schema-validated/redacted `EventEnvelope` values publish, and only after commit resolves;
+9. subscribe-first client recovery: establish SSE, fetch a fresh authoritative snapshot, buffer concurrent committed milestones, refetch after live events, and repeat that handshake after reconnect;
+10. functional configure/live/report UI for public HTTPS URL, exact origins, prompt, URL/text/semantic/state assertions, one-to-three verified models, runs, concurrency, optional recording, and opt-in read-only WebMCP;
+11. distinct assertion-blind agent trace and deterministic grading report panels, plus persisted generic execution-environment evidence, cleanup state, privacy notes, and practical safety limitations.
 
-No credentials, provider sessions, CDP endpoints, replay URLs, or real challenge tokens were used or persisted.
+The D lane does not schedule evaluations or invoke the sibling evaluation, Solari/discovery, AI, or agent implementations. That wiring is F3 composition and remains intentionally absent.
 
-## Versions exercised
+## Migration and persistence boundary
 
-- Node.js `v26.1.0`
-- TypeScript `7.0.2`
-- `@libsql/client` `0.17.4`
-- `drizzle-orm` `0.45.2`
-- `@tanstack/react-start` `1.168.49`
-- Vite `8.2.2`
-- lockfile SHA-256: `c4b24304eca44c87145d82c2b57595f0d5fed7460c5d8337ee4e214e90ff356e`
+`0000_dark_layla_miller.sql` was regenerated from the reconciled V2 schema rather than layered over the disposable TG-005 spike. It is intended for a recreated local libSQL database; there is no V1 reader, conversion, or dual-write path.
 
-The available global pnpm was `11.24.0`, while the workspace requires pnpm `12.0.0`. No dependency was downloaded. A local install attempt was rejected for that engine mismatch, and the TanStack build refreshed importer metadata while discovering the two new workspace manifests; both changes were discarded by restoring the checked-in lockfile byte-for-byte. Final verification with `git diff --exit-code -- examples/tracegate/pnpm-lock.yaml` exited `0`. Workspace links used for this isolated lane validation were untracked `node_modules` links only; Agent A remains the lockfile owner.
+Important durable rules:
+
+- evaluation/run identity and ordering have unique indexes;
+- event IDs and per-run sequences are unique; evaluation cursor reads are indexed;
+- canonical assertion evidence contains only redacted display URL, document/loader hashes, bounded assertion observations, policy counts/codes, and the evidence hash;
+- transient canonical URLs, raw DOM, raw model/provider bodies, credentials, CDP/replay URLs, and secret-bearing connection data have no persistence column;
+- grades are linked to the committed evidence hash;
+- cleanup queries combine durable run leak flags, browser release confirmation, and unresolved provider-create attempts;
+- report history is anchored to the authoritative snapshot cursor and fails rather than silently exceeding the 10,000-event bound.
+
+Repository-boundary redaction is configured with known server secrets and bounded JSON limits. Tests place a fake known secret in a run-step payload and verify `[REDACTED]`; secret-bearing canonical evidence is rejected because mutating hash-covered content would invalidate its evidence hash. The same tests verify absence from SSE and from SQLite/WAL bytes after checkpoint and close.
+
+## API and privacy boundary
+
+| Route | Responsibility |
+|---|---|
+| `GET /api/health` | no-store dependency health |
+| `GET /api/capabilities` | database plus persisted model/Solari/WebMCP capability checks and blockers |
+| `POST /api/evaluations` | loopback Host/Origin policy, frozen V2 request parsing, capability gate, atomic evaluation/run/queued-event creation |
+| `GET /api/evaluations/:id` | authoritative bounded V2 snapshot |
+| `GET /api/evaluations/:id/report` | deterministic assertion/grade report projection |
+| `GET /api/evaluations/:id/trace?cursor=` | bounded, paginated assertion-blind agent-event projection |
+| `GET /api/evaluations/:id/events?cursor=` with `Accept: application/json` | bounded committed event page |
+| `GET /api/evaluations/:id/events` with SSE accept | process-local committed-event notification stream |
+
+The report removes URL query/fragment data from its display URL. The agent trace accepts only the frozen `AgentTraceEventSchema`; assertion definitions, observations, and grades cannot enter that projection. Environment evidence is displayed separately from the agent trace and contains only the frozen generic run-environment fields. Browser/provider credentials remain server-only.
+
+`PersistedMilestoneBus` is unexported, stored in a private field, and exposes no public publication seam. The exported SSE helper receives only a subscribe-capable source. `subscriberCount()` is the sole narrow read-only test seam. A process restart loses notifications, not truth: refresh/refetch/reconnect always recovers from the libSQL snapshot and cursor.
+
+## UI safety and limitations shown to the user
+
+- anonymous public HTTPS sites only;
+- exact one-to-three allowed origins, including the start origin;
+- no signed URLs, tokens, credentials, personal data, purchases, messages, uploads/downloads, or destructive tasks;
+- structural URL checks, public-DNS preflight, request/action guards, and exact-origin enforcement are practical controls, not perfect whole-browser egress or DNS-rebinding prevention;
+- unstable/incomplete evidence yields `INCONCLUSIVE` rather than guessed truth;
+- `PASS` proves only the declared fresh browser-observable assertions.
+
+No production UI, API, schema, or repository depends on Demo Store, admin routes, cart state, or demo-connectivity packages. Test fixtures may still use reserved fixture domains through `@tracegate/shared/testing`.
 
 ## Automated proof
 
-Test: `apps/web/test/persistence-sse.test.ts`
+Tests:
 
-Observed durable sequence:
+- `packages/db/test/database.test.ts`: clean migration, config hash, pre-hash evidence redaction enforcement, evidence-before-grade enforcement, full discovered-interface redaction, durable grade/cleanup/report reads, and no fake-secret bytes;
+- `apps/web/test/persistence-sse.test.ts`: no public arbitrary-publish surface, commit-before-live delivery, redacted SSE, subscriber disposal, and authoritative snapshot recovery;
+- `apps/web/test/tg010-flow.test.ts`: capability-gated generic V2 creation, frozen repositories, ordered persisted events, trace/report assertion separation, typed projection, close/reopen recovery;
+- `apps/web/test/ui-flow.test.ts`: generic configure request building for all assertion kinds, unsafe target rejection, multi-model/runs/concurrency projection, and snapshot/live projection recovery.
 
-| Phase | Snapshot/event observation |
-|---|---|
-| durable create | `evaluation.created` cursor `1`, `run.queued` cursor `2` |
-| initial snapshot | run `queued`, `latestCursor = "2"` |
-| first live connection | committed `queued -> acquiring_browser` milestone delivered at cursor `3` |
-| disconnected write | committed `acquiring_browser -> connecting_browser` milestone at cursor `4` with no subscriber |
-| authoritative refetch | run `connecting_browser`, `latestCursor = "4"` |
-| reconnect | committed `connecting_browser -> discovering` milestone delivered at cursor `5` |
-| ordered reads | run-step sequences `[1, 2, 3]`; events after cursor `2` are `[3, 4, 5]` |
+## Commands and observed results
 
-The snapshot response is parsed by the frozen `EvaluationSnapshotSchema`; its public target omits `adminBaseUrl`. The test seeds `solari_test_secret_123456789` under an `authorization` payload key, verifies the stored step contains `[REDACTED]`, verifies the SSE frame omits the secret, checkpoints/closes SQLite, then scans the database/WAL files and confirms the secret bytes do not exist.
-
-SSE defaults are a 15-second heartbeat, `Cache-Control: no-cache, no-transform`, abort/cancel subscription disposal, and a 64 KiB serialized frame limit. The production bus is an unexported implementation held in an ECMAScript private field. Its publisher is unreachable to ordinary callers; the exported SSE helper accepts only a subscribe-only source. The sole production publication call follows successful `TracegateDatabase.persistRunMilestone()` completion, so the envelope has already passed shared-schema validation, repository-boundary redaction, and commit.
-
-## Commands and results
-
-Successful lane validation (all exit `0`):
+All commands used Node `v26.1.0` and installed workspace dependencies. No install command or lockfile generation was run.
 
 ```bash
-PATH='/Users/mirzap/.local/share/mise/installs/node/26.1.0/bin:/usr/bin:/bin' \
-  examples/tracegate/node_modules/.bin/tsc \
-  -p examples/tracegate/packages/db/tsconfig.json --noEmit
+cd examples/tracegate/packages/db
+$HOME/.local/share/mise/installs/node/latest/bin/node ../../node_modules/drizzle-kit/bin.cjs generate --config drizzle.config.ts
+# 10 tables; generated drizzle/0000_dark_layla_miller.sql
 
-PATH='/Users/mirzap/.local/share/mise/installs/node/26.1.0/bin:/usr/bin:/bin' \
-  examples/tracegate/node_modules/.bin/tsc \
-  -p examples/tracegate/packages/db/tsconfig.build.json
+$HOME/.local/share/mise/installs/node/latest/bin/node ../../node_modules/drizzle-kit/bin.cjs check --config drizzle.config.ts
+# Everything's fine; exit 0
 
-PATH='/Users/mirzap/.local/share/mise/installs/node/26.1.0/bin:/usr/bin:/bin' \
-  examples/tracegate/node_modules/.bin/tsc \
-  -p examples/tracegate/apps/web/tsconfig.json --noEmit
-
-cd examples/tracegate/apps/web
-PATH='/Users/mirzap/.local/share/mise/installs/node/26.1.0/bin:/usr/bin:/bin' \
-  /Users/mirzap/.local/share/mise/installs/node/26.1.0/bin/node \
-  --test test/*.test.ts
+$HOME/.local/share/mise/installs/node/latest/bin/node ../../node_modules/typescript/bin/tsc -p tsconfig.json --noEmit
+$HOME/.local/share/mise/installs/node/latest/bin/node ../../node_modules/typescript/bin/tsc -p tsconfig.build.json
+$HOME/.local/share/mise/installs/node/latest/bin/node --test
 # 2 tests, 2 pass, 0 fail
 
-PATH='/Users/mirzap/.local/share/mise/installs/node/26.1.0/bin:/usr/bin:/bin' \
-  ../../node_modules/.bin/vite build
-# client and SSR builds completed successfully
+cd ../ui
+$HOME/.local/share/mise/installs/node/latest/bin/node ../../node_modules/typescript/bin/tsc -p tsconfig.json --noEmit
+$HOME/.local/share/mise/installs/node/latest/bin/node ../../node_modules/typescript/bin/tsc -p tsconfig.build.json
+# exit 0; no diagnostics
+
+cd ../../apps/web
+$HOME/.local/share/mise/installs/node/latest/bin/node ../../node_modules/typescript/bin/tsc -p tsconfig.json --noEmit
+$HOME/.local/share/mise/installs/node/latest/bin/node --test test/*.test.ts
+# 7 tests, 7 pass, 0 fail
+
+$HOME/.local/share/mise/installs/node/latest/bin/node ../../node_modules/vite/bin/vite.js build
+# client: 248 modules; SSR: 155 modules; both builds passed
 ```
 
-## Deliberate TG-005 limits
+The first direct Node test attempt exposed Node's strip-only limitation for TypeScript parameter properties. D-owned constructors were rewritten as ordinary fields/assignments; the rerun above is green.
 
-- The pub/sub bus is process-local and intentionally has no durable arbitrary-cursor replay.
-- The client protocol is snapshot first, then new SSE events. Query/subscribe race elimination, retained catch-up, cursor expiry, pruning, and slow-consumer policy remain post-submission work exactly as planned.
-- The Start surface contains only the snapshot route, SSE route, composition seam, and a minimal proof page. Evaluation creation, scheduling, complete product UI, report UI, health/capabilities, and replay access belong to TG-010 or later.
-- This spike migration covers only the tables required to prove evaluation/run/step/event feasibility. The full TG-010 schema and Drizzle Kit migration journal remain future lane work.
+## Honest cut line
 
-## TG-006 blocking-audit correction
-
-The TG-006 audit correctly identified that the original spike exported `MilestoneBus.publish`, exposed the bus on `PersistenceSpikeServer.milestones`, and retained `publishCommittedForTest`. Those paths could emit an arbitrary `EventEnvelope` without persistence and have been removed.
-
-Correction proof:
-
-- `PersistedMilestoneBus` is not exported and is stored in `PersistenceSpikeServer.#milestones`.
-- `PersistenceSpikeServer` exposes only `persistMilestone`, snapshot/SSE reads, and the narrow read-only `subscriberCount` test seam.
-- Runtime surface tests assert that neither server module nor instance exposes `publish`, `publishCommittedForTest`, or `milestones`; the SSE module exports only `createMilestoneSseResponse` at runtime.
-- The integration test queries SQLite after `persistMilestone()` and before reading SSE, proving the exact live envelope already exists durably.
-- The existing redaction, disconnect/refetch, and reconnect-at-next-cursor checks remain green.
-
-Correction validation on 2026-09-01:
-
-```bash
-pnpm --dir examples/tracegate --filter @tracegate/db typecheck
-pnpm --dir examples/tracegate --filter @tracegate/db build
-pnpm --dir examples/tracegate --filter @tracegate/web typecheck
-pnpm --dir examples/tracegate --filter @tracegate/web test
-pnpm --dir examples/tracegate --filter @tracegate/web build
-```
-
-All commands exited `0`. Web tests reported `2` passed and `0` failed. The TanStack Start client and SSR production builds both completed successfully.
-
-The lockfile was already modified by concurrent integration work before the correction build. Its SHA-256 was `72a30e004b034f4082b2132c578a15f56debf40ea08129338cef3840e18a8430` both immediately before and after the build, proving this correction did not alter it. Agent D did not restore or edit that concurrent state.
-
-No shared contract change was required.
+- This is F2 infrastructure and product UI, not F3 composition; queued runs require the sibling scheduler/runtime to execute.
+- SSE fan-out is process-local and notification-only; durable cross-process replay/backplanes remain post-submission work.
+- There is no cancellation mutation, replay viewer, full design-system polish, or TG-011 surface.
+- No frozen shared contract change was required.
+- The concurrently A-owned `pnpm-lock.yaml` was already dirty and was not edited or regenerated by this lane.

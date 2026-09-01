@@ -10,52 +10,137 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as ApiCapabilitiesRouteImport } from './routes/api/capabilities'
+import { Route as ApiEvaluationsRouteImport } from './routes/api/evaluations'
+import { Route as ApiHealthRouteImport } from './routes/api/health'
+import { Route as EvaluationsIdRouteImport } from './routes/evaluations/$id'
 import { Route as ApiEvaluationsIdRouteImport } from './routes/api/evaluations/$id'
 import { Route as ApiEvaluationsIdEventsRouteImport } from './routes/api/evaluations/$id/events'
+import { Route as ApiEvaluationsIdReportRouteImport } from './routes/api/evaluations/$id/report'
+import { Route as ApiEvaluationsIdTraceRouteImport } from './routes/api/evaluations/$id/trace'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
-const ApiEvaluationsIdRoute = ApiEvaluationsIdRouteImport.update({
-  id: '/api/evaluations/$id',
-  path: '/api/evaluations/$id',
+const ApiCapabilitiesRoute = ApiCapabilitiesRouteImport.update({
+  id: '/api/capabilities',
+  path: '/api/capabilities',
   getParentRoute: () => rootRouteImport,
+} as any)
+const ApiEvaluationsRoute = ApiEvaluationsRouteImport.update({
+  id: '/api/evaluations',
+  path: '/api/evaluations',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiHealthRoute = ApiHealthRouteImport.update({
+  id: '/api/health',
+  path: '/api/health',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const EvaluationsIdRoute = EvaluationsIdRouteImport.update({
+  id: '/evaluations/$id',
+  path: '/evaluations/$id',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiEvaluationsIdRoute = ApiEvaluationsIdRouteImport.update({
+  id: '/$id',
+  path: '/$id',
+  getParentRoute: () => ApiEvaluationsRoute,
 } as any)
 const ApiEvaluationsIdEventsRoute = ApiEvaluationsIdEventsRouteImport.update({
   id: '/events',
   path: '/events',
   getParentRoute: () => ApiEvaluationsIdRoute,
 } as any)
+const ApiEvaluationsIdReportRoute = ApiEvaluationsIdReportRouteImport.update({
+  id: '/report',
+  path: '/report',
+  getParentRoute: () => ApiEvaluationsIdRoute,
+} as any)
+const ApiEvaluationsIdTraceRoute = ApiEvaluationsIdTraceRouteImport.update({
+  id: '/trace',
+  path: '/trace',
+  getParentRoute: () => ApiEvaluationsIdRoute,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/api/capabilities': typeof ApiCapabilitiesRoute
+  '/api/evaluations': typeof ApiEvaluationsRouteWithChildren
+  '/api/health': typeof ApiHealthRoute
+  '/evaluations/$id': typeof EvaluationsIdRoute
   '/api/evaluations/$id': typeof ApiEvaluationsIdRouteWithChildren
   '/api/evaluations/$id/events': typeof ApiEvaluationsIdEventsRoute
+  '/api/evaluations/$id/report': typeof ApiEvaluationsIdReportRoute
+  '/api/evaluations/$id/trace': typeof ApiEvaluationsIdTraceRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/api/capabilities': typeof ApiCapabilitiesRoute
+  '/api/evaluations': typeof ApiEvaluationsRouteWithChildren
+  '/api/health': typeof ApiHealthRoute
+  '/evaluations/$id': typeof EvaluationsIdRoute
   '/api/evaluations/$id': typeof ApiEvaluationsIdRouteWithChildren
   '/api/evaluations/$id/events': typeof ApiEvaluationsIdEventsRoute
+  '/api/evaluations/$id/report': typeof ApiEvaluationsIdReportRoute
+  '/api/evaluations/$id/trace': typeof ApiEvaluationsIdTraceRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/api/capabilities': typeof ApiCapabilitiesRoute
+  '/api/evaluations': typeof ApiEvaluationsRouteWithChildren
+  '/api/health': typeof ApiHealthRoute
+  '/evaluations/$id': typeof EvaluationsIdRoute
   '/api/evaluations/$id': typeof ApiEvaluationsIdRouteWithChildren
   '/api/evaluations/$id/events': typeof ApiEvaluationsIdEventsRoute
+  '/api/evaluations/$id/report': typeof ApiEvaluationsIdReportRoute
+  '/api/evaluations/$id/trace': typeof ApiEvaluationsIdTraceRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/api/evaluations/$id' | '/api/evaluations/$id/events'
+  fullPaths:
+    | '/'
+    | '/api/capabilities'
+    | '/api/evaluations'
+    | '/api/health'
+    | '/evaluations/$id'
+    | '/api/evaluations/$id'
+    | '/api/evaluations/$id/events'
+    | '/api/evaluations/$id/report'
+    | '/api/evaluations/$id/trace'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/api/evaluations/$id' | '/api/evaluations/$id/events'
-  id: '__root__' | '/' | '/api/evaluations/$id' | '/api/evaluations/$id/events'
+  to:
+    | '/'
+    | '/api/capabilities'
+    | '/api/evaluations'
+    | '/api/health'
+    | '/evaluations/$id'
+    | '/api/evaluations/$id'
+    | '/api/evaluations/$id/events'
+    | '/api/evaluations/$id/report'
+    | '/api/evaluations/$id/trace'
+  id:
+    | '__root__'
+    | '/'
+    | '/api/capabilities'
+    | '/api/evaluations'
+    | '/api/health'
+    | '/evaluations/$id'
+    | '/api/evaluations/$id'
+    | '/api/evaluations/$id/events'
+    | '/api/evaluations/$id/report'
+    | '/api/evaluations/$id/trace'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
-  ApiEvaluationsIdRoute: typeof ApiEvaluationsIdRouteWithChildren
+  ApiCapabilitiesRoute: typeof ApiCapabilitiesRoute
+  ApiEvaluationsRoute: typeof ApiEvaluationsRouteWithChildren
+  ApiHealthRoute: typeof ApiHealthRoute
+  EvaluationsIdRoute: typeof EvaluationsIdRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -67,12 +152,40 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/capabilities': {
+      id: '/api/capabilities'
+      path: '/api/capabilities'
+      fullPath: '/api/capabilities'
+      preLoaderRoute: typeof ApiCapabilitiesRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/evaluations': {
+      id: '/api/evaluations'
+      path: '/api/evaluations'
+      fullPath: '/api/evaluations'
+      preLoaderRoute: typeof ApiEvaluationsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/health': {
+      id: '/api/health'
+      path: '/api/health'
+      fullPath: '/api/health'
+      preLoaderRoute: typeof ApiHealthRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/evaluations/$id': {
+      id: '/evaluations/$id'
+      path: '/evaluations/$id'
+      fullPath: '/evaluations/$id'
+      preLoaderRoute: typeof EvaluationsIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/evaluations/$id': {
       id: '/api/evaluations/$id'
-      path: '/api/evaluations/$id'
+      path: '/$id'
       fullPath: '/api/evaluations/$id'
       preLoaderRoute: typeof ApiEvaluationsIdRouteImport
-      parentRoute: typeof rootRouteImport
+      parentRoute: typeof ApiEvaluationsRoute
     }
     '/api/evaluations/$id/events': {
       id: '/api/evaluations/$id/events'
@@ -81,23 +194,56 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiEvaluationsIdEventsRouteImport
       parentRoute: typeof ApiEvaluationsIdRoute
     }
+    '/api/evaluations/$id/report': {
+      id: '/api/evaluations/$id/report'
+      path: '/report'
+      fullPath: '/api/evaluations/$id/report'
+      preLoaderRoute: typeof ApiEvaluationsIdReportRouteImport
+      parentRoute: typeof ApiEvaluationsIdRoute
+    }
+    '/api/evaluations/$id/trace': {
+      id: '/api/evaluations/$id/trace'
+      path: '/trace'
+      fullPath: '/api/evaluations/$id/trace'
+      preLoaderRoute: typeof ApiEvaluationsIdTraceRouteImport
+      parentRoute: typeof ApiEvaluationsIdRoute
+    }
   }
 }
 
 interface ApiEvaluationsIdRouteChildren {
   ApiEvaluationsIdEventsRoute: typeof ApiEvaluationsIdEventsRoute
+  ApiEvaluationsIdReportRoute: typeof ApiEvaluationsIdReportRoute
+  ApiEvaluationsIdTraceRoute: typeof ApiEvaluationsIdTraceRoute
 }
 
 const ApiEvaluationsIdRouteChildren: ApiEvaluationsIdRouteChildren = {
   ApiEvaluationsIdEventsRoute: ApiEvaluationsIdEventsRoute,
+  ApiEvaluationsIdReportRoute: ApiEvaluationsIdReportRoute,
+  ApiEvaluationsIdTraceRoute: ApiEvaluationsIdTraceRoute,
 }
 
 const ApiEvaluationsIdRouteWithChildren =
   ApiEvaluationsIdRoute._addFileChildren(ApiEvaluationsIdRouteChildren)
 
+interface ApiEvaluationsRouteChildren {
+  ApiEvaluationsIdRoute: typeof ApiEvaluationsIdRouteWithChildren
+}
+
+const ApiEvaluationsRouteChildren: ApiEvaluationsRouteChildren = {
+  ApiEvaluationsIdRoute: ApiEvaluationsIdRouteWithChildren,
+}
+
+const ApiEvaluationsRouteWithChildren = ApiEvaluationsRoute._addFileChildren(
+  ApiEvaluationsRouteChildren,
+)
+
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
-  ApiEvaluationsIdRoute: ApiEvaluationsIdRouteWithChildren,
+  ApiCapabilitiesRoute: ApiCapabilitiesRoute,
+  ApiEvaluationsRoute: ApiEvaluationsRouteWithChildren,
+  ApiHealthRoute: ApiHealthRoute,
+  EvaluationsIdRoute: EvaluationsIdRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

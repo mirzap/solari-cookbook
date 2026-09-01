@@ -55,7 +55,7 @@ export function createMilestoneSseResponse(
         unsubscribe();
       };
       signal.addEventListener("abort", abort, { once: true });
-      enqueue("retry: 1000\n\n");
+      enqueue("retry: 1000\nevent: ready\ndata: {\"subscribed\":true}\n\n");
       if (signal.aborted) abort();
     },
     cancel: () => cleanup(),
