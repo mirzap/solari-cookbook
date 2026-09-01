@@ -1,0 +1,23 @@
+{
+  "name": "@tracegate/ai",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json --noEmit",
+    "lint": "tsc -p tsconfig.json --noEmit",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --import tsx --test src/*.test.ts",
+    "probe:models": "tsx src/probe-models.ts"
+  },
+  "dependencies": {
+    "@tanstack/ai": "0.52.0",
+    "@tanstack/ai-openrouter": "0.19.5",
+    "zod": "4.5.4"
+  },
+  "devDependencies": {
+    "@types/node": "26.4.0",
+    "tsx": "4.23.13",
+    "typescript": "7.0.2"
+  }
+}
