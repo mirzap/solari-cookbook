@@ -191,7 +191,7 @@ export const SafeAgentToolResultSchema = z.discriminatedUnion("tool", [
   const allowedEffects = {
     navigate: ["admitted_get_navigation"],
     inspect: ["inspect"],
-    click: ["disclosure_toggle", "local_filter_select"],
+    click: ["admitted_get_navigation", "disclosure_toggle", "local_filter_select"],
     type: ["non_sensitive_filter_input"],
     select: ["local_filter_select"],
     pressKey: ["restricted_key_navigation"],
