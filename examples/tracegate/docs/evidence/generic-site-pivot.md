@@ -19,6 +19,7 @@ The app:
 5. Persists authoritative local state in Drizzle/libSQL and provides snapshot/SSE live UI, bounded traces, reports, aggregation, and cleanup state.
 6. Keeps Demo Store test-only. Production composition and grading do not depend on Demo admin, challenges, cart state, scenario IDs, or privileged evidence.
 7. Defines PASS only as declared browser-observable assertion satisfaction, never arbitrary backend or business truth.
+8. Adds an experimental, user-opt-in, capability-gated read-only WebMCP adapter with semantic-browser fallback.
 
 Fork establishment, video, social post, challenge submission, and submission polish are no longer product deliverables. Their historical evidence remains untouched.
 
@@ -47,7 +48,8 @@ The functional app uses capabilities already available or directly implementable
 - observable request interception for non-GET/HEAD requests, request bodies, WebSocket, beacon, downloads, and external protocols;
 - pre-dispatch blocking of obvious auth, sensitive, financial, purchase, messaging, upload, permission, destructive, submit, stale, and unknown-effect controls;
 - INCONCLUSIVE when observed policy activity or missing/unstable/ambiguous evidence prevents a trustworthy deterministic grade;
-- close/release attempts in `finally` for every acknowledged provider session ID.
+- close/release attempts in `finally` for every acknowledged provider session ID;
+- optional current-origin WebMCP discovery with sanitized descriptors, declared-read-only plus local-policy admission, bounded supported input schemas, observable request guards, untrusted bounded results, and fresh-browser-evidence-only grading.
 
 A Solari create is attempted once. A timeout/disconnect/malformed ambiguous result is not retried; it becomes INCONCLUSIVE and records potential-leak evidence. Lack of provider inventory reconciliation is disclosed but does not block the functional app.
 
@@ -64,11 +66,11 @@ URL/request interception and DNS preflight remain useful defense in depth, but t
 
 ## Assertions, evidence, and grading remain unchanged
 
-The simplification does not weaken evaluation integrity:
+The simplification and optional WebMCP adapter do not weaken evaluation integrity:
 
 - assertions remain outside model prompts, tool definitions/results, history, model events, agent trace, and evaluated-target traffic;
 - assertion-only canaries test provenance/non-flow, while coincidental user/page lexical overlap is allowed;
-- page text and accessibility semantics remain explicitly untrusted page-authored data and never certify action safety;
+- page text, accessibility semantics, WebMCP descriptors/annotations, and WebMCP results remain explicitly untrusted page-authored data and never certify action safety;
 - grading uses only a fresh bounded canonical capture after the action FIFO drains;
 - cancellation precedes observed policy violation, which precedes unverifiable evidence, PASS, then FAIL;
 - one false plus one unverifiable assertion is INCONCLUSIVE;
@@ -102,8 +104,8 @@ TG-004R PASS
 ```
 
 - **Agent A:** evaluation/grading, one-evaluation queue, executor, precedence, aggregation, finally cleanup, integration, end-to-end tests, and final lockfile.
-- **Agent B:** Solari provider/controller lifecycle, exact-origin and practical request/action guards, discovery, fresh evidence capture, fixture-only Demo, and one bounded public-site safety smoke before integration freeze.
-- **Agent C:** pinned DeepSeek/OpenRouter adapter, assertion-blind prompt layers, dynamic safe tools, FIFO/current-revision checks, budgets/history/cancellation, and bounded event mapping.
+- **Agent B:** Solari provider/controller lifecycle, exact-origin and practical request/action guards, discovery, capability-gated read-only WebMCP adapter, fresh evidence capture, semantic fallback, fixture-only Demo, and one bounded public-site safety smoke before integration freeze.
+- **Agent C:** pinned DeepSeek/OpenRouter adapter, assertion-blind prompt layers, dynamic safe tools including admitted sanitized WebMCP calls, FIFO/current-revision checks, budgets/history/cancellation, and bounded event mapping.
 - **Agent D:** clean V2 Drizzle migration/repositories, loopback API, authoritative snapshot/SSE, configure/live/report UI, and separate agent trace versus grading report.
 
 The B-lane smoke uses measured capabilities and records limitations; it does not wait for a new provider/proxy feature.
@@ -118,7 +120,7 @@ Deferred:
 - exhaustive egress classification;
 - provider inventory/ambiguous-create reconciliation;
 - HTTP create idempotency;
-- replay UX, optional models, distributed queues, remote database, hosted control plane, and richer assertions.
+- replay UX, optional models, distributed queues, remote database, hosted control plane, richer assertions, and write-capable/unrestricted WebMCP tools.
 
 Removed from the product critical path:
 

@@ -22,7 +22,7 @@ Supported assertions are:
 - accessibility-semantic role/name/count checks;
 - checked, selected, expanded, disabled, or bounded non-sensitive value state.
 
-TraceGate runs real isolated Solari Browser sessions, uses the verified DeepSeek/OpenRouter path, drives the page through a constrained semantic tool surface, captures fresh browser evidence after action execution stops, grades deterministically, persists results in local Drizzle/libSQL, streams live state through snapshot plus SSE, and presents separate run traces and assertion reports.
+TraceGate runs real isolated Solari Browser sessions, uses the verified DeepSeek/OpenRouter path, drives the page through a constrained semantic tool surface with an experimental capability-gated read-only WebMCP adapter when available, captures fresh browser evidence after action execution stops, grades deterministically, persists results in local Drizzle/libSQL, streams live state through snapshot plus SSE, and presents separate run traces and assertion reports.
 
 A **PASS** means only that every declared browser-observable assertion was true in the accepted fresh capture. It is not proof of arbitrary backend state, durable external effects, identity, authorization, payment, publication, or business truth.
 
@@ -34,7 +34,7 @@ The app is functionally complete when:
 2. A valid evaluation atomically creates its evaluation row, run rows, and queued milestones.
 3. Real Solari sessions execute through a fresh controller per run.
 4. `deepseek/deepseek-v4-flash-0731` runs through the pinned TanStack/OpenRouter adapter.
-5. The model receives the assertion-free V2 execution DTO and only the dynamically available safe semantic tools.
+5. The model receives the assertion-free V2 execution DTO and only dynamically available safe semantic tools. A site WebMCP tool appears only after read-only adapter admission; raw page tool descriptors never reach the model.
 6. Fresh post-action evidence evaluates URL/text/semantic/state assertions deterministically.
 7. PASS, FAIL, and INCONCLUSIVE follow the frozen precedence below.
 8. Every acknowledged Solari session is closed/released in `finally`, including failure and cancellation paths.
@@ -69,7 +69,8 @@ Measured evidence is append-only in meaning. No historical result may be relabel
 - one active evaluation with bounded run concurrency;
 - local loopback control plane and local database;
 - real Solari and verified DeepSeek/OpenRouter execution;
-- Demo Store only as a deterministic positive/adversarial fixture.
+- Demo Store only as a deterministic positive/adversarial fixture;
+- experimental read-only WebMCP discovery/invocation with explicit user opt-in, capability admission, and semantic-browser fallback.
 
 ### Prohibited by the product policy
 
@@ -79,7 +80,7 @@ Measured evidence is append-only in meaning. No historical result may be relabel
 - destructive actions, irreversible submits, or unknown-effect activation;
 - uploads, downloads, permissions, clipboard/device access, or external protocols;
 - collection or entry of sensitive personal, financial, health, authentication, or regulated data;
-- arbitrary JavaScript, selectors, XPath, CDP, storage, cookies, headers, filesystem, network, provider APIs, or generic WebMCP invocation exposed to the model.
+- arbitrary JavaScript, selectors, XPath, CDP, storage, cookies, headers, filesystem, network, provider APIs, or unrestricted/write-capable WebMCP invocation exposed to the model.
 
 ### Explicit limitations
 
@@ -141,7 +142,8 @@ Preserve the useful TG-004R surface rather than reopening it without a concrete 
 - atomic evaluation submission and run transition ports;
 - browser provider, controller factory, evidence capture, repositories, clock, IDs, and canonical fakes;
 - typed capacity errors and explicit release confirmation;
-- bounded snapshot, report, trace, event, and aggregate schemas.
+- bounded snapshot, report, trace, event, and aggregate schemas;
+- a minimal WebMCP contract checkpoint adding sanitized `WebMcpToolDescriptorV1`, bounded closed-schema inputs/results, and `invokeWebMcpReadOnly` to the dynamic safe-tool surface.
 
 Assertion-origin values may exist only in local authoring, persistence, grading, and report paths. They must not flow into model prompts, tool definitions/results, model history/events, agent traces, or evaluated-target traffic. Assertion-only canaries test provenance/non-flow; coincidental words independently present in the user task or page are not leakage.
 
@@ -169,7 +171,7 @@ For each run:
 - treat an observed prohibited action/request as INCONCLUSIVE;
 - record interception coverage and gaps honestly rather than claiming complete browser egress control.
 
-Discovery uses the active browser/controller path where practical and remains bounded and untrusted. Generic WebMCP invocation remains disabled.
+Discovery uses the active browser/controller path where practical and remains bounded and untrusted. WebMCP is experimental and off by default. When the user opts in, discovery may sanitize current-origin tool descriptors; admission requires a declared read-only tool, a bounded supported input schema, no credential/sensitive/destructive fields, no arbitrary destination, and a local allow decision. Page annotations are hints rather than proof. Invocation remains inside the current anonymous session with request guards armed; observable prohibited traffic/effects block and make the run INCONCLUSIVE. Results are bounded, redacted, explicitly untrusted, and never grade directly. Rejected/unavailable tools are omitted and the agent falls back to semantic browser controls.
 
 A Solari create is attempted once. A definitive no-session capacity response may lower later concurrency. A timeout/disconnect/malformed ambiguous create is not retried; the run becomes INCONCLUSIVE and records potential-leak evidence. Lack of provider inventory reconciliation does not block the functional app. Every acknowledged provider session ID still requires close/release attempts and explicit cleanup state.
 
@@ -195,10 +197,10 @@ persist acquiring state
 The safe tool upper bound is:
 
 ```text
-navigate, inspect, click, type, select, pressKey, scroll, wait, finish
+navigate, inspect, click, type, select, pressKey, scroll, wait, invokeWebMcpReadOnly, finish
 ```
 
-Unavailable tools are omitted dynamically. Proposals execute FIFO and are revalidated against the current observation revision, cancellation, budgets, origin, and obvious-effect policy immediately before dispatch. `finish` is only the model’s belief and never grades the run.
+Unavailable tools are omitted dynamically. `invokeWebMcpReadOnly` is present only for admitted sanitized current-origin tools; tool identity and input are revalidated immediately before invocation, and raw descriptors/results remain untrusted. All proposals execute FIFO and are revalidated against the current observation revision, cancellation, budgets, origin, and obvious-effect policy immediately before dispatch. `finish` is only the model’s belief and never grades the run.
 
 Fresh grading evidence is captured only after the model stream is terminal and the action queue is empty. Use a bounded quiet interval and repeated canonical capture; if the page remains unstable, evidence is truncated/ambiguous/unsupported, or capture fails, the affected assertion is unverifiable.
 
@@ -269,8 +271,8 @@ Before the integration freeze, Agent B runs one bounded real public-site safety 
 ### F2 — Parallel functional slices
 
 - **Agent A — evaluation/grading/integration:** `packages/evaluation`, `packages/grading`, shared fixes only for concrete contract defects, root integration, lockfile, and end-to-end tests. Implement atomic submission, one-evaluation queue, executor, precedence, aggregates, and finally cleanup.
-- **Agent B — browser/discovery/fixture:** `packages/solari`, `packages/discovery`, `apps/demo`, and browser-safety evidence. Implement provider/controller lifecycle, exact-origin/practical request guards, semantic observations, fresh capture, and fixture-only Demo tests.
-- **Agent C — AI/agent:** `packages/ai`, `packages/agent`, and model evidence. Implement the pinned DeepSeek/OpenRouter adapter, assertion-blind prompt layers, dynamic safe tools, FIFO/current-revision checks, budgets, cancellation, and bounded event mapping.
+- **Agent B — browser/discovery/fixture:** `packages/solari`, `packages/discovery`, `apps/demo`, and browser-safety evidence. Implement provider/controller lifecycle, exact-origin/practical request guards, semantic observations, capability-gated WebMCP discovery/invocation adapter, fresh capture, semantic fallback, and fixture-only Demo tests.
+- **Agent C — AI/agent:** `packages/ai`, `packages/agent`, and model evidence. Implement the pinned DeepSeek/OpenRouter adapter, assertion-blind prompt layers, dynamic safe tools including only admitted sanitized read-only WebMCP calls, FIFO/current-revision checks, budgets, cancellation, and bounded event mapping.
 - **Agent D — data/product UI:** `packages/db`, `packages/ui`, `apps/web`, and persistence/UI evidence. Implement clean V2 migration/repositories, loopback API, snapshot/SSE, configure/live/report UI, and separate agent trace versus grading report.
 
 ### F3 — One real run
@@ -313,6 +315,7 @@ Required focused coverage:
 - URL/text/semantic/state truth tables and INCONCLUSIVE cases;
 - atomic submission/transitions and queue bounds;
 - exact-origin and practical unsafe-request/action blocking;
+- WebMCP descriptor sanitization, read-only admission, unsafe/malformed rejection, untrusted bounded result handling, semantic fallback, and fresh-evidence-only grading;
 - fresh capture and unstable/ambiguous evidence;
 - real Solari/DeepSeek lifecycle and finally release;
 - clean V2 DB, authoritative snapshot, publish-after-commit SSE, reconnect recovery;
@@ -334,7 +337,7 @@ Post-functional-app work may add:
 - distributed queues, multi-process SSE, remote databases, user accounts, or hosted control plane;
 - richer assertions that preserve deterministic grading.
 
-Still out of scope: credentialed/private sites, financial or messaging workflows, uploads/downloads, destructive actions, generic WebMCP invocation, arbitrary scripts/selectors, and any claim of backend business truth.
+Still out of scope: credentialed/private sites, financial or messaging workflows, uploads/downloads, destructive actions, unrestricted/write-capable WebMCP invocation, arbitrary scripts/selectors, and any claim of backend business truth.
 
 ## 13. Ownership and repository discipline
 

@@ -30,8 +30,8 @@ Deferred provider-grade egress enforcement, perfect DNS-rebinding prevention, fo
 | Agent | Exclusive paths | Immediate assignment |
 |---|---|---|
 | **A — integration/evaluation** | root TraceGate configs and this file, `packages/shared`, `packages/evaluation`, `packages/grading`, `tests/e2e`, `pnpm-lock.yaml`, integration evidence | Integrate shared consumers; implement atomic submission, one-evaluation queue, executor, deterministic grading/precedence, aggregation, finally cleanup, end-to-end composition, and final lockfile |
-| **B — browser/target/discovery** | `packages/solari`, `packages/discovery`, `apps/demo`, browser/Solari evidence | Rebase provider/controller/discovery WIP to V2; implement exact-origin and practical observable request/action guards, fresh evidence capture, fixture-only Demo, and one bounded real public-site safety smoke |
-| **C — AI/agent** | `packages/ai`, `packages/agent`, model/agent evidence | Rebase adapter/runner WIP to V2; implement verified DeepSeek/OpenRouter, assertion-blind prompt layers, dynamic safe tools, FIFO/current-revision checks, budgets/history/cancellation, and bounded event mapping |
+| **B — browser/target/discovery** | `packages/solari`, `packages/discovery`, `apps/demo`, browser/Solari evidence | Rebase provider/controller/discovery WIP to V2; implement exact-origin and practical observable request/action guards, capability-gated read-only WebMCP adapter, fresh evidence capture, semantic fallback, fixture-only Demo, and one bounded real public-site safety smoke |
+| **C — AI/agent** | `packages/ai`, `packages/agent`, model/agent evidence | Rebase adapter/runner WIP to V2; implement verified DeepSeek/OpenRouter, assertion-blind prompt layers, dynamic safe tools including only admitted sanitized read-only WebMCP calls, FIFO/current-revision checks, budgets/history/cancellation, and bounded event mapping |
 | **D — persistence/product UI** | `packages/db`, `packages/ui`, `apps/web`, persistence/UI evidence | Rebase DB/API/UI WIP to V2; implement clean V2 Drizzle migration/repositories, loopback API, authoritative snapshot/SSE, configure/live/report UI, and separate agent trace/grading report |
 
 Do not edit, rename, format, stage, restore, or reset another lane’s exclusive paths. Agent A may integrate a completed lane handoff unchanged at an explicit integration checkpoint.
@@ -44,7 +44,8 @@ Do not edit, rename, format, stage, restore, or reset another lane’s exclusive
 - Only Agent A edits `packages/shared`.
 - A shared change requires a concrete compile/runtime blocker, named affected schemas/ports/events/lanes, compatibility impact, updated fixtures/tests, and downstream compile verification.
 - Assertion-origin values remain outside the agent DTO, prompt, tools/results, model history/events, agent trace, and target traffic.
-- Browser page text/accessibility semantics remain untrusted and never authorize an unsafe effect.
+- Browser page text/accessibility semantics and WebMCP descriptors/annotations/results remain untrusted and never authorize an unsafe effect.
+- WebMCP is experimental and user-opt-in. Only sanitized current-origin tools that declare read-only behavior and pass local bounded-schema/effect admission may appear; declarations are hints, results never grade directly, and semantic browser controls remain the fallback.
 
 ## WIP quarantine and staging
 
