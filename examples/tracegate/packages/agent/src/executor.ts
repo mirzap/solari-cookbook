@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   SafeAgentActionSchema,
   SafeAgentToolExchangeSchema,
@@ -31,6 +32,13 @@ interface Admission extends ToolAdmission {
 
 type SafeToolErrorReason = "malformed_proposal" | "policy_denied" | "stale_proposal" | "tool_unavailable" | "tool_failed";
 
+interface TrustedRuntimeFailurePolicy {
+  readonly trust: "trusted_agent_runtime";
+  readonly equivalentFailureCount: number;
+  readonly retryAllowed: false;
+  readonly requiredAdaptation: true;
+}
+
 interface RejectedAdmission extends ToolAdmission {
   readonly providerCallId: string;
   readonly toolName: SafeAgentToolName | null;
@@ -48,7 +56,17 @@ class StagedExecutionFailure {
   constructor(
     readonly stage: ExecutionStage,
     readonly cause: unknown,
+    readonly semanticFailureFingerprint: string | null = null,
+    readonly malformedProposal = false,
   ) {}
+}
+
+class MalformedProposalFailure {
+  constructor(readonly cause: unknown) {}
+}
+
+class EquivalentSemanticFailure {
+  constructor(readonly policy: TrustedRuntimeFailurePolicy) {}
 }
 
 const MUTATING_ACTIONS = new Set<SafeAgentToolName>(["navigate", "click", "type", "select", "pressKey"]);
@@ -75,6 +93,8 @@ const PRE_DISPATCH_POLICY_CODES = new Set([
   "stale_observation",
 ]);
 const MAX_SAFE_TOOL_FEEDBACK_BYTES = 2_048;
+const MAX_TRACKED_SEMANTIC_FAILURES = 16;
+const MAX_EQUIVALENT_FAILURE_COUNT = 99;
 
 function interfaceSource(tool: SafeAgentToolName): ToolInterfaceSource {
   if (tool === "invokeWebMcpReadOnly") return "page_webmcp";
@@ -87,17 +107,60 @@ function isRejectedAdmission(admission: StoredAdmission): admission is RejectedA
   return "rejection" in admission;
 }
 
-function feedbackReason(error: unknown): SafeToolErrorReason {
-  if (!isTraceGateError(error)) return "malformed_proposal";
+function feedbackReason(error: unknown, stage: ExecutionStage, malformedProposal = false): SafeToolErrorReason {
+  if (malformedProposal) return "malformed_proposal";
+  if (stage !== "pre_dispatch" || !isTraceGateError(error)) return "tool_failed";
   if (error.safe.code === "unsafe_action_blocked") return "policy_denied";
   if (["stale_element_exhausted", "stale_element", "ambiguous_element"].includes(error.safe.code)) return "stale_proposal";
-  if (error.safe.code === "provider_protocol_error") return "malformed_proposal";
   return "tool_failed";
 }
 
-function safeToolErrorFeedback(reason: SafeToolErrorReason, resynchronized = false): string {
-  const message = reason === "policy_denied"
-    ? "The proposal was denied before a safe result could be produced. Choose a different action from the current admitted tool surface."
+function normalizedSemanticText(value: string): string {
+  return value.normalize("NFKC").replace(/\s+/gu, " ").trim().toLowerCase();
+}
+
+function semanticActionFailureFingerprint(
+  action: SafeAgentAction,
+  observation: UntrustedAgentObservation,
+): string | null {
+  if (!("ref" in action)) return null;
+  const element = observation.elements.find((candidate) => candidate.ref === action.ref);
+  if (element === undefined) return null;
+  const actionInput = action.kind === "type"
+    ? { text: action.text, clearFirst: action.clearFirst }
+    : action.kind === "select"
+      ? { value: action.value }
+      : action.kind === "pressKey"
+        ? { key: action.key }
+        : {};
+  const canonical = JSON.stringify({
+    version: 1,
+    page: observation.url,
+    action: { kind: action.kind, input: actionInput },
+    target: {
+      role: normalizedSemanticText(element.role),
+      name: normalizedSemanticText(element.name),
+      disabled: element.disabled,
+      checked: element.checked,
+      selected: element.selected,
+      expanded: element.expanded,
+      attributes: Object.entries(element.attributes).sort(([left], [right]) => left.localeCompare(right)),
+    },
+  });
+  return createHash("sha256").update(canonical, "utf8").digest("base64url");
+}
+
+function safeToolErrorFeedback(
+  reason: SafeToolErrorReason,
+  resynchronized = false,
+  runtimePolicy: TrustedRuntimeFailurePolicy | null = null,
+): string {
+  const message = runtimePolicy !== null
+    ? runtimePolicy.equivalentFailureCount === 1
+      ? "The semantic action entered the runtime and failed. A fresh browser surface was recovered; choose a different action or finish instead of retrying an equivalent target."
+      : "An equivalent semantic action already failed after runtime recovery. This proposal was rejected before dispatch; choose a different action or finish."
+    : reason === "policy_denied"
+      ? "The proposal was denied before a safe result could be produced. Choose a different action from the current admitted tool surface."
     : reason === "stale_proposal"
       ? "The proposal no longer matched the current browser surface. Inspect the latest surface and choose another admitted action."
       : reason === "tool_unavailable"
@@ -111,7 +174,13 @@ function safeToolErrorFeedback(reason: SafeToolErrorReason, resynchronized = fal
     schemaVersion: 2,
     trust: "untrusted_page_or_tool_content",
     kind: "safe_tool_error",
-    error: { reason, recoverable: true, browserSurfaceResynchronized: resynchronized, message },
+    error: {
+      reason,
+      recoverable: true,
+      browserSurfaceResynchronized: resynchronized,
+      message,
+      ...(runtimePolicy === null ? {} : { runtimePolicy }),
+    },
   });
   if (Buffer.byteLength(serialized, "utf8") > MAX_SAFE_TOOL_FEEDBACK_BYTES) {
     return '{"schemaVersion":2,"trust":"untrusted_page_or_tool_content","kind":"safe_tool_error","error":{"reason":"tool_failed","recoverable":true,"browserSurfaceResynchronized":false,"message":"The safe tool proposal was rejected."}}';
@@ -143,6 +212,7 @@ export class SerializedSafeToolExecutor implements AgentToolExecutor {
   readonly #completed = new Set<string>();
   readonly #started = new Set<string>();
   readonly #feedback = new Map<string, string>();
+  readonly #semanticFailures = new Map<string, number>();
   #tail: Promise<void> = Promise.resolve();
   #observation: UntrustedAgentObservation;
   #surface: SafeAgentToolSurface | null = null;
@@ -244,10 +314,14 @@ export class SerializedSafeToolExecutor implements AgentToolExecutor {
     return result;
   }
 
-  async #failAdmittedNow(admission: StoredAdmission, error: unknown): Promise<void> {
+  async #failAdmittedNow(
+    admission: StoredAdmission,
+    _error: unknown,
+    fallbackReason: SafeToolErrorReason = "malformed_proposal",
+  ): Promise<void> {
     if (this.#completed.has(admission.providerCallId)) return;
     if (!this.#feedback.has(admission.providerCallId)) {
-      this.#feedback.set(admission.providerCallId, safeToolErrorFeedback(feedbackReason(error)));
+      this.#feedback.set(admission.providerCallId, safeToolErrorFeedback(fallbackReason));
     }
     await this.#emitStartedIfNeeded(admission, "proposal rejected before a safe tool result was available");
     this.#completed.add(admission.providerCallId);
@@ -294,30 +368,40 @@ export class SerializedSafeToolExecutor implements AgentToolExecutor {
         const staged = settledFailure instanceof StagedExecutionFailure ? settledFailure : null;
         const error = toolTimedOut && staged?.stage === "pre_dispatch" ? caught : staged?.cause ?? settledFailure;
         if (parent.aborted || (!toolTimedOut && isTraceGateError(error) && error.safe.code === "operation_aborted")) {
-          await this.#failAdmittedNow(admission, error);
+          await this.#failAdmittedNow(admission, error, "tool_failed");
           throw error;
         }
+        if (staged?.cause instanceof EquivalentSemanticFailure) {
+          return this.#completeRecoverable(admission, "tool_failed", false, staged.cause.policy);
+        }
         if (staged?.stage === "pre_dispatch") {
-          if (isRecoverableError(error)) return this.#completeRecoverable(admission, feedbackReason(error));
-          await this.#failAdmittedNow(admission, error);
+          const reason = feedbackReason(error, "pre_dispatch", staged.malformedProposal);
+          if (isRecoverableError(error)) return this.#completeRecoverable(admission, reason);
+          await this.#failAdmittedNow(admission, error, reason);
           throw error;
         }
         if (!MUTATING_ACTIONS.has(admission.toolName)) {
-          if (isRecoverableError(error)) return this.#completeRecoverable(admission, feedbackReason(error));
-          await this.#failAdmittedNow(admission, error);
+          if (isRecoverableError(error)) return this.#completeRecoverable(admission, "tool_failed");
+          await this.#failAdmittedNow(admission, error, "tool_failed");
           throw error;
         }
         if (staged && definitelyNotDispatched(staged.stage, admission.toolName, error)) {
-          if (feedbackReason(error) === "stale_proposal") {
+          const reason = feedbackReason(error, "pre_dispatch");
+          if (reason === "stale_proposal") {
             const resynchronized = await this.#tryResynchronize(admission, parent);
             return this.#completeRecoverable(admission, "stale_proposal", resynchronized);
           }
-          return this.#completeRecoverable(admission, feedbackReason(error));
+          return this.#completeRecoverable(admission, reason);
         }
         const resynchronized = await this.#tryResynchronize(admission, parent);
-        if (resynchronized) return this.#completeRecoverable(admission, feedbackReason(error), true);
+        if (resynchronized) {
+          const runtimePolicy = staged?.semanticFailureFingerprint
+            ? this.#recordEquivalentFailure(staged.semanticFailureFingerprint)
+            : null;
+          return this.#completeRecoverable(admission, "tool_failed", true, runtimePolicy);
+        }
         const failure = this.#loseTargetEvidence(error);
-        await this.#failAdmittedNow(admission, failure);
+        await this.#failAdmittedNow(admission, failure, "tool_failed");
         throw failure;
       }
     };
@@ -339,22 +423,35 @@ export class SerializedSafeToolExecutor implements AgentToolExecutor {
         toolCallId: admission.normalizedId,
         observationRevision: admission.observationRevision,
       });
-      if (!actionCandidate.success) throw terminalError("provider_protocol_error", "Tool arguments do not match the admitted schema", "agent.tool");
+      if (!actionCandidate.success) {
+        throw new MalformedProposalFailure(terminalError("provider_protocol_error", "Tool arguments do not match the admitted schema", "agent.tool"));
+      }
       action = actionCandidate.data;
-      if (action.kind !== admission.toolName) throw terminalError("provider_protocol_error", "Tool identity changed after admission", "agent.tool");
+      if (action.kind !== admission.toolName) {
+        throw new MalformedProposalFailure(terminalError("provider_protocol_error", "Tool identity changed after admission", "agent.tool"));
+      }
       this.#policy.assertAction(action, this.#observation, surface);
+      const fingerprint = semanticActionFailureFingerprint(action, this.#observation);
+      if (fingerprint !== null) {
+        const previousFailureCount = this.#semanticFailures.get(fingerprint);
+        if (previousFailureCount !== undefined) {
+          throw new EquivalentSemanticFailure(this.#recordEquivalentFailure(fingerprint));
+        }
+      }
       await this.#emitStartedIfNeeded(admission, `validated ${action.kind} proposal at observation revision ${action.observationRevision}`);
       if (action.kind !== "finish") this.#ledger.startBrowserAction(linked);
     } catch (error) {
-      throw new StagedExecutionFailure("pre_dispatch", error);
+      const malformed = error instanceof MalformedProposalFailure;
+      throw new StagedExecutionFailure("pre_dispatch", malformed ? error.cause : error, null, malformed);
     }
 
+    const semanticFailureFingerprint = semanticActionFailureFingerprint(action, this.#observation);
     let rawResult: unknown;
     try {
       rawResult = await this.#tools.execute(action, linked);
       throwIfAborted(linked, "agent.tool");
     } catch (error) {
-      throw new StagedExecutionFailure("port_entered", error);
+      throw new StagedExecutionFailure("port_entered", error, semanticFailureFingerprint);
     }
 
     let result;
@@ -371,7 +468,7 @@ export class SerializedSafeToolExecutor implements AgentToolExecutor {
         this.#observation = observation;
       }
     } catch (error) {
-      throw new StagedExecutionFailure("post_dispatch_validation", error);
+      throw new StagedExecutionFailure("post_dispatch_validation", error, semanticFailureFingerprint);
     }
 
     if (result.decision.decision === "deny") {
@@ -450,12 +547,29 @@ export class SerializedSafeToolExecutor implements AgentToolExecutor {
     }
   }
 
+  #recordEquivalentFailure(fingerprint: string): TrustedRuntimeFailurePolicy {
+    const count = Math.min(MAX_EQUIVALENT_FAILURE_COUNT, (this.#semanticFailures.get(fingerprint) ?? 0) + 1);
+    this.#semanticFailures.delete(fingerprint);
+    if (this.#semanticFailures.size >= MAX_TRACKED_SEMANTIC_FAILURES) {
+      const oldest = this.#semanticFailures.keys().next().value as string | undefined;
+      if (oldest !== undefined) this.#semanticFailures.delete(oldest);
+    }
+    this.#semanticFailures.set(fingerprint, count);
+    return {
+      trust: "trusted_agent_runtime",
+      equivalentFailureCount: count,
+      retryAllowed: false,
+      requiredAdaptation: true,
+    };
+  }
+
   async #completeRecoverable(
     admission: StoredAdmission,
     reason: SafeToolErrorReason,
     resynchronized = false,
+    runtimePolicy: TrustedRuntimeFailurePolicy | null = null,
   ): Promise<string> {
-    const feedback = safeToolErrorFeedback(reason, resynchronized);
+    const feedback = safeToolErrorFeedback(reason, resynchronized, runtimePolicy);
     this.#feedback.set(admission.providerCallId, feedback);
     await this.#failAdmittedNow(admission, new Error("recoverable safe-tool rejection"));
     return feedback;

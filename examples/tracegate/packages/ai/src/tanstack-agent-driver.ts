@@ -369,10 +369,10 @@ export class TanStackOpenRouterAgentDriver implements AgentModelDriver {
             trust: 'untrusted_page_or_tool_content',
             kind: 'safe_tool_error',
             error: {
-              reason: 'malformed_proposal',
+              reason: 'tool_failed',
               recoverable: true,
               browserSurfaceResynchronized: false,
-              message: 'The proposal was rejected by the strict tool boundary. Correct it or choose another currently admitted action.',
+              message: 'The safe tool did not produce bounded feedback. Choose another currently admitted action.',
             },
           })
           const content = recordedFeedback ?? (state?.failed || typeof result.result !== 'string' ? genericFeedback : result.result)
