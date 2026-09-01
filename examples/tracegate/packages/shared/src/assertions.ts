@@ -164,8 +164,25 @@ export function evaluateUrlAssertion(
 }
 
 export function summarizeAssertionExpectation(assertion: z.infer<typeof AssertionV1Schema>): string {
-  if (assertion.kind !== "url") return `${assertion.kind} assertion`;
-  return evaluateUrlAssertion(assertion, assertion.expectedUrl).expectedSummary;
+  if (assertion.kind === "url") return evaluateUrlAssertion(assertion, assertion.expectedUrl).expectedSummary;
+  if (assertion.kind === "text") {
+    const scope = assertion.scope === "title" ? "Title" : "Visible document text";
+    const predicate = assertion.operator === "equals"
+      ? "equal"
+      : assertion.operator === "contains"
+        ? "contain"
+        : "not contain";
+    return `${scope} must ${predicate} the configured text.`;
+  }
+  if (assertion.kind === "semantic") {
+    const predicate = assertion.count.operator === "equals"
+      ? "equal"
+      : assertion.count.operator === "at_least"
+        ? "be at least"
+        : "be at most";
+    return `The assertion-specific semantic match count must ${predicate} ${assertion.count.value}.`;
+  }
+  return `Exactly one assertion-specific semantic match must have ${assertion.property} equal to the configured state.`;
 }
 
 export function validateAssertionOrigins(

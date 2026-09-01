@@ -57,6 +57,17 @@ Do not edit, rename, format, stage, restore, or reset another lane’s exclusive
 - Page WebMCP is B-owned. Configured MCP is C-owned and initially limited to explicit unauthenticated loopback HTTP or HTTPS Streamable HTTP endpoints with endpoint/tool allowlists.
 - `mcp-preferred` changes interface strategy only; endpoint URLs and assertion values stay outside `AgentExecutionInputV2`. Server read-only annotations are hints, not authorization; descriptors require a separate local admission decision. All MCP descriptors/results are untrusted, bounded, redacted, and never grade directly.
 
+## Recovery step 6 assertion-capture seam
+
+Agent A owns the shared contract and deterministic projection; Agent B must implement the browser side next without changing the agent envelope:
+
+1. `SolariCdpBrowserController` must implement shared `AssertionSnapshotBrowserController.captureAssertionSnapshot(...)` as a dedicated in-page capture, not by calling model-facing `observe()`.
+2. Capture `finalUrl` as captured/unavailable; capture `title` once (16,384 characters) and `documentVisibleText` once (262,144 characters) only when requested; and populate `semanticStateValues` by directly matching each configured role/name in-page. Semantic counts retain at most 21 (the DSL ceiling plus one); state matches retain at most two and identify the requested property; non-sensitive string state retains at most 500 characters. Emit the shared field/per-assertion truncation/status flags and never use legacy `observation_truncated` for this path. Do not put assertion inputs or the transient snapshot into prompts, tool results, histories, traces, events, or target traffic.
+3. `FreshBrowserAssertionEvidenceCapture` must use `evaluateCapturedAssertion` for every assertion, including every URL/query operator, fingerprint only the assertion-relevant transient projection across the required identical captures, and persist only the existing redacted `BrowserAssertionEvidenceV1` summaries/hashes.
+4. Remove the Solari-local `evaluateAssertionFromObservation` and old `CurrentAssertionSnapshot.observation` path. Preserve quiet-interval stability, policy activity, redacted display URLs, identity hashes, and PASS/FAIL/INCONCLUSIVE precedence.
+
+Until that B-owned seam lands, the legacy Solari capture still consumes the model observation and does not realize the new honesty guarantees.
+
 ## WIP quarantine and staging
 
 - Review and retain reusable work in place; remove V1/Demo production assumptions during the owning lane’s rebase.

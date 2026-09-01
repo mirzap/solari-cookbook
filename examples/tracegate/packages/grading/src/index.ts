@@ -2,9 +2,7 @@ import {
   FailureRecordSchema,
   GradeInputV2Schema,
   GradeResultV2Schema,
-  evaluateUrlAssertion,
   resolveUniversalDisposition,
-  summarizeAssertionExpectation,
   type Clock,
   type FailureRecord,
   type GradeAssertionResult,
@@ -14,39 +12,13 @@ import {
   type PolicyDenyCode,
 } from "@tracegate/shared";
 
-const assertionResults = (input: GradeInputV2): GradeAssertionResult[] => input.evidence.assertions.map((evidence, index) => {
-  const assertion = input.assertions[index]!;
-  if (
-    assertion.kind === "url"
-    && assertion.operator === "origin_path_and_query_parameter_equals"
-    && evidence.status === "observed"
-  ) {
-    if (input.transient?.canonicalFinalUrl == null) {
-      return {
-        assertionId: evidence.assertionId,
-        status: "unverifiable",
-        expectedSummary: summarizeAssertionExpectation(assertion),
-        actualSummary: "The final URL was unavailable for query-parameter verification.",
-        code: "evidence_invalid",
-      };
-    }
-    const evaluated = evaluateUrlAssertion(assertion, input.transient.canonicalFinalUrl);
-    return {
-      assertionId: evidence.assertionId,
-      status: evaluated.matches ? "passed" : "failed",
-      expectedSummary: evaluated.expectedSummary,
-      actualSummary: evaluated.actualSummary,
-      code: null,
-    };
-  }
-  return {
-    assertionId: evidence.assertionId,
-    status: evidence.status === "unverifiable" ? "unverifiable" : evidence.observedResult ? "passed" : "failed",
-    expectedSummary: evidence.expectedSummary,
-    actualSummary: evidence.actualSummary,
-    code: evidence.reasonCode,
-  };
-});
+const assertionResults = (input: GradeInputV2): GradeAssertionResult[] => input.evidence.assertions.map((evidence) => ({
+  assertionId: evidence.assertionId,
+  status: evidence.status === "unverifiable" ? "unverifiable" : evidence.observedResult ? "passed" : "failed",
+  expectedSummary: evidence.expectedSummary,
+  actualSummary: evidence.actualSummary,
+  code: evidence.reasonCode,
+}));
 
 const failure = (
   code: "assertion_failed" | "assertion_unverifiable" | "unsafe_action_blocked",

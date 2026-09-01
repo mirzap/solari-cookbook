@@ -9,7 +9,7 @@ import type { InterfaceMode } from "./config.ts";
 import type { DiscoveryEvidence } from "./discovery.ts";
 import { EvaluationSchema, RunSchema, type BrowserSessionSummary, type Evaluation, type Run } from "./entities.ts";
 import { ControlErrorSchema, FailureRecordSchema, RunWarningSchema, type ControlError, type FailureRecord, type RunWarning } from "./errors.ts";
-import type { AssertionCaptureResult } from "./evidence.ts";
+import type { AssertionCaptureResult, TransientAssertionSnapshotV1 } from "./evidence.ts";
 import {
   EventAppendInputSchema, EventEnvelopeSchema, RunQueuedEventAppendInputSchema, RunQueuedEventEnvelopeSchema,
   RunStatusChangedEventAppendInputSchema, RunStatusChangedEventEnvelopeSchema,
@@ -166,6 +166,16 @@ export interface AgentRunner { run(input: AgentExecutionInputV2, safeTools: Safe
 
 export const AssertionCaptureInputSchema = z.object({ assertions: AssertionSetV1Schema }).strict();
 export type AssertionCaptureInput = z.infer<typeof AssertionCaptureInputSchema>;
+
+/**
+ * Agent-B implementation seam for fresh grading capture. Implementations read
+ * assertion-only browser state through a separate, larger bounded pass; they
+ * must not derive this snapshot from the model-facing observe() envelope.
+ */
+export interface AssertionSnapshotBrowserController {
+  captureAssertionSnapshot(input: AssertionCaptureInput, signal: AbortSignal): Promise<TransientAssertionSnapshotV1>;
+}
+
 export interface AssertionEvidenceCapture { capture(controller: BrowserController, input: AssertionCaptureInput, signal: AbortSignal): Promise<AssertionCaptureResult>; }
 export interface Grader { grade(input: GradeInputV2, signal: AbortSignal): Promise<GradeResultV2>; }
 
