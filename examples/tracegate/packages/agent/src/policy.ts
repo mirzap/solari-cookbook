@@ -1,4 +1,6 @@
 import type {
+  ConfiguredMcpToolDescriptorV1,
+  InterfaceMode,
   PublicCapabilitySummary,
   SafeAgentAction,
   SafeAgentToolSurface,
@@ -22,7 +24,10 @@ function webMcpValueMatches(value: string | number | boolean | null, property: W
     (property.maximum === undefined || value <= property.maximum);
 }
 
-function assertWebMcpInput(input: Readonly<Record<string, string | number | boolean | null>>, descriptor: WebMcpToolDescriptorV1): void {
+function assertClosedToolInput(
+  input: Readonly<Record<string, string | number | boolean | null>>,
+  descriptor: WebMcpToolDescriptorV1 | ConfiguredMcpToolDescriptorV1,
+): void {
   for (const required of descriptor.inputSchema.required) {
     if (!Object.hasOwn(input, required)) throw terminalError("unsafe_action_blocked", "WebMCP input omitted a required admitted field", "agent.policy", { policyCode: "unknown_effect" });
   }
@@ -43,6 +48,8 @@ export class AgentPolicy {
   constructor(capabilities: PublicCapabilitySummary) {
     this.#capabilities = capabilities;
   }
+
+  get interfaceMode(): InterfaceMode { return this.#capabilities.interfaceMode; }
 
   assertObservation(observation: UntrustedAgentObservation): void {
     let origin: string;
@@ -94,7 +101,16 @@ export class AgentPolicy {
       if (descriptor.currentOrigin !== currentOrigin) {
         throw terminalError("unsafe_action_blocked", "WebMCP tool origin does not match the current document", "agent.policy", { policyCode: "origin_not_admitted" });
       }
-      assertWebMcpInput(action.input, descriptor);
+      assertClosedToolInput(action.input, descriptor);
+    }
+    if (action.kind === "invokeConfiguredMcpReadOnly") {
+      const descriptor = surface.configuredMcpTools.find((tool) =>
+        tool.endpointId === action.endpointId && tool.id === action.toolId
+      );
+      if (descriptor === undefined) {
+        throw terminalError("unsafe_action_blocked", "Configured MCP tool is no longer admitted at the current revision", "agent.policy", { policyCode: "native_tool_forbidden" });
+      }
+      assertClosedToolInput(action.input, descriptor);
     }
     if ("ref" in action) {
       const revision = Number(action.ref.split(":")[1]);

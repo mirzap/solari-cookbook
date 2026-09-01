@@ -1,4 +1,5 @@
 export * from "./budgets.ts";
+export * from "./configured-mcp-client.ts";
 export * from "./errors.ts";
 export * from "./executor.ts";
 export * from "./history.ts";

@@ -12,6 +12,7 @@ import {
   type SafeAgentToolName,
   type SafeAgentToolPort,
   type SafeAgentToolSurface,
+  type ToolInterfaceSource,
   type UntrustedAgentObservation,
 } from "@tracegate/shared";
 import type { AgentToolExecutor, ToolAdmission } from "./model-driver.ts";
@@ -29,6 +30,13 @@ interface Admission extends ToolAdmission {
 }
 
 const MUTATING_ACTIONS = new Set<SafeAgentToolName>(["navigate", "click", "type", "select", "pressKey"]);
+
+function interfaceSource(tool: SafeAgentToolName): ToolInterfaceSource {
+  if (tool === "invokeWebMcpReadOnly") return "page_webmcp";
+  if (tool === "invokeConfiguredMcpReadOnly") return "configured_mcp";
+  if (["navigate", "wait", "finish"].includes(tool)) return "orchestration";
+  return "semantic_ui";
+}
 
 export class SerializedSafeToolExecutor implements AgentToolExecutor {
   readonly #tools: SafeAgentToolPort;
@@ -118,6 +126,8 @@ export class SerializedSafeToolExecutor implements AgentToolExecutor {
       payload: {
         toolCallId: ToolCallIdSchema.parse(admission.normalizedId),
         tool: admission.toolName,
+        interfaceSource: interfaceSource(admission.toolName),
+        interfaceMode: this.#policy.interfaceMode,
         success: false,
         durationMs: Math.max(0, Math.floor(this.#now() - admission.admittedAt)),
         resultSummary: String(redactJson(resultSummary, { maxStringLength: 2_000 })),
@@ -171,6 +181,8 @@ export class SerializedSafeToolExecutor implements AgentToolExecutor {
       payload: {
         toolCallId: ToolCallIdSchema.parse(admission.normalizedId),
         tool: action.kind,
+        interfaceSource: interfaceSource(action.kind),
+        interfaceMode: this.#policy.interfaceMode,
         argumentSummary: `validated ${action.kind} proposal at observation revision ${action.observationRevision}`,
       },
     });
@@ -199,6 +211,8 @@ export class SerializedSafeToolExecutor implements AgentToolExecutor {
         payload: {
           toolCallId: ToolCallIdSchema.parse(admission.normalizedId),
           tool: action.kind,
+          interfaceSource: interfaceSource(action.kind),
+          interfaceMode: this.#policy.interfaceMode,
           success: result.decision.decision === "allow",
           durationMs: Math.max(0, Math.floor(this.#now() - admission.admittedAt)),
           resultSummary: String(redactJson(result.summary, { maxStringLength: 2_000 })),
