@@ -13,6 +13,7 @@ export const SafeActionEffectSchema = z.enum([
   "non_sensitive_filter_input",
   "restricted_key_navigation",
   "admitted_read_only_webmcp",
+  "admitted_read_only_configured_mcp",
   "finish_declaration",
 ]);
 

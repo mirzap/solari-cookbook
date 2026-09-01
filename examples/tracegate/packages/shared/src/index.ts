@@ -12,6 +12,7 @@ export * from "./events.ts";
 export * from "./grading.ts";
 export * from "./ids.ts";
 export * from "./json.ts";
+export * from "./mcp.ts";
 export * from "./models.ts";
 export * from "./policy.ts";
 export * from "./ports.ts";

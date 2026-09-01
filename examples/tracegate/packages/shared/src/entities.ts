@@ -12,6 +12,7 @@ import {
   UtcDateTimeSchema,
 } from "./ids.ts";
 import { JsonObjectSchema } from "./json.ts";
+import { InterfaceUsageSummarySchema } from "./mcp.ts";
 import { ModelIdSchema } from "./models.ts";
 import {
   EvaluationStatusSchema,
@@ -53,6 +54,7 @@ export const RunSchema = z.object({
   iterations: z.number().int().nonnegative(),
   toolCalls: z.number().int().nonnegative(),
   browserActions: z.number().int().nonnegative(),
+  interfaceUsage: InterfaceUsageSummarySchema.optional(),
   usage: TokenUsageSchema,
   failure: FailureRecordSchema.nullable(),
   grade: GradeResultSchema.nullable(),

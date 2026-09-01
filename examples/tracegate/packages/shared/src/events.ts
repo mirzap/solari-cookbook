@@ -1,4 +1,6 @@
 import { z } from "zod";
+import { SafeAgentToolNameSchema } from "./agent.ts";
+import { InterfaceModeSchema } from "./config.ts";
 import { DiscoveryEvidenceSchema } from "./discovery.ts";
 import { ControlErrorSchema, FailureRecordSchema, RunWarningSchema } from "./errors.ts";
 import { GradeResultV2Schema } from "./grading.ts";
@@ -12,6 +14,7 @@ import {
   ToolCallIdSchema,
   UtcDateTimeSchema,
 } from "./ids.ts";
+import { ToolInterfaceSourceSchema } from "./mcp.ts";
 import { PolicyActivitySchema, PolicyDenyCodeSchema } from "./policy.ts";
 import { ModelIdSchema } from "./models.ts";
 import { AdmissionReasonCodeSchema } from "./targets.ts";
@@ -57,8 +60,22 @@ const countSummary = z.object({
 const agentEvents = [
   event("run.agent.iteration", z.object({ iteration: z.number().int().positive(), summary: z.string().max(2_000), historyBytes: z.number().int().nonnegative() }).strict()),
   event("run.agent.message", z.object({ role: z.enum(["assistant", "tool"]), summary: z.string().max(4_000) }).strict()),
-  event("run.tool.started", z.object({ toolCallId: ToolCallIdSchema, tool: z.string().min(1).max(100), argumentSummary: z.string().max(2_000) }).strict()),
-  event("run.tool.completed", z.object({ toolCallId: ToolCallIdSchema, tool: z.string().min(1).max(100), success: z.boolean(), durationMs: z.number().int().nonnegative(), resultSummary: z.string().max(2_000) }).strict()),
+  event("run.tool.started", z.object({
+    toolCallId: ToolCallIdSchema,
+    tool: SafeAgentToolNameSchema,
+    interfaceSource: ToolInterfaceSourceSchema,
+    interfaceMode: InterfaceModeSchema,
+    argumentSummary: z.string().max(2_000),
+  }).strict()),
+  event("run.tool.completed", z.object({
+    toolCallId: ToolCallIdSchema,
+    tool: SafeAgentToolNameSchema,
+    interfaceSource: ToolInterfaceSourceSchema,
+    interfaceMode: InterfaceModeSchema,
+    success: z.boolean(),
+    durationMs: z.number().int().nonnegative(),
+    resultSummary: z.string().max(2_000),
+  }).strict()),
   event("run.usage.updated", z.object({ promptTokens: z.number().int().nonnegative(), completionTokens: z.number().int().nonnegative(), totalTokens: z.number().int().nonnegative() }).strict()),
 ] as const;
 

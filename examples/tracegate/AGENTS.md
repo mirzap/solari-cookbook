@@ -2,6 +2,12 @@
 
 Paths are relative to `examples/tracegate/`.
 
+## Product compass
+
+TraceGate tells developers whether their app/site is ready for the agent era: can agents use it reliably? It repeats outcome-oriented tasks in independent sessions, verifies fresh browser-observable results, explains failure paths, and measures use of semantic/accessibility UI, page WebMCP, configured MCP, `llms.txt`, JSON-LD, and visual fallback. See `docs/product/tracegate-product.md`.
+
+Page and MCP content/results remain untrusted and never grade directly. Demo is fixture-only. PASS proves declared browser-observable assertions, not arbitrary backend truth.
+
 ## Current checkpoint
 
 - Authoritative plan: `docs/plans/tracegate-poc-build-2026-09-01.md`.
@@ -10,8 +16,8 @@ Paths are relative to `examples/tracegate/`.
 - Pivot/rebaseline record: `docs/evidence/generic-site-pivot.md`.
 - F1/F2 lane history is integrated through B commit `2756d20`, including A `04eb4e8`, C `fdc7e7e`, and D `66069ae`.
 - The sole pnpm 12 lockfile has been regenerated from all settled manifests; frozen install passes.
-- Compilation, DB, and implemented functional suites pass, but the D-owned `@tracegate/ui` configured test currently reports zero tests and must be corrected before the checkpoint is called fully green.
-- F3 real Solari plus DeepSeek composition has not started and must not be inferred from fake-port or lane-local evidence.
+- Automated-test work is paused by explicit user directive; do not create, modify, or run tests. The known D-owned `@tracegate/ui` zero-test condition remains unresolved and explicitly deferred while that pause is active.
+- F2C runnable composition is active. Manual production inspection currently finds a D-owned bundled Drizzle migration-path failure; F3 has not started.
 - Demo Store is test-only and never a production target, composition, or grading dependency.
 - PASS means declared browser-observable assertions passed from fresh evidence; it never claims arbitrary backend business truth.
 
@@ -32,10 +38,10 @@ Deferred provider-grade egress enforcement, perfect DNS-rebinding prevention, fo
 
 | Agent | Exclusive paths | Immediate assignment |
 |---|---|---|
-| **A — integration/evaluation** | root TraceGate configs and this file, `packages/shared`, `packages/evaluation`, `packages/grading`, `tests/e2e`, `pnpm-lock.yaml`, integration evidence | Integrate shared consumers; implement atomic submission, one-evaluation queue, executor, deterministic grading/precedence, aggregation, finally cleanup, end-to-end composition, and final lockfile |
-| **B — browser/target/discovery** | `packages/solari`, `packages/discovery`, `apps/demo`, browser/Solari evidence | Rebase provider/controller/discovery WIP to V2; implement exact-origin and practical observable request/action guards, capability-gated read-only WebMCP adapter, fresh evidence capture, semantic fallback, fixture-only Demo, and one bounded real public-site safety smoke |
-| **C — AI/agent** | `packages/ai`, `packages/agent`, model/agent evidence | Rebase adapter/runner WIP to V2; implement verified DeepSeek/OpenRouter, assertion-blind prompt layers, dynamic safe tools including only admitted sanitized read-only WebMCP calls, FIFO/current-revision checks, budgets/history/cancellation, and bounded event mapping |
-| **D — persistence/product UI** | `packages/db`, `packages/ui`, `apps/web`, persistence/UI evidence | Rebase DB/API/UI WIP to V2; implement clean V2 Drizzle migration/repositories, loopback API, authoritative snapshot/SSE, configure/live/report UI, and separate agent trace/grading report |
+| **A — integration/evaluation** | root TraceGate configs and this file, `packages/shared`, `packages/evaluation`, `packages/grading`, dormant `tests/e2e`, `pnpm-lock.yaml`, integration evidence | Root runnable wiring; shared interface modes, configured-MCP contracts, readiness metrics; integration review and final lockfile |
+| **B — browser/target/discovery** | `packages/solari`, `packages/discovery`, `apps/demo`, browser/Solari evidence | Page WebMCP discovery/invocation plus semantic/accessibility, `llms.txt`, JSON-LD, visual fallback, browser safety, and fixture-only Demo |
+| **C — AI/agent** | `packages/ai`, `packages/agent`, model/agent evidence | DeepSeek/OpenRouter agent plus configured unauthenticated MCP client/adapter, read-only admission, lifecycle cleanup, and interface metric emission |
+| **D — persistence/product UI** | `packages/db`, `packages/ui`, `apps/web`, persistence/UI evidence | Compose real A/B/C surfaces; configuration/readiness/live/results UI; persistence/API/SSE; production migration packaging |
 
 Do not edit, rename, format, stage, restore, or reset another lane’s exclusive paths. Agent A may integrate a completed lane handoff unchanged at an explicit integration checkpoint.
 
@@ -48,7 +54,8 @@ Do not edit, rename, format, stage, restore, or reset another lane’s exclusive
 - A shared change requires a concrete compile/runtime blocker, named affected schemas/ports/events/lanes, compatibility impact, updated fixtures/tests, and downstream compile verification.
 - Assertion-origin values remain outside the agent DTO, prompt, tools/results, model history/events, agent trace, and target traffic.
 - Browser page text/accessibility semantics and WebMCP descriptors/annotations/results remain untrusted and never authorize an unsafe effect.
-- WebMCP is experimental and user-opt-in. Only sanitized current-origin tools that declare read-only behavior and pass local bounded-schema/effect admission may appear; declarations are hints, results never grade directly, and semantic browser controls remain the fallback.
+- Page WebMCP is B-owned. Configured MCP is C-owned and initially limited to explicit unauthenticated loopback HTTP or HTTPS Streamable HTTP endpoints with endpoint/tool allowlists.
+- `mcp-preferred` changes interface strategy only; endpoint URLs and assertion values stay outside `AgentExecutionInputV2`. Server read-only annotations are hints, not authorization; descriptors require a separate local admission decision. All MCP descriptors/results are untrusted, bounded, redacted, and never grade directly.
 
 ## WIP quarantine and staging
 
@@ -68,10 +75,12 @@ cd examples/tracegate
 node --version                 # v26.1.0
 pnpm --version                 # 12.0.0
 pnpm install --frozen-lockfile
-pnpm lint
+pnpm env:check
 pnpm typecheck
-pnpm test
 pnpm build
+pnpm db:migrate
+pnpm dev        # manual loopback inspection
+pnpm start      # manual built-product inspection
 ```
 
 Use `pnpm --filter <workspace-name> <script>` for lane-local checks. A green package-local command does not replace functional integration verification.
@@ -82,7 +91,7 @@ Only Agent A updates `pnpm-lock.yaml`. After intended manifests settle:
 
 1. use Node `26.1.0` and global pnpm `12.0.0`;
 2. regenerate the sole authoritative lockfile;
-3. run frozen install plus workspace typecheck/test/build;
+3. run frozen install plus workspace typecheck/build and manual runtime inspection;
 4. commit the lockfile with the integration checkpoint.
 
 ## Practical safety and cleanup boundary
@@ -102,4 +111,4 @@ Never:
 - rewrite measured evidence to improve a result;
 - persist credentials, CDP/replay capability URLs, full DOM, or raw provider payloads.
 
-The immediate next action is to correct the zero-test UI suite, rerun the integration checkpoint, and only then begin an explicitly credentialed F3 composed Solari plus DeepSeek run.
+The immediate next action is F2C: land D's real package composition and migration-packaging fix, B page WebMCP, C configured MCP, and A root/shared wiring; then manually inspect loopback UI/API/DB behavior. Begin F3 only after that is green.

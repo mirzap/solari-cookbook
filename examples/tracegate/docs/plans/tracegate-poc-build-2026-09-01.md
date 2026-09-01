@@ -2,18 +2,21 @@
 
 **Source of truth:** 2026-09-01
 **Product boundary:** local functional proof of concept
-**Current status:** generic V2 shared contracts passed in TG-004R at `89e2c93`; application-lane WIP remains quarantined and must be integrated against that surface
+**Current status:** TG-004R and the initial F1/F2 lane implementations are integrated; runnable composition and first-class configured MCP are the active checkpoint
 
 ## 1. Product outcome
 
-TraceGate is a local application for evaluating whether a browser-capable model can complete a bounded task on a public HTTPS site.
+TraceGate tells developers whether their app or public site is ready for the agent era: **can agents use it reliably?** It repeats outcome-oriented tasks in independent sessions, verifies fresh browser-observable results deterministically, explains failure paths, and measures which interfaces agents discover and use.
 
-A user supplies:
+The concise canonical product reference is `docs/product/tracegate-product.md`.
+
+A developer supplies:
 
 - one public HTTPS start URL;
 - one bounded natural-language prompt;
 - one to twenty deterministic browser-observable assertions;
-- model, run-count, concurrency, and recording options within configured bounds.
+- model, run-count, concurrency, and recording options within configured bounds;
+- an interface strategy plus optional page WebMCP and explicitly configured unauthenticated MCP endpoints.
 
 Supported assertions are:
 
@@ -22,7 +25,7 @@ Supported assertions are:
 - accessibility-semantic role/name/count checks;
 - checked, selected, expanded, disabled, or bounded non-sensitive value state.
 
-TraceGate runs real isolated Solari Browser sessions, uses the verified DeepSeek/OpenRouter path, drives the page through a constrained semantic tool surface with an experimental capability-gated read-only WebMCP adapter when available, captures fresh browser evidence after action execution stops, grades deterministically, persists results in local Drizzle/libSQL, streams live state through snapshot plus SSE, and presents separate run traces and assertion reports.
+TraceGate runs real isolated Solari Browser sessions through the verified DeepSeek/OpenRouter path. It can use semantic/accessibility UI, page WebMCP, developer-configured MCP, `llms.txt`, JSON-LD, and visual fallback through bounded untrusted adapters. It captures fresh browser evidence after action execution stops, grades deterministically, persists local results, streams live state, explains divergence, and reports interface usage and repeatability.
 
 A **PASS** means only that every declared browser-observable assertion was true in the accepted fresh capture. It is not proof of arbitrary backend state, durable external effects, identity, authorization, payment, publication, or business truth.
 
@@ -30,18 +33,18 @@ A **PASS** means only that every declared browser-observable assertion was true 
 
 The app is functionally complete when:
 
-1. The local configure UI accepts and validates URL, exact origins, prompt, assertions, model, runs, and concurrency.
+1. The local configure UI accepts URL, exact origins, task, assertions, model, runs, concurrency, interface strategy, and optional unauthenticated MCP endpoints/tool allowlists.
 2. A valid evaluation atomically creates its evaluation row, run rows, and queued milestones.
 3. Real Solari sessions execute through a fresh controller per run.
 4. `deepseek/deepseek-v4-flash-0731` runs through the pinned TanStack/OpenRouter adapter.
-5. The model receives the assertion-free V2 execution DTO and only dynamically available safe semantic tools. A site WebMCP tool appears only after read-only adapter admission; raw page tool descriptors never reach the model.
+5. The model receives the assertion-free V2 execution DTO and only dynamically admitted tools. Page WebMCP and configured MCP appear only through separate bounded read-only adapters; raw descriptors and results remain untrusted.
 6. Fresh post-action evidence evaluates URL/text/semantic/state assertions deterministically.
 7. PASS, FAIL, and INCONCLUSIVE follow the frozen precedence below.
 8. Every acknowledged Solari session is closed/released in `finally`, including failure and cancellation paths.
 9. Drizzle/libSQL stores authoritative evaluations, runs, events, evidence summaries, grades, cleanup state, and bounded traces.
 10. The live UI recovers from refresh or SSE reconnect by refetching the authoritative snapshot.
-11. A typed report shows per-run outcomes, assertion results, raw counts, denominators, usage, duration, warnings, and limitations.
-12. One real end-to-end run, repeated runs, and focused functional verification are green without Demo-specific production dependencies.
+11. A typed readiness report shows repeatability, per-run outcomes, assertion results, failure paths, interface discovery/admission/invocation metrics, raw denominators, usage, duration, warnings, and limitations.
+12. One real end-to-end run and a repeated-run readiness report work without Demo-specific production dependencies.
 
 ## 3. Preserved measured facts
 
@@ -70,7 +73,10 @@ Measured evidence is append-only in meaning. No historical result may be relabel
 - local loopback control plane and local database;
 - real Solari and verified DeepSeek/OpenRouter execution;
 - Demo Store only as a deterministic positive/adversarial fixture;
-- experimental read-only WebMCP discovery/invocation with explicit user opt-in, capability admission, and semantic-browser fallback.
+- page WebMCP discovery/invocation with explicit user opt-in, capability admission, and semantic fallback;
+- explicitly configured unauthenticated MCP over loopback HTTP or HTTPS Streamable HTTP with endpoint/tool allowlists;
+- `llms.txt`, JSON-LD, semantic/accessibility UI, and bounded visual fallback;
+- per-interface discovery, admission, invocation, success, and failure metrics.
 
 ### Prohibited by the product policy
 
@@ -143,7 +149,11 @@ Preserve the useful TG-004R surface rather than reopening it without a concrete 
 - browser provider, controller factory, evidence capture, repositories, clock, IDs, and canonical fakes;
 - typed capacity errors and explicit release confirmation;
 - bounded snapshot, report, trace, event, and aggregate schemas;
-- a minimal WebMCP contract checkpoint adding sanitized `WebMcpToolDescriptorV1`, bounded closed-schema inputs/results, and `invokeWebMcpReadOnly` to the dynamic safe-tool surface.
+- sanitized page `WebMcpToolDescriptorV1` and bounded WebMCP invocation;
+- `ConfiguredMcpEndpointV1`, locally admitted `ConfiguredMcpToolDescriptorV1`, `ConfiguredMcpDiscoveryResultV1` / `ConfiguredMcpReadinessV1`, bounded invocation/result schemas, `ConfiguredMcpClientPort`, and `mcp-preferred` mode without endpoint URLs entering the agent DTO;
+- separate selected-tool configuration and runtime admitted/denied decisions; raw MCP schemas/results remain explicitly untrusted;
+- dynamic `invokeConfiguredMcpReadOnly` action/result variants alongside WebMCP and browser tools;
+- interface source/mode on tool milestones and `InterfaceUsageSummary` across semantic UI, page WebMCP, configured MCP, `llms.txt`, JSON-LD, and visual fallback in trace/report projections.
 
 Assertion-origin values may exist only in local authoring, persistence, grading, and report paths. They must not flow into model prompts, tool definitions/results, model history/events, agent traces, or evaluated-target traffic. Assertion-only canaries test provenance/non-flow; coincidental words independently present in the user task or page are not leakage.
 
@@ -171,7 +181,7 @@ For each run:
 - treat an observed prohibited action/request as INCONCLUSIVE;
 - record interception coverage and gaps honestly rather than claiming complete browser egress control.
 
-Discovery uses the active browser/controller path where practical and remains bounded and untrusted. WebMCP is experimental and off by default. When the user opts in, discovery may sanitize current-origin tool descriptors; admission requires a declared read-only tool, a bounded supported input schema, no credential/sensitive/destructive fields, no arbitrary destination, and a local allow decision. Page annotations are hints rather than proof. Invocation remains inside the current anonymous session with request guards armed; observable prohibited traffic/effects block and make the run INCONCLUSIVE. Results are bounded, redacted, explicitly untrusted, and never grade directly. Rejected/unavailable tools are omitted and the agent falls back to semantic browser controls.
+Discovery remains bounded and untrusted. Page WebMCP sanitizes current-origin descriptors and invokes only locally admitted read-only tools inside the guarded anonymous browser session. Developer-configured MCP is a separate C-owned client path: P0 accepts only explicitly configured unauthenticated loopback HTTP or HTTPS Streamable HTTP endpoints, rejects credentials/query secrets, discovers only selected tool names, emits a sanitized admitted/denied decision, exposes bounded closed read-only inputs/results, and closes the client after each run. Authenticated enterprise MCP is deferred. MCP declarations are hints, raw schemas/results remain untrusted, MCP results never grade directly, rejected/unavailable tools are omitted, and semantic controls remain the fallback.
 
 A Solari create is attempted once. A definitive no-session capacity response may lower later concurrency. A timeout/disconnect/malformed ambiguous create is not retried; the run becomes INCONCLUSIVE and records potential-leak evidence. Lack of provider inventory reconciliation does not block the functional app. Every acknowledged provider session ID still requires close/release attempts and explicit cleanup state.
 
@@ -197,7 +207,8 @@ persist acquiring state
 The safe tool upper bound is:
 
 ```text
-navigate, inspect, click, type, select, pressKey, scroll, wait, invokeWebMcpReadOnly, finish
+navigate, inspect, click, type, select, pressKey, scroll, wait,
+invokeWebMcpReadOnly, invokeConfiguredMcpReadOnly, finish
 ```
 
 Unavailable tools are omitted dynamically. `invokeWebMcpReadOnly` is present only for admitted sanitized current-origin tools; tool identity and input are revalidated immediately before invocation, and raw descriptors/results remain untrusted. All proposals execute FIFO and are revalidated against the current observation revision, cancellation, budgets, origin, and obvious-effect policy immediately before dispatch. `finish` is only the model’s belief and never grades the run.
@@ -223,7 +234,7 @@ Persist bounded:
 - evaluation config, exact origins, prompt, assertions, and specification hash;
 - run states, model/provider metadata, usage, timings, warnings, and cleanup status;
 - practical preflight/interception capability evidence;
-- discovery summaries and assertion evidence summaries;
+- discovery summaries, assertion evidence summaries, and per-interface usage metrics;
 - grades, failures, aggregate inputs, and redacted agent-trace milestones;
 - event cursor/run sequence ordering.
 
@@ -245,35 +256,44 @@ The snapshot is authoritative. SSE publishes only committed redacted events and 
 
 UI states:
 
-- configure: URL, origins, prompt, assertions, model/runs/concurrency, limitations;
-- live: evaluation/run state, bounded trace, warnings, evidence capture, cleanup, reconnect state;
-- report: prompt/target, assertions, per-run results, PASS/FAIL/INCONCLUSIVE reasons, raw counts and denominators, durations/usage, cleanup state, and observable-state limitation.
+- configure: URL, origins, task, assertions, model/runs/concurrency, interface strategy, page WebMCP, and configured MCP endpoints/tool allowlists;
+- live: plain-language evaluation state, interface being used, bounded trace, warnings, evidence capture, cleanup, and reconnect state;
+- readiness report: repeatability, per-run outcomes and failure paths, assertion evidence, interface usage, raw denominators, duration/usage, cleanup, and observable-state limitation. Primary UI copy translates internal cursor/revision/DTO/policy vocabulary into developer-facing language.
 
 ## 10. Short implementation path
 
 ```text
 TG-004R shared V2 contracts — PASS at 89e2c93
-  → F1 integrate quarantined lane WIP against V2 contracts
-  → F2 parallel functional slices: DB/API/UI + browser + agent + evaluation/grading
-  → F3 one real end-to-end Solari/DeepSeek run
-  → F4 repeated runs and truthful report
-  → F5 functional verification and cleanup audit
+  → F1/F2 lane implementations integrated
+  → F2C runnable composition + page/configured MCP + readiness metrics
+  → F3 one real end-to-end Solari/DeepSeek readiness run
+  → F4 repeated independent runs and readiness report
+  → F5 manual functional verification and cleanup audit
 ```
 
-These are implementation phases, not a new hardening bureaucracy. A concrete red compile/test/run result blocks the next phase; an unimplemented deferred hardening feature does not.
+These are implementation phases, not a new hardening bureaucracy. A concrete red build, typecheck, migration, or manual runtime result blocks the next phase; an unimplemented deferred hardening feature does not.
 
-### F1 — WIP integration rebaseline
+### F1 — WIP integration rebaseline — complete
 
-Each owner reviews only its quarantined paths, keeps reusable infrastructure, removes production Demo/V1 assumptions, compiles against TG-004R, and commits a path-isolated handoff. Do not blanket-stage or reset the dirty tree. Agent A regenerates the sole lockfile only after intended manifests are settled.
+The initial A/B/C/D functional slices are integrated in linear history. Preserve lane ownership and regenerate the sole lockfile only after any new configured-MCP/composition manifests settle.
 
 Before the integration freeze, Agent B runs one bounded real public-site safety smoke using currently measured capabilities: exact-origin navigation, fresh anonymous session, best-effort public DNS preflight, observable unsafe-request blocking, fresh evidence capture, and release. The evidence must record both successful controls and known coverage gaps. It is not dependent on new provider/proxy features.
 
 ### F2 — Parallel functional slices
 
-- **Agent A — evaluation/grading/integration:** `packages/evaluation`, `packages/grading`, shared fixes only for concrete contract defects, root integration, lockfile, and end-to-end tests. Implement atomic submission, one-evaluation queue, executor, precedence, aggregates, and finally cleanup.
-- **Agent B — browser/discovery/fixture:** `packages/solari`, `packages/discovery`, `apps/demo`, and browser-safety evidence. Implement provider/controller lifecycle, exact-origin/practical request guards, semantic observations, capability-gated WebMCP discovery/invocation adapter, fresh capture, semantic fallback, and fixture-only Demo tests.
+- **Agent A — evaluation/grading/integration:** `packages/evaluation`, `packages/grading`, shared fixes only for concrete contract defects, root integration, lockfile, and manual composition inspection. Implement atomic submission, one-evaluation queue, executor, precedence, aggregates, finally cleanup, interface modes, and metrics.
+- **Agent B — browser/discovery/fixture:** `packages/solari`, `packages/discovery`, `apps/demo`, and browser-safety evidence. Implement provider/controller lifecycle, exact-origin/practical request guards, semantic observations, page WebMCP discovery/invocation, fresh capture, visual fallback, and fixture-only Demo support.
 - **Agent C — AI/agent:** `packages/ai`, `packages/agent`, and model evidence. Implement the pinned DeepSeek/OpenRouter adapter, assertion-blind prompt layers, dynamic safe tools including only admitted sanitized read-only WebMCP calls, FIFO/current-revision checks, budgets, cancellation, and bounded event mapping.
 - **Agent D — data/product UI:** `packages/db`, `packages/ui`, `apps/web`, and persistence/UI evidence. Implement clean V2 migration/repositories, loopback API, snapshot/SSE, configure/live/report UI, and separate agent trace versus grading report.
+
+### F2C — Runnable readiness composition
+
+- **A:** root env/dev/build/start/DB wiring; shared interface modes, configured-MCP contracts, and interface metrics.
+- **B:** page WebMCP plus semantic/accessibility, `llms.txt`, JSON-LD, and visual browser paths.
+- **C:** configured MCP Streamable HTTP client/adapter, local read-only tool admission, per-run lifecycle cleanup through `SafeAgentToolRuntime.close`, and metric emission.
+- **D:** compose real A/B/C constructors; expose interface configuration and developer-readable readiness/live/results UI; repair production DB migration packaging.
+
+A build is not a runnable checkpoint until the loopback production server, health API, clean DB migration, and one manual evaluation flow work without fixtures or hard-coded outcomes.
 
 ### F3 — One real run
 
@@ -285,30 +305,27 @@ Run a bounded repeated evaluation, verify no duplicate runs or shared session st
 
 ### F5 — Functional verification
 
-Run focused package tests, workspace typecheck/test/build, clean-DB migration, local UI flow, one real credentialed run, repeated-run aggregation, refresh/reconnect, assertion non-flow canaries, Demo-independence checks, redaction seeds, cancellation, and cleanup audit.
+Run workspace typecheck/build, clean-DB migration, manual local UI/API flow, one real credentialed run, repeated-run aggregation, refresh/reconnect, assertion non-flow inspection, Demo-independence scan, redaction review, cancellation, and cleanup audit. Automated-test work remains paused by user directive.
 
-## 11. Verification commands
+## 11. Current verification commands
+
+The current user directive prohibits creating, modifying, or running automated tests. Use compilation and manual product inspection only:
 
 ```bash
 cd examples/tracegate
-node --version                 # v26.1.0
-pnpm --version                 # 12.0.0
-pnpm install --frozen-lockfile
-pnpm lint
+pnpm env:check
 pnpm typecheck
-pnpm test
 pnpm build
 pnpm db:generate
 pnpm db:migrate
 pnpm db:check
-pnpm test:e2e:local
-pnpm test:e2e:solari
-pnpm verify
+pnpm dev                      # manual loopback UI/API inspection
+pnpm start                    # manual built-server/UI/API inspection
 ```
 
-Credentialed runs must report configured success or a concrete failure; they may not silently skip. Claims in UI/docs/evidence must match measured output.
+Manual inspection must verify a clean DB, health/configure/snapshot/report/trace/SSE behavior, real interface selection and usage metrics, honest failure output, cleanup, and one credentialed Solari/DeepSeek run. No fixture output or hard-coded result may satisfy F3.
 
-Required focused coverage:
+Review focus:
 
 - V2 config and assertion bounds;
 - assertion provenance/non-flow;
@@ -345,11 +362,11 @@ Paths remain exclusive:
 
 | Owner | Paths |
 |---|---|
-| Agent A | TraceGate root config, `AGENTS.md`, `packages/shared`, `packages/evaluation`, `packages/grading`, `tests/e2e`, lockfile, integration evidence |
+| Agent A | TraceGate root config, `AGENTS.md`, `packages/shared`, `packages/evaluation`, `packages/grading`, dormant `tests/e2e` ownership, lockfile, integration evidence |
 | Agent B | `packages/solari`, `packages/discovery`, `apps/demo`, browser/Solari evidence |
 | Agent C | `packages/ai`, `packages/agent`, model/agent evidence |
 | Agent D | `packages/db`, `packages/ui`, `apps/web`, persistence/UI evidence |
 
 No agent edits, stages, formats, resets, or commits another lane’s WIP. Shared changes go through Agent A and require a concrete cross-lane contract reason. Only Agent A regenerates `pnpm-lock.yaml`, after manifests settle, using Node `26.1.0` and global pnpm `12.0.0`.
 
-The immediate next action is **F1: lane-local rebaseline of quarantined WIP against TG-004R**, followed by the four parallel F2 assignments above.
+The immediate action is **F2C runnable readiness composition**: D composes the real package surfaces and fixes production migration packaging while B finishes page WebMCP, C adds configured MCP, and A supplies root wiring/shared modes/metrics. F3 begins only after manual loopback UI/API/DB inspection is green.

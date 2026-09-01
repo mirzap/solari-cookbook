@@ -21,6 +21,7 @@ import {
   type BrowserSessionId, type CreateAttemptCorrelationId, type EventCursor, type EvaluationId,
   type EventId, type ObservationRevision, type RunId, type UtcDateTime,
 } from "./ids.ts";
+import { InterfaceUsageSummarySchema } from "./mcp.ts";
 import { ModelIdSchema, type ModelId } from "./models.ts";
 import {
   EvaluationStatusSchema, ReleaseStatusSchema, RunOutcomeSchema, RunStatusSchema,
@@ -202,6 +203,7 @@ export const RunCompletionPatchSchema = z.object({
   iterations: z.number().int().nonnegative(),
   toolCalls: z.number().int().nonnegative(),
   browserActions: z.number().int().nonnegative(),
+  interfaceUsage: InterfaceUsageSummarySchema.optional(),
   usage: TokenUsageSchema,
   releaseStatus: ReleaseStatusSchema,
   replayStatus: z.enum(["not_requested", "unsupported", "recording", "pending", "ready", "failed"]),

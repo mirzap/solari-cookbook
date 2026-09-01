@@ -3,7 +3,14 @@ import { ObservationRevisionSchema, UtcDateTimeSchema } from "./ids.ts";
 import { JsonObjectSchema } from "./json.ts";
 import { RunWarningSchema } from "./errors.ts";
 
-export const DiscoveredInterfaceKindSchema = z.enum(["semantic", "llms_txt", "json_ld", "webmcp"]);
+export const DiscoveredInterfaceKindSchema = z.enum([
+  "semantic",
+  "llms_txt",
+  "json_ld",
+  "webmcp",
+  "configured_mcp",
+  "visual_fallback",
+]);
 export const WebMcpGateStateSchema = z.enum([
   "unavailable",
   "available_disabled",

@@ -1,11 +1,15 @@
 import { z } from "zod";
 import { TokenUsageSchema } from "./agent.ts";
 import { AssertionSetV1Schema } from "./assertions.ts";
-import { PublicEvaluationConfigV2Schema } from "./config.ts";
+import { InterfaceModeSchema, PublicEvaluationConfigV2Schema } from "./config.ts";
 import { ControlErrorSchema, FailureRecordSchema, RunWarningSchema } from "./errors.ts";
 import { AgentTraceEventSchema, EventEnvelopeSchema } from "./events.ts";
 import { GradeResultV2Schema } from "./grading.ts";
 import { EventCursorSchema, EvaluationIdSchema, RunIdSchema, UtcDateTimeSchema } from "./ids.ts";
+import {
+  ConfiguredMcpReadinessV1Schema,
+  InterfaceUsageSummarySchema,
+} from "./mcp.ts";
 import { ModelIdSchema } from "./models.ts";
 import { PublicHttpsOriginSchema } from "./targets.ts";
 import { EvaluationStatusSchema, ReleaseStatusSchema, ReplayStatusSchema, RunOutcomeSchema, RunStatusSchema } from "./states.ts";
@@ -24,6 +28,7 @@ export const RunSnapshotSchema = z.object({
   status: RunStatusSchema, outcome: RunOutcomeSchema.nullable(), startedAt: UtcDateTimeSchema.nullable(), finishedAt: UtcDateTimeSchema.nullable(),
   durationMs: z.number().int().nonnegative().nullable(), usage: TokenUsageSchema,
   iterations: z.number().int().nonnegative(), toolCalls: z.number().int().nonnegative(), browserActions: z.number().int().nonnegative(),
+  interfaceUsage: InterfaceUsageSummarySchema.optional(),
   failure: FailureRecordSchema.nullable(), grade: GradeResultV2Schema.nullable(), warnings: z.array(RunWarningSchema).max(50),
   releaseStatus: ReleaseStatusSchema, replayStatus: ReplayStatusSchema, potentialSessionLeak: z.boolean(),
 }).strict();
@@ -65,10 +70,19 @@ const withBoundedResponseBytes = <S extends z.ZodType>(schema: S) => schema.supe
   if (new TextEncoder().encode(JSON.stringify(value)).byteLength > MAX_BOUNDED_RESPONSE_BYTES) context.addIssue({ code: "custom", message: "response projection exceeds 512 KiB UTF-8 limit" });
 });
 
+export const InterfaceReadinessProjectionSchema = z.object({
+  mode: InterfaceModeSchema,
+  pageWebMcpEnabled: z.boolean(),
+  configuredMcp: z.array(ConfiguredMcpReadinessV1Schema).max(5),
+  usage: InterfaceUsageSummarySchema,
+}).strict();
+export type InterfaceReadinessProjection = z.infer<typeof InterfaceReadinessProjectionSchema>;
+
 export const EvaluationReportProjectionSchema = withBoundedResponseBytes(z.object({
   schemaVersion: z.literal(2), evaluationId: EvaluationIdSchema, prompt: z.string().min(1).max(1_000),
   target: z.object({ redactedDisplayUrl: z.string().max(2_048), allowedNavigationOrigins: z.array(PublicHttpsOriginSchema).min(1).max(3) }).strict(),
   assertions: AssertionSetV1Schema, aggregate: EvaluationAggregateV2Schema, runs: z.array(RunSnapshotSchema).max(15),
+  interfaceReadiness: InterfaceReadinessProjectionSchema.optional(),
   observableStateLimitation: z.literal("PASS proves declared browser-observable assertions only, not arbitrary backend business truth."),
 }).strict());
 export type EvaluationReportProjection = z.infer<typeof EvaluationReportProjectionSchema>;
@@ -79,6 +93,8 @@ export const AgentTraceItemSchema = z.object({
 }).strict();
 export const AgentTraceProjectionSchema = withBoundedResponseBytes(z.object({
   schemaVersion: z.literal(1), evaluationId: EvaluationIdSchema, items: z.array(AgentTraceItemSchema).max(200),
+  interfaceMode: InterfaceModeSchema,
+  interfaceUsage: InterfaceUsageSummarySchema.optional(),
   truncated: z.boolean(), nextCursor: EventCursorSchema.nullable(),
 }).strict());
 export type AgentTraceProjection = z.infer<typeof AgentTraceProjectionSchema>;

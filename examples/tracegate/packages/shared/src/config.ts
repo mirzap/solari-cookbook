@@ -1,9 +1,10 @@
 import { z } from "zod";
 import { AssertionSetV1Schema, validateAssertionOrigins } from "./assertions.ts";
+import { ConfiguredMcpEndpointV1Schema } from "./mcp.ts";
 import { ModelIdSchema } from "./models.ts";
 import { PublicEvaluationTargetV2Schema } from "./targets.ts";
 
-export const InterfaceModeSchema = z.enum(["auto", "semantic-only"]);
+export const InterfaceModeSchema = z.enum(["auto", "semantic-only", "mcp-preferred"]);
 export const SafetyPolicyVersionSchema = z.literal("public-safe-v1");
 
 export const ProviderRoutingSchema = z.object({
@@ -39,6 +40,7 @@ export const PublicEvaluationConfigV2Schema = z.object({
   requestedConcurrency: z.number().int().min(1).max(5).default(3),
   interfaceMode: InterfaceModeSchema.default("auto"),
   webMcpReadOnlyEnabled: z.boolean().default(false),
+  configuredMcpEndpoints: z.array(ConfiguredMcpEndpointV1Schema).max(5).optional(),
   recordingRequested: z.boolean().default(false),
   sampling: SamplingConfigSchema.default({ temperature: 0.2, topP: 1, providerRouting: null }),
   budgets: RuntimeBudgetsSchema.default({
@@ -60,6 +62,14 @@ export const PublicEvaluationConfigV2Schema = z.object({
   }
   if (value.budgets.toolTimeoutMs > value.budgets.wallClockMs) {
     context.addIssue({ code: "custom", path: ["budgets", "toolTimeoutMs"], message: "tool timeout cannot exceed wall clock budget" });
+  }
+  const configuredMcpEndpoints = value.configuredMcpEndpoints ?? [];
+  const endpointIds = configuredMcpEndpoints.map((endpoint) => endpoint.id);
+  if (new Set(endpointIds).size !== endpointIds.length) {
+    context.addIssue({ code: "custom", path: ["configuredMcpEndpoints"], message: "configured MCP endpoint IDs must be unique" });
+  }
+  if (value.interfaceMode === "mcp-preferred" && configuredMcpEndpoints.length === 0 && !value.webMcpReadOnlyEnabled) {
+    context.addIssue({ code: "custom", path: ["interfaceMode"], message: "MCP-preferred mode requires page WebMCP or a configured MCP endpoint" });
   }
   validateAssertionOrigins(value.assertions, value.target.allowedNavigationOrigins, context);
 });

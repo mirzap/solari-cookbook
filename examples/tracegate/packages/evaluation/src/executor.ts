@@ -20,12 +20,14 @@ import {
   type BrowserSessionRepository,
   type BrowserSessionSummary,
   type Clock,
+  type ConfiguredMcpEndpointV1,
   type DiscoveryController,
   type DiscoveryEvidence,
   type FailureRecord,
   type GradeResultV2,
   type Grader,
   type IdGenerator,
+  type InterfaceMode,
   type ProviderCapacityPort,
   type PublicEvaluationConfigV2,
   type ReleaseResult,
@@ -42,11 +44,18 @@ export interface SafeAgentToolFactoryContext {
   readonly controller: BrowserController;
   readonly admittedTarget: AdmittedPublicTarget;
   readonly discovery: DiscoveryEvidence;
+  readonly interfaceMode: InterfaceMode;
   readonly webMcpReadOnlyEnabled: boolean;
+  readonly configuredMcpEndpoints: readonly ConfiguredMcpEndpointV1[];
+}
+
+export interface SafeAgentToolRuntime {
+  readonly tools: SafeAgentToolPort;
+  close(signal: AbortSignal): Promise<void>;
 }
 
 export interface SafeAgentToolFactory {
-  create(context: SafeAgentToolFactoryContext, signal: AbortSignal): Promise<SafeAgentToolPort>;
+  create(context: SafeAgentToolFactoryContext, signal: AbortSignal): Promise<SafeAgentToolRuntime>;
 }
 
 export interface RunExecutorDependencies {
@@ -145,6 +154,7 @@ export class FunctionalRunExecutor {
     let lease: BrowserLease | null = null;
     let acquiredAt: BrowserSessionSummary["acquiredAt"] | null = null;
     let controller: BrowserController | null = null;
+    let safeToolRuntime: SafeAgentToolRuntime | null = null;
     let release: ReleaseResult | null = null;
     let grade: GradeResultV2 | null = null;
     let agentResult: AgentRunResult | null = null;
@@ -230,16 +240,18 @@ export class FunctionalRunExecutor {
         admittedTarget: admission.target,
       }, signal);
       await transition("running_agent", {}, signal);
-      const safeTools = await dependencies.safeToolFactory.create({
+      safeToolRuntime = await dependencies.safeToolFactory.create({
         controller,
         admittedTarget: admission.target,
         discovery,
+        interfaceMode: config.interfaceMode,
         webMcpReadOnlyEnabled: config.webMcpReadOnlyEnabled,
+        configuredMcpEndpoints: config.configuredMcpEndpoints ?? [],
       }, signal);
-      const surface = await safeTools.surface(initialObservation.revision, signal);
+      const surface = await safeToolRuntime.tools.surface(initialObservation.revision, signal);
       agentResult = await dependencies.agent.run(
         buildAgentExecutionInputV2(config, initialObservation, surface.tools),
-        safeTools,
+        safeToolRuntime.tools,
         signal,
       );
       await transition("grading", {}, signal);
@@ -273,6 +285,13 @@ export class FunctionalRunExecutor {
             await transition("releasing_browser", { releaseStatus: "releasing", potentialSessionLeak }, AbortSignal.timeout(15_000));
           } catch (error) {
             warnings.push(warning("cleanup_failed", "run_transition", error instanceof Error ? error.message : "Could not enter cleanup state.", true));
+          }
+        }
+        if (safeToolRuntime !== null) {
+          try {
+            await safeToolRuntime.close(AbortSignal.timeout(15_000));
+          } catch (error) {
+            warnings.push(warning("cleanup_failed", "safe_tool_close", error instanceof Error ? error.message : "Safe tool runtime close failed.", true));
           }
         }
         if (controller !== null) {
@@ -360,6 +379,7 @@ export class FunctionalRunExecutor {
         iterations: agentResult?.iterations ?? 0,
         toolCalls: agentResult?.toolCalls ?? 0,
         browserActions: agentResult?.browserActions ?? 0,
+        interfaceUsage: agentResult?.interfaceUsage,
         usage: agentResult?.usage ?? { promptTokens: null, completionTokens: null, totalTokens: null },
         releaseStatus: lease === null ? "not_started" : "released",
         replayStatus: config.recordingRequested ? "pending" : "not_requested",

@@ -1,9 +1,17 @@
 import { z } from "zod";
-import { RuntimeBudgetsSchema, SafetyPolicyVersionSchema, type PublicEvaluationConfigV2 } from "./config.ts";
+import { InterfaceModeSchema, RuntimeBudgetsSchema, SafetyPolicyVersionSchema, type PublicEvaluationConfigV2 } from "./config.ts";
 import { ElementRefSchema, ObservationRevisionSchema, ToolCallIdSchema } from "./ids.ts";
 import { PublicHttpsOriginSchema, PublicHttpsUrlSchema } from "./targets.ts";
 import { EffectDecisionSchema } from "./policy.ts";
 import { RunWarningSchema } from "./errors.ts";
+import {
+  ConfiguredMcpEndpointIdSchema,
+  ConfiguredMcpInvocationRequestSchema,
+  ConfiguredMcpToolCatalogV1Schema,
+  ConfiguredMcpToolIdSchema,
+  InterfaceUsageSummarySchema,
+  UntrustedConfiguredMcpResultV1Schema,
+} from "./mcp.ts";
 import {
   UntrustedWebMcpResultV1Schema,
   WebMcpInvocationInputSchema,
@@ -23,6 +31,7 @@ export const SafeAgentToolNameSchema = z.enum([
   "scroll",
   "wait",
   "invokeWebMcpReadOnly",
+  "invokeConfiguredMcpReadOnly",
   "finish",
 ]);
 
@@ -54,6 +63,13 @@ export const SafeAgentActionSchema = z.discriminatedUnion("kind", [
   z.object({ ...proposalBase, kind: z.literal("scroll"), direction: z.enum(["up", "down"]), amount: z.number().int().min(1).max(5_000) }).strict(),
   z.object({ ...proposalBase, kind: z.literal("wait"), durationMs: z.number().int().min(0).max(15_000) }).strict(),
   z.object({ ...proposalBase, kind: z.literal("invokeWebMcpReadOnly"), toolId: WebMcpToolIdSchema, input: WebMcpInvocationInputSchema }).strict(),
+  z.object({
+    ...proposalBase,
+    kind: z.literal("invokeConfiguredMcpReadOnly"),
+    endpointId: ConfiguredMcpEndpointIdSchema,
+    toolId: ConfiguredMcpToolIdSchema,
+    input: ConfiguredMcpInvocationRequestSchema.shape.input,
+  }).strict(),
   z.object({ ...proposalBase, kind: z.literal("finish"), completed: z.boolean(), summary: z.string().max(2_000) }).strict(),
 ]);
 
@@ -91,8 +107,8 @@ export const AgentObservationSchema = UntrustedAgentObservationSchema;
 export const PublicCapabilitySummarySchema = z.object({
   startOrigin: PublicHttpsOriginSchema,
   allowedNavigationOrigins: z.array(PublicHttpsOriginSchema).min(1).max(3),
-  availableTools: z.array(SafeAgentToolNameSchema).max(10),
-  interfaceMode: z.enum(["auto", "semantic-only"]),
+  availableTools: z.array(SafeAgentToolNameSchema).max(11),
+  interfaceMode: InterfaceModeSchema,
   safetySummary: z.literal("anonymous public observable-state tasks only; unknown effects are denied"),
 }).strict().superRefine((value, context) => {
   if (new Set(value.availableTools).size !== value.availableTools.length) context.addIssue({ code: "custom", path: ["availableTools"], message: "available tools must be unique" });
@@ -122,13 +138,18 @@ export const AgentPromptLayersV2Schema = z.object({
 
 export const SafeAgentToolSurfaceSchema = z.object({
   observationRevision: ObservationRevisionSchema,
-  tools: z.array(SafeAgentToolNameSchema).max(10),
+  tools: z.array(SafeAgentToolNameSchema).max(11),
   webMcpTools: WebMcpToolCatalogV1Schema.default([]),
+  configuredMcpTools: ConfiguredMcpToolCatalogV1Schema.default([]),
 }).strict().superRefine((value, context) => {
   if (new Set(value.tools).size !== value.tools.length) context.addIssue({ code: "custom", path: ["tools"], message: "tool surface must not contain duplicates" });
   const hasInvocationTool = value.tools.includes("invokeWebMcpReadOnly");
   if (hasInvocationTool !== (value.webMcpTools.length > 0)) {
     context.addIssue({ code: "custom", path: ["webMcpTools"], message: "the WebMCP invocation tool and admitted descriptor catalog must be exposed together" });
+  }
+  const hasConfiguredMcpInvocation = value.tools.includes("invokeConfiguredMcpReadOnly");
+  if (hasConfiguredMcpInvocation !== (value.configuredMcpTools.length > 0)) {
+    context.addIssue({ code: "custom", path: ["configuredMcpTools"], message: "the configured MCP invocation tool and admitted descriptor catalog must be exposed together" });
   }
 });
 
@@ -150,9 +171,22 @@ export const SafeAgentToolResultSchema = z.discriminatedUnion("tool", [
   z.object({ ...toolResultBase, tool: z.literal("pressKey") }).strict(),
   z.object({ ...toolResultBase, tool: z.literal("scroll") }).strict(),
   z.object({ ...toolResultBase, tool: z.literal("wait") }).strict(),
-  z.object({ ...toolResultBase, tool: z.literal("invokeWebMcpReadOnly"), webMcpResult: UntrustedWebMcpResultV1Schema }).strict(),
+  z.object({ ...toolResultBase, tool: z.literal("invokeWebMcpReadOnly"), webMcpResult: UntrustedWebMcpResultV1Schema.nullable() }).strict(),
+  z.object({ ...toolResultBase, tool: z.literal("invokeConfiguredMcpReadOnly"), configuredMcpResult: UntrustedConfiguredMcpResultV1Schema.nullable() }).strict(),
   z.object({ ...toolResultBase, tool: z.literal("finish"), observation: z.null(), finishedBelief: z.boolean() }).strict(),
 ]).superRefine((value, context) => {
+  if (value.tool === "invokeWebMcpReadOnly") {
+    const requiresResult = value.decision.decision === "allow";
+    if (requiresResult !== (value.webMcpResult !== null)) {
+      context.addIssue({ code: "custom", path: ["webMcpResult"], message: "allowed WebMCP calls require a result; denied calls must not fabricate one" });
+    }
+  }
+  if (value.tool === "invokeConfiguredMcpReadOnly") {
+    const requiresResult = value.decision.decision === "allow";
+    if (requiresResult !== (value.configuredMcpResult !== null)) {
+      context.addIssue({ code: "custom", path: ["configuredMcpResult"], message: "allowed configured MCP calls require a result; denied calls must not fabricate one" });
+    }
+  }
   if (value.decision.decision !== "allow") return;
   const allowedEffects = {
     navigate: ["admitted_get_navigation"],
@@ -164,6 +198,7 @@ export const SafeAgentToolResultSchema = z.discriminatedUnion("tool", [
     scroll: ["viewport_scroll"],
     wait: ["passive_wait"],
     invokeWebMcpReadOnly: ["admitted_read_only_webmcp"],
+    invokeConfiguredMcpReadOnly: ["admitted_read_only_configured_mcp"],
     finish: ["finish_declaration"],
   } as const;
   if (!(allowedEffects[value.tool] as readonly string[]).includes(value.decision.effect)) {
@@ -178,11 +213,16 @@ export const SafeAgentToolExchangeSchema = z.object({
   if (value.action.toolCallId !== value.result.toolCallId || value.action.kind !== value.result.tool) {
     context.addIssue({ code: "custom", path: ["result"], message: "tool result identity must match its action" });
   }
-  if (value.result.decision.observationRevision !== value.action.observationRevision) {
-    context.addIssue({ code: "custom", path: ["result", "decision", "observationRevision"], message: "effect decision must use the proposal revision" });
+  if (value.result.decision.observationRevision !== null && value.result.decision.observationRevision !== value.action.observationRevision) {
+    context.addIssue({ code: "custom", path: ["result", "decision", "observationRevision"], message: "effect decision must use the proposal revision when a revision is available" });
   }
-  if (value.action.kind === "invokeWebMcpReadOnly" && value.result.tool === "invokeWebMcpReadOnly" && value.action.toolId !== value.result.webMcpResult.toolId) {
+  if (value.action.kind === "invokeWebMcpReadOnly" && value.result.tool === "invokeWebMcpReadOnly" && value.result.webMcpResult !== null && value.action.toolId !== value.result.webMcpResult.toolId) {
     context.addIssue({ code: "custom", path: ["result", "webMcpResult", "toolId"], message: "WebMCP result tool ID must match its action" });
+  }
+  if (value.action.kind === "invokeConfiguredMcpReadOnly" && value.result.tool === "invokeConfiguredMcpReadOnly" && value.result.configuredMcpResult !== null) {
+    if (value.action.endpointId !== value.result.configuredMcpResult.endpointId || value.action.toolId !== value.result.configuredMcpResult.toolId) {
+      context.addIssue({ code: "custom", path: ["result", "configuredMcpResult"], message: "configured MCP result identity must match its action" });
+    }
   }
 });
 
@@ -199,6 +239,7 @@ export const AgentRunResultSchema = z.object({
   iterations: z.number().int().nonnegative(),
   toolCalls: z.number().int().nonnegative(),
   browserActions: z.number().int().nonnegative(),
+  interfaceUsage: InterfaceUsageSummarySchema.optional(),
   usage: TokenUsageSchema,
   resolvedProvider: z.string().min(1).max(200).nullable(),
   warnings: z.array(RunWarningSchema).max(50),
