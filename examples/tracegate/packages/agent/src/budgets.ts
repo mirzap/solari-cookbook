@@ -58,8 +58,14 @@ export class BudgetLedger {
   async withToolTimeout<T>(operation: (signal: AbortSignal) => Promise<T>, parent: AbortSignal): Promise<T> {
     throwIfAborted(parent, "agent.tool");
     const controller = new AbortController();
-    const onAbort = () => controller.abort(parent.reason);
+    let rejectCancellation: ((error: unknown) => void) | null = null;
+    const cancellation = new Promise<never>((_resolve, reject) => { rejectCancellation = reject; });
+    const onAbort = () => {
+      controller.abort(parent.reason);
+      rejectCancellation?.(abortedError("agent.tool"));
+    };
     parent.addEventListener("abort", onAbort, { once: true });
+    if (parent.aborted) onAbort();
     let rejectTimeout: ((error: unknown) => void) | null = null;
     const timeout = new Promise<never>((_resolve, reject) => { rejectTimeout = reject; });
     const timer = setTimeout(() => {
@@ -67,7 +73,7 @@ export class BudgetLedger {
       rejectTimeout?.(new Error("tool timeout"));
     }, this.#budget.toolTimeoutMs);
     try {
-      return await Promise.race([operation(controller.signal), timeout]);
+      return await Promise.race([operation(controller.signal), cancellation, timeout]);
     } catch (error) {
       if (parent.aborted) throw abortedError("agent.tool");
       if (controller.signal.aborted) throw terminalError("budget_exhausted", "Tool timeout exhausted", "agent.tool", { cause: error });

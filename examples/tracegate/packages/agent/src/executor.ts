@@ -7,7 +7,6 @@ import {
   ToolCallIdSchema,
   UntrustedAgentObservationSchema,
   isTraceGateError,
-  redactError,
   redactJson,
   type SafeAgentAction,
   type SafeAgentToolName,
@@ -17,7 +16,7 @@ import {
 } from "@tracegate/shared";
 import type { AgentToolExecutor, ToolAdmission } from "./model-driver.ts";
 import { BudgetLedger } from "./budgets.ts";
-import { terminalError } from "./errors.ts";
+import { terminalError, throwIfAborted } from "./errors.ts";
 import { emitMilestone, type AgentMilestoneSink } from "./milestones.ts";
 import { AgentPolicy } from "./policy.ts";
 
@@ -29,7 +28,7 @@ interface Admission extends ToolAdmission {
   readonly admittedAt: number;
 }
 
-const BROWSER_ACTIONS = new Set<SafeAgentToolName>(["navigate", "click", "type", "select", "pressKey", "scroll", "wait", "invokeWebMcpReadOnly"]);
+const MUTATING_ACTIONS = new Set<SafeAgentToolName>(["navigate", "click", "type", "select", "pressKey"]);
 
 export class SerializedSafeToolExecutor implements AgentToolExecutor {
   readonly #tools: SafeAgentToolPort;
@@ -44,6 +43,7 @@ export class SerializedSafeToolExecutor implements AgentToolExecutor {
   #observation: UntrustedAgentObservation;
   #surface: SafeAgentToolSurface | null = null;
   #finished: { completed: boolean; summary: string } | null = null;
+  #terminalUncertainty = false;
 
   constructor(input: {
     tools: SafeAgentToolPort;
@@ -69,7 +69,15 @@ export class SerializedSafeToolExecutor implements AgentToolExecutor {
 
   async refreshSurface(signal: AbortSignal): Promise<SafeAgentToolSurface> {
     const linked = AbortSignal.any([this.#signal, signal]);
-    const surface = SafeAgentToolSurfaceSchema.parse(await this.#tools.surface(this.#observation.revision, linked));
+    let surface: SafeAgentToolSurface;
+    try {
+      const rawSurface = await this.#tools.surface(this.#observation.revision, linked);
+      throwIfAborted(linked, "agent.tools");
+      surface = SafeAgentToolSurfaceSchema.parse(rawSurface);
+    } catch (error) {
+      if (isTraceGateError(error)) throw error;
+      throw terminalError("target_evidence_lost", "Safe-tool surface failed contract validation", "agent.tools", { cause: error });
+    }
     this.#policy.assertSurface(surface, this.#observation);
     if (!surface.tools.includes("finish")) {
       throw terminalError("provider_protocol_error", "Dynamic safe-tool surface omitted finish", "agent.tools");
@@ -79,13 +87,14 @@ export class SerializedSafeToolExecutor implements AgentToolExecutor {
   }
 
   admit(providerCallId: string, toolNameInput: string, rawArguments: string): ToolAdmission {
+    if (this.#terminalUncertainty) throw terminalError("target_evidence_lost", "A prior timed-out tool left browser state uncertain", "agent.tool");
     if (this.#admissions.has(providerCallId)) throw terminalError("provider_protocol_error", "Duplicate provider tool-call identifier", "agent.tool");
     if (Buffer.byteLength(rawArguments, "utf8") > 8_192) throw terminalError("provider_protocol_error", "Tool arguments exceed protocol bound", "agent.tool");
     const surface = this.#surface;
     if (surface === null) throw terminalError("provider_protocol_error", "Tool proposal arrived before capability refresh", "agent.tool");
+    const ordinal = this.#ledger.admitTool(this.#signal);
     const toolName = SafeAgentToolNameSchema.parse(toolNameInput);
     if (!surface.tools.includes(toolName)) throw terminalError("provider_protocol_error", "Provider proposed an unavailable tool", "agent.tool");
-    const ordinal = this.#ledger.admitTool(this.#signal);
     const admission: Admission = {
       normalizedId: ToolCallIdSchema.parse(`tool-${ordinal}`),
       ordinal,
@@ -103,7 +112,7 @@ export class SerializedSafeToolExecutor implements AgentToolExecutor {
     const admission = this.#requireAdmission(providerCallId);
     if (this.#completed.has(providerCallId)) return;
     this.#completed.add(providerCallId);
-    const safe = redactError(error);
+    const resultSummary = isTraceGateError(error) ? error.safe.message : "Safe tool failed or returned an invalid bounded result";
     await emitMilestone(this.#sink, {
       type: "run.tool.completed",
       payload: {
@@ -111,7 +120,7 @@ export class SerializedSafeToolExecutor implements AgentToolExecutor {
         tool: admission.toolName,
         success: false,
         durationMs: Math.max(0, Math.floor(this.#now() - admission.admittedAt)),
-        resultSummary: String(redactJson(safe.message, { maxStringLength: 2_000 })),
+        resultSummary: String(redactJson(resultSummary, { maxStringLength: 2_000 })),
       },
     });
   }
@@ -119,7 +128,22 @@ export class SerializedSafeToolExecutor implements AgentToolExecutor {
   execute(providerCallId: string, proposal: unknown, providerSignal: AbortSignal): Promise<string> {
     const admission = this.#requireAdmission(providerCallId);
     if (this.#completed.has(providerCallId)) throw terminalError("provider_protocol_error", "Tool call was already completed", "agent.tool");
-    const run = async () => this.#executeNow(admission, proposal, providerSignal);
+    const run = async () => {
+      if (this.#terminalUncertainty) throw terminalError("target_evidence_lost", "A prior timed-out tool left browser state uncertain", "agent.tool");
+      const parent = AbortSignal.any([this.#signal, providerSignal]);
+      try {
+        return await this.#ledger.withToolTimeout(
+          (timeoutSignal) => this.#executeNow(admission, proposal, AbortSignal.any([parent, timeoutSignal])),
+          parent,
+        );
+      } catch (error) {
+        if (isTraceGateError(error) && error.safe.code === "budget_exhausted" && error.safe.phase === "agent.tool") {
+          this.#terminalUncertainty = true;
+        }
+        await this.failAdmitted(admission.providerCallId, error);
+        throw error;
+      }
+    };
     const result = this.#tail.then(run, run);
     this.#tail = result.then(() => {}, () => {});
     return result;
@@ -150,21 +174,25 @@ export class SerializedSafeToolExecutor implements AgentToolExecutor {
         argumentSummary: `validated ${action.kind} proposal at observation revision ${action.observationRevision}`,
       },
     });
+    let dispatched = false;
     try {
-      const result = await this.#ledger.withToolTimeout(async (timeoutSignal) => {
-        const operationSignal = AbortSignal.any([linked, timeoutSignal]);
-        if (BROWSER_ACTIONS.has(action.kind)) this.#ledger.startBrowserAction(operationSignal);
-        const parsed = SafeAgentToolResultSchema.parse(await this.#tools.execute(action, operationSignal));
-        SafeAgentToolExchangeSchema.parse({ action, result: parsed });
-        if (parsed.observation !== null) {
-          this.#observation = UntrustedAgentObservationSchema.parse(parsed.observation);
-          this.#policy.assertObservation(this.#observation);
-        }
-        if (parsed.tool === "finish" && parsed.decision.decision === "allow" && parsed.finishedBelief !== null) {
-          this.#finished = { completed: parsed.finishedBelief, summary: parsed.summary };
-        }
-        return parsed;
-      }, linked);
+      if (action.kind !== "finish") this.#ledger.startBrowserAction(linked);
+      dispatched = true;
+      const rawResult = await this.#tools.execute(action, linked);
+      throwIfAborted(linked, "agent.tool");
+      const result = SafeAgentToolResultSchema.parse(rawResult);
+      SafeAgentToolExchangeSchema.parse({ action, result });
+      if (result.decision.decision === "allow" && MUTATING_ACTIONS.has(action.kind) &&
+          (result.observation === null || result.observation.revision <= action.observationRevision)) {
+        throw terminalError("target_evidence_lost", "State-changing tool did not return a fresh observation", "agent.tool");
+      }
+      if (result.observation !== null) {
+        this.#observation = UntrustedAgentObservationSchema.parse(result.observation);
+        this.#policy.assertObservation(this.#observation);
+      }
+      if (result.tool === "finish" && result.decision.decision === "allow" && result.finishedBelief !== null) {
+        this.#finished = { completed: result.finishedBelief, summary: result.summary };
+      }
       this.#completed.add(admission.providerCallId);
       await emitMilestone(this.#sink, {
         type: "run.tool.completed",
@@ -179,8 +207,13 @@ export class SerializedSafeToolExecutor implements AgentToolExecutor {
       return JSON.stringify({ schemaVersion: 2, trust: "untrusted_page_or_tool_content", kind: "safe_tool_result", result });
     } catch (error) {
       await this.failAdmitted(admission.providerCallId, error);
+      if (dispatched && MUTATING_ACTIONS.has(action.kind)) {
+        this.#terminalUncertainty = true;
+        if (isTraceGateError(error) && (error.safe.code === "operation_aborted" || error.safe.code === "target_evidence_lost")) throw error;
+        throw terminalError("target_evidence_lost", "State-changing tool failed without trustworthy fresh evidence", "agent.tool", { cause: error });
+      }
       if (isTraceGateError(error)) throw error;
-      return JSON.stringify({ schemaVersion: 2, trust: "untrusted_page_or_tool_content", kind: "safe_tool_error", error: redactError(error).message });
+      return JSON.stringify({ schemaVersion: 2, trust: "untrusted_page_or_tool_content", kind: "safe_tool_error", error: "Safe tool failed or returned an invalid bounded result" });
     }
   }
 

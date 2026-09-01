@@ -3,8 +3,39 @@ import type {
   SafeAgentAction,
   SafeAgentToolSurface,
   UntrustedAgentObservation,
+  WebMcpInputProperty,
+  WebMcpToolDescriptorV1,
 } from "@tracegate/shared";
 import { terminalError } from "./errors.ts";
+
+function webMcpValueMatches(value: string | number | boolean | null, property: WebMcpInputProperty): boolean {
+  if (property.type === "string") {
+    return typeof value === "string" &&
+      (property.enum === undefined || property.enum.includes(value)) &&
+      (property.minLength === undefined || value.length >= property.minLength) &&
+      (property.maxLength === undefined || value.length <= property.maxLength);
+  }
+  if (property.type === "boolean") return typeof value === "boolean";
+  return typeof value === "number" && Number.isFinite(value) &&
+    (property.type !== "integer" || Number.isInteger(value)) &&
+    (property.minimum === undefined || value >= property.minimum) &&
+    (property.maximum === undefined || value <= property.maximum);
+}
+
+function assertWebMcpInput(input: Readonly<Record<string, string | number | boolean | null>>, descriptor: WebMcpToolDescriptorV1): void {
+  for (const required of descriptor.inputSchema.required) {
+    if (!Object.hasOwn(input, required)) throw terminalError("unsafe_action_blocked", "WebMCP input omitted a required admitted field", "agent.policy", { policyCode: "unknown_effect" });
+  }
+  for (const [key, value] of Object.entries(input)) {
+    if (!Object.hasOwn(descriptor.inputSchema.properties, key)) {
+      throw terminalError("unsafe_action_blocked", "WebMCP input does not match the closed admitted schema", "agent.policy", { policyCode: "unknown_effect" });
+    }
+    const property = descriptor.inputSchema.properties[key]!;
+    if (!webMcpValueMatches(value, property)) {
+      throw terminalError("unsafe_action_blocked", "WebMCP input does not match the closed admitted schema", "agent.policy", { policyCode: "unknown_effect" });
+    }
+  }
+}
 
 export class AgentPolicy {
   readonly #capabilities: PublicCapabilitySummary;
@@ -29,6 +60,12 @@ export class AgentPolicy {
     for (const tool of surface.tools) {
       if (!this.#capabilities.availableTools.includes(tool)) {
         throw terminalError("unsafe_action_blocked", "Runtime exposed a tool outside the admitted capability bound", "agent.policy", { policyCode: "unknown_effect" });
+      }
+    }
+    const currentOrigin = new URL(observation.url).origin;
+    for (const descriptor of surface.webMcpTools) {
+      if (descriptor.currentOrigin !== currentOrigin) {
+        throw terminalError("unsafe_action_blocked", "Runtime exposed a WebMCP descriptor outside the current origin", "agent.policy", { policyCode: "origin_not_admitted" });
       }
     }
   }
@@ -57,6 +94,7 @@ export class AgentPolicy {
       if (descriptor.currentOrigin !== currentOrigin) {
         throw terminalError("unsafe_action_blocked", "WebMCP tool origin does not match the current document", "agent.policy", { policyCode: "origin_not_admitted" });
       }
+      assertWebMcpInput(action.input, descriptor);
     }
     if ("ref" in action) {
       const revision = Number(action.ref.split(":")[1]);

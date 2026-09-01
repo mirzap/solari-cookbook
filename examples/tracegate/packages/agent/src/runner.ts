@@ -34,6 +34,17 @@ export interface TraceGateAgentRunnerOptions {
 
 const DEFAULT_SAMPLING = { temperature: 0.2, topP: 1, providerRouting: null } as const;
 
+async function awaitWithAbort<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) throw abortedError("agent.run");
+  let rejectCancellation: ((error: unknown) => void) | null = null;
+  const cancellation = new Promise<never>((_resolve, reject) => { rejectCancellation = reject; });
+  const onAbort = () => rejectCancellation?.(abortedError("agent.run"));
+  signal.addEventListener("abort", onAbort, { once: true });
+  if (signal.aborted) onAbort();
+  try { return await Promise.race([operation, cancellation]); }
+  finally { signal.removeEventListener("abort", onAbort); }
+}
+
 export class TraceGateAgentRunner implements AgentRunner {
   readonly #factory: AgentModelDriverFactory;
   readonly #modelId: typeof VERIFIED_DEEPSEEK_MODEL;
@@ -66,11 +77,11 @@ export class TraceGateAgentRunner implements AgentRunner {
       while (!executor.finishBelief) {
         if (externalSignal.aborted) throw abortedError("agent.run");
         if (wall.signal.aborted) throw terminalError("budget_exhausted", "Wall-clock budget exhausted", "agent.run");
-        const surface = await executor.refreshSurface(signal);
+        const surface = await awaitWithAbort(executor.refreshSurface(signal), signal);
         const iteration = ledger.startModelTurn(signal);
         const compacted = history.compact();
         await emitMilestone(this.#sink, { type: "run.agent.iteration", payload: { iteration, summary: "model turn started", historyBytes: compacted.historyBytes } });
-        const turn = await driver.runTurn({ messages: compacted.messages, toolSurface: surface, executor, signal });
+        const turn = await awaitWithAbort(driver.runTurn({ messages: compacted.messages, toolSurface: surface, executor, signal }), signal);
         if (!turn.resolvedProvider.trim()) throw terminalError("provider_protocol_error", "Resolved provider is missing", "agent.model");
         if (resolvedProvider && resolvedProvider !== turn.resolvedProvider) throw terminalError("provider_protocol_error", "Provider changed during a run", "agent.model");
         resolvedProvider = turn.resolvedProvider;

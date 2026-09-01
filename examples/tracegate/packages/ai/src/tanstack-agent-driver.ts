@@ -1,6 +1,7 @@
 import { chat, maxIterations, toolDefinition, type AnyServerTool, type ChatMiddleware, type StreamChunk } from '@tanstack/ai'
 import { createOpenRouterText, type OpenRouterTextModelOptions } from '@tanstack/ai-openrouter'
 import {
+  abortedError,
   terminalError,
   type AgentModelDriver,
   type AgentModelDriverFactory,
@@ -10,6 +11,7 @@ import {
 } from '@tracegate/agent'
 import {
   WebMcpInvocationInputSchema,
+  isTraceGateError,
   redactJson,
   type TokenUsage,
   type WebMcpToolDescriptorV1,
@@ -76,8 +78,8 @@ function tools(input: AgentModelTurnInput) {
 function validateWebMcpInput(input: Record<string, string | number | boolean | null>, descriptor: WebMcpToolDescriptorV1, context: z.RefinementCtx): void {
   const properties = descriptor.inputSchema.properties
   for (const key of Object.keys(input)) {
-    const property = properties[key]
-    if (!property) { context.addIssue({ code: 'custom', path: ['input', key], message: 'field is not admitted by the closed schema' }); continue }
+    if (!Object.hasOwn(properties, key)) { context.addIssue({ code: 'custom', path: ['input', key], message: 'field is not admitted by the closed schema' }); continue }
+    const property = properties[key]!
     const value = input[key]
     if (property.type === 'string') {
       if (typeof value !== 'string') context.addIssue({ code: 'custom', path: ['input', key], message: 'expected string' })
@@ -97,7 +99,7 @@ function validateWebMcpInput(input: Record<string, string | number | boolean | n
     }
   }
   for (const required of descriptor.inputSchema.required) {
-    if (!(required in input)) context.addIssue({ code: 'custom', path: ['input', required], message: 'required field is missing' })
+    if (!Object.hasOwn(input, required)) context.addIssue({ code: 'custom', path: ['input', required], message: 'required field is missing' })
   }
 }
 
@@ -157,12 +159,21 @@ function observeGenerationIds(adapter: Adapter, ids: Set<string>): () => void {
   return () => { sender.send = original }
 }
 
+async function abortableDelay(durationMs: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) throw abortedError('ai.routing')
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => { signal.removeEventListener('abort', onAbort); resolve() }, durationMs)
+    const onAbort = () => { clearTimeout(timer); reject(abortedError('ai.routing')) }
+    signal.addEventListener('abort', onAbort, { once: true })
+  })
+}
+
 async function resolveProvider(adapter: Adapter, ids: ReadonlySet<string>, signal: AbortSignal): Promise<string> {
   const reader = (adapter as unknown as AdapterInternals).orClient.generations
   for (const id of ids) {
     for (const wait of [0, 250, 750, 1_500]) {
-      if (signal.aborted) throw terminalError('provider_protocol_error', 'Provider resolution was cancelled', 'ai.routing')
-      if (wait) await new Promise((resolve) => setTimeout(resolve, wait))
+      if (signal.aborted) throw abortedError('ai.routing')
+      if (wait) await abortableDelay(wait, signal)
       try {
         const response = await reader.getGeneration({ id })
         const root = response && typeof response === 'object' ? response as Record<string, unknown> : null
@@ -196,7 +207,8 @@ export class TanStackOpenRouterAgentDriver implements AgentModelDriver {
   async runTurn(input: AgentModelTurnInput): Promise<AgentModelTurnResult> {
     const generationIds = new Set<string>()
     const restore = observeGenerationIds(this.#adapter, generationIds)
-    const open = new Map<string, { name: string; args: string; sawArgs: boolean; ended: boolean; resulted: boolean }>()
+    const open = new Map<string, { name: string; args: string; sawArgs: boolean; ended: boolean; executed: boolean; resulted: boolean }>()
+    const boundaryTasks: Promise<void>[] = []
     const turnMessages: AgentModelMessage[] = []
     let assistantText = ''
     let usage: TokenUsage | null = null
@@ -217,7 +229,7 @@ export class TanStackOpenRouterAgentDriver implements AgentModelDriver {
         if (chunk.type === 'TOOL_CALL_START') {
           if (open.has(chunk.toolCallId)) protocolFailure = terminalError('provider_protocol_error', 'Duplicate tool start', 'ai.stream')
           else if (open.size >= 100) protocolFailure = terminalError('provider_protocol_error', 'Tool-call count exceeds protocol bound', 'ai.stream')
-          else open.set(chunk.toolCallId, { name: chunk.toolCallName, args: '', sawArgs: false, ended: false, resulted: false })
+          else open.set(chunk.toolCallId, { name: chunk.toolCallName, args: '', sawArgs: false, ended: false, executed: false, resulted: false })
         } else if (chunk.type === 'TOOL_CALL_ARGS') {
           const state = open.get(chunk.toolCallId)
           if (!state || state.ended) protocolFailure = terminalError('provider_protocol_error', 'Tool arguments were out of order', 'ai.stream')
@@ -233,7 +245,10 @@ export class TanStackOpenRouterAgentDriver implements AgentModelDriver {
         } else if (chunk.type === 'TOOL_CALL_RESULT') {
           const state = open.get(chunk.toolCallId)
           if (!state || !state.ended || state.resulted) protocolFailure = terminalError('provider_protocol_error', 'Tool result was out of order or duplicated', 'ai.stream')
-          else state.resulted = true
+          else {
+            state.resulted = true
+            if (!state.executed) boundaryTasks.push(Promise.resolve(input.executor.failAdmitted(chunk.toolCallId, new Error('Tool input was rejected by the bounded schema'))))
+          }
         } else if (chunk.type === 'TEXT_MESSAGE_CONTENT') {
           assistantText = (assistantText + chunk.delta).slice(0, 4_000)
         }
@@ -245,7 +260,7 @@ export class TanStackOpenRouterAgentDriver implements AgentModelDriver {
           protocolFailure = terminalError('provider_protocol_error', 'Tool execution completed without an admitted lifecycle', 'ai.stream')
           abortController.abort('provider protocol failure')
         } else {
-          state.resulted = true
+          state.executed = true
         }
         if (!info.ok) await input.executor.failAdmitted(info.toolCallId, info.error)
       },
@@ -282,6 +297,7 @@ export class TanStackOpenRouterAgentDriver implements AgentModelDriver {
         debug: false,
       })
       for await (const _chunk of stream as AsyncIterable<StreamChunk>) { /* middleware owns bounded mapping */ }
+      await Promise.all(boundaryTasks)
       if (protocolFailure) throw protocolFailure
       if (!usage) throw terminalError('provider_protocol_error', 'Provider usage was missing or malformed', 'ai.usage')
       if (turnMessages.length === 0) turnMessages.push({ role: 'assistant', content: assistantText })
@@ -294,8 +310,9 @@ export class TanStackOpenRouterAgentDriver implements AgentModelDriver {
         resolvedProvider,
       }
     } catch (error) {
+      if (input.signal.aborted) throw abortedError('ai.stream')
       if (protocolFailure) throw protocolFailure
-      if (input.signal.aborted) throw terminalError('provider_protocol_error', 'Provider request was cancelled', 'ai.stream')
+      if (isTraceGateError(error)) throw error
       throw terminalError('provider_protocol_error', safeDiagnostic(error), 'ai.stream')
     } finally {
       restore()
