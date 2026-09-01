@@ -3,7 +3,6 @@
   "compilerOptions": {
     "allowImportingTsExtensions": true,
     "paths": {
-      "@tracegate/agent": ["../agent/src/index.ts"],
       "@tracegate/shared": ["../shared/src/index.ts"],
       "@tracegate/shared/testing": ["../shared/src/testing/index.ts"]
     }
