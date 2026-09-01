@@ -15,13 +15,13 @@ TraceGate evaluates how reliably a browser-capable AI model can complete a user-
 - one to twenty bounded declarative assertions describing the expected browser-observable final state;
 - one or more verified model choices and bounded execution settings.
 
-TraceGate runs the task in isolated Solari Browser sessions, records a redacted execution trace, captures fresh stable browser evidence after the agent stops acting, evaluates the assertions deterministically, releases every acknowledged provider session, and reports truthful reliability metrics.
+TraceGate runs the task in isolated Solari Browser sessions, records a redacted assertion-blind agent trace, captures bounded operationally stable evidence after the agent stops acting, evaluates assertions only in the separate grading control plane, releases every acknowledged provider session, and reports truthful reliability metrics.
 
 A **PASS** proves only that the declared assertions were satisfied in the final browser-observable state captured by TraceGate. It does not prove arbitrary backend business truth, durable server-side effects, legal completion, payment, delivery, message publication, identity, authorization, or any fact outside the admitted evidence model.
 
 ### 1.1 Allowed product scope
 
-Submission P0 permits anonymous, public, safe, reversible browsing tasks such as:
+Submission P0 permits anonymous public browsing tasks only within the closed detectable-effect policy in §5. “Safe” is shorthand for that policy boundary, not a claim of backend reversibility or harmless GET behavior. Allowed examples include:
 
 - navigating within declared public origins;
 - finding or filtering public information;
@@ -52,15 +52,15 @@ Submission P0 is complete only when all of the following are true:
 3. A V2 evaluation accepts a public HTTPS target, prompt, and 1–20 valid assertions.
 4. Public-network admission and runtime egress controls reject private/reserved destinations, unsafe redirects, DNS rebinding, and unobservable resolution.
 5. Runtime policy blocks non-idempotent network mutation and every prohibited action category above.
-6. Assertions never enter model context, tool descriptions/results, agent history/trace, or the evaluated target page’s input/content. They remain visible only in TraceGate’s authoring and report control plane.
-7. The grader uses a fresh stable evidence capture after the serialized action queue drains.
+6. Assertion isolation is enforced as a provenance/non-flow guarantee: assertion-origin values cannot flow into the assertion-free agent DTO, prompt layers, tool schemas/results, model events/history, agent trace, or evaluated-target traffic. Assertion-only canaries prove the boundary; coincidental lexical overlap with user/site text is not treated as leakage. Assertions remain visible in TraceGate’s local authoring and grading/report control plane.
+7. The grader uses a bounded operationally stable evidence capture after the serialized action queue drains.
 8. PASS/FAIL/INCONCLUSIVE follows the frozen precedence in §7.8.
 9. Missing, truncated, ambiguous, unstable, unsupported, or otherwise unverifiable required evidence produces INCONCLUSIVE.
 10. One fixture evaluation and real multi-site Solari acceptance runs prove the same generic path without privileged grading.
 11. Three repeated runs produce auditable raw counts and correct denominators.
 12. Every acknowledged Solari session has a durable release result; any potential leak blocks acceptance.
 13. Snapshots and SSE recover after refresh/reconnect without treating SSE as authoritative state.
-14. SQLite, logs, events, evidence, exports, and replay handling contain no credentials, CDP URLs, replay URLs, sensitive assertion values, full DOMs, or challenge capabilities.
+14. Seeded audits show known credential/secret/CDP/replay/challenge patterns are rejected or redacted and no full DOM is durable; residual risk for user-authored prompt/assertion text is disclosed rather than denied absolutely.
 15. README, video, evidence, and UI state the observable-state limitation and do not imply backend truth.
 16. No measured result, capability, model support, or safety claim is fabricated or hard-coded.
 
@@ -77,7 +77,7 @@ The generic-site V2 decision supersedes the controlled Demo Store product thesis
 | TG-000 | PASS: public fork/workspace established | Unchanged and still valid |
 | TG-001 | PASS: Node `26.1.0`, global pnpm `12.0.0`, exact dependency pins and practical workspace smoke | Unchanged unless a measured build failure requires a recorded deviation |
 | TG-002 | PASS: real Solari connectivity to a production-shaped fixture, Cloudflare Quick Tunnel selected, at least five concurrent sessions observed, recording/replay observed | Proves provider/connectivity capability only; does not prove arbitrary-target SSRF, DNS-rebinding, redirect, or mutation safety |
-| TG-003 | PASS for P0 DeepSeek through pinned TanStack/OpenRouter; optional models unverified | Retained; the V2 safe tool surface must still compile and smoke through the verified adapter |
+| TG-003 | PASS for P0 `deepseek/deepseek-v4-flash-0731` through pinned TanStack/OpenRouter; optional models unverified | Historical only; the one post-V2 smoke belongs to TG-009/TG-017C |
 | TG-004 | PASS: V1 shared contracts compiled | Superseded for target/grading semantics by TG-004R; reusable lifecycle/redaction contracts remain |
 | TG-005 | PASS: local libSQL/Drizzle snapshot, ordered milestone, publish-after-commit SSE, and refetch recovery feasible | Retained as infrastructure evidence; V2 persistence/privacy requires TG-005R |
 | TG-006 | PASS: V1 architecture freeze and lane ownership | Historical checkpoint, superseded by TG-006R before V2 implementation |
@@ -139,14 +139,16 @@ Rules:
 - Cross-lane contracts live only in `@tracegate/shared`.
 - Concrete DB, Solari, agent, or fixture classes never appear in another lane’s public signature.
 - `apps/web` is the composition root.
-- The model receives only the prompt and safe tool results. It never receives assertions, grader evidence, policy internals, secrets, or raw browser/controller capabilities.
-- The run executor owns the raw browser controller and injects only a policy-enforcing safe tool port into the agent.
+- The model input is constructed only from four typed layers: fixed server system policy, separate user task, bounded public capability summary, and explicitly untrusted observations/tool results.
+- A dedicated assertion-free `AgentExecutionInputV2` is schema-parsed from an allowlist and shares no grading DTO/object reference. Assertion-origin values cannot flow into prompts, tools, model events/history, agent trace, or evaluated-target traffic.
+- Assertion isolation is a provenance/non-flow property verified with assertion-only canaries; it is not an impossible global lexical-absence claim because user/site text may independently contain the same words.
+- The run executor owns the raw browser controller and injects only a dynamically reduced policy-enforcing safe tool port into the agent.
 
 ### 3.3 Runtime topology
 
 ```text
-Browser/client
-  → apps/web V2 API
+Loopback-only local browser/client
+  → apps/web V2 API bound only to 127.0.0.1/[::1]
       → TargetAdmissionPort
       → atomic durable evaluation submission
       → one-evaluation FIFO scheduler
@@ -161,7 +163,7 @@ Browser/client
       → persisted events → publish-after-commit process-local SSE
 ```
 
-`apps/demo` may be served during tests, but production configuration uses `kind: "public-web"` and has no Demo admin URL, challenge token, scenario ID, or privileged grader dependency.
+`apps/demo` may be served during tests, but production configuration uses `kind: "public-web"` and has no Demo admin URL, challenge token, scenario ID, or privileged grader dependency. P0 control-plane API, report, trace, SSE, and replay surfaces bind to loopback only and are never exposed through the public target tunnel, LAN, or remote host.
 
 ---
 
@@ -200,7 +202,7 @@ Validation requirements:
 - Origin values are unique. P0 defaults to the start origin and permits additions only through explicit user configuration and admission.
 - Structural parsing does not claim network safety. `TargetAdmissionPort` performs asynchronous DNS, address, redirect, and reachability checks before durable creation.
 - Assertions define success completely. Human prompt prose is not grading authority.
-- V1 Demo configuration is legacy read-only and cannot be silently parsed as V2.
+- V1 Demo configuration is unsupported by the V2 API. TG-005 spike databases are disposable; no V1 product reader or conversion path is built.
 
 ### 4.2 Declarative assertion schema
 
@@ -252,7 +254,7 @@ count:
   value: integer 0..20
 ```
 
-Only trusted accessibility semantics are used. CSS, XPath, DOM IDs, and positional indexes are forbidden.
+Browser-captured accessibility semantics are normalized evidence, but roles, accessible names, ARIA state, visible text, and attributes remain page-authored untrusted content. They may satisfy declarative assertions after stable capture; they never certify action safety, reversibility, network effect, identity, or backend truth. CSS, XPath, DOM IDs, and positional indexes are forbidden.
 
 #### State assertion
 
@@ -265,23 +267,57 @@ expected: boolean or bounded string according to property
 
 `value` is allowed only for admitted non-sensitive search/filter controls. It is bounded and centrally redacted; sensitive-control detection makes the assertion unverifiable and blocks interaction. State never means cookies, storage, authentication, server database state, network success, payment, publication, or cross-origin iframe contents.
 
-### 4.3 Evidence contracts
+### 4.3 Assertion-free agent DTO and prompt layers
+
+`AgentExecutionInputV2` is the sole data DTO accepted by the agent lane and is fully Zod-parsed/serializable:
+
+```text
+schemaVersion: 2
+systemPolicyVersion: "public-safe-v1"
+userTask: bounded user-authored prompt
+capabilities: bounded public capability summary
+initialObservation: explicitly UntrustedAgentObservation
+budgets: independent wall-clock/model-turn/tool-call/browser-action/history/token limits
+```
+
+`SafeAgentToolPort` is a separate non-serializable runtime dependency injected as `AgentRunner.run(input, safeToolPort, signal)`. It is capability-reduced before injection and cannot be reached by object traversal from the DTO.
+
+Prompt construction is ordered and typed:
+
+1. fixed server-owned system safety/behavior policy;
+2. separate user task, explicitly untrusted and unable to amend policy;
+3. bounded public capability summary derived from admitted runtime capabilities;
+4. explicitly untrusted browser observations and tool results as conversation content.
+
+The DTO has no assertion, expected-result, grader, evidence, raw controller, secret, replay, or provider-capability field. Construction uses schema parsing/field allowlisting rather than object spreading. Tests place random canaries exclusively in assertion IDs/labels/expected values, propagate provenance labels through configuration handling, and verify those values never reach DTO serialization, prompt layers, tool definitions/results, provider requests/events, history, agent trace, or evaluated-target traffic. The test does not fail merely because unrelated user/site text happens to equal an assertion word.
+
+Agent trace and grading evidence are separate persisted/projection types and separate UI panels. Grading events may reference assertion IDs/statuses only in the local control plane; they never join the agent conversation or agent trace projection.
+
+### 4.4 Evidence contracts
 
 `AgentObservation` remains model-oriented and is not grade evidence. It may be compacted and truncated.
 
 A separate trusted capture contract is required:
 
 ```text
-BrowserAssertionEvidenceV1
+TransientCanonicalCaptureV1                # in-memory grading only
+  canonicalFinalUrl: full canonical URL | null
+  documentId / loaderId: stable main-frame identity
+  capturedAt: UTC timestamp
+  assertionObservations: normalized bounded results
+  evidenceHash: digest of accepted canonical observable fields and bounded assertion-evidence envelope
+
+BrowserAssertionEvidenceV1                 # persistable/control-plane DTO
   schemaVersion: 1
   capturedAt: UTC timestamp
-  finalUrl: bounded redacted URL
-  evidenceGenerationBefore: positive EvidenceGenerationRevision
-  evidenceGenerationAfter: positive EvidenceGenerationRevision
-  stabilityAttempts: integer 1..3
-  policyViolation: PolicyViolation | null
+  redactedDisplayUrl: bounded centrally redacted URL
+  documentIdHash / loaderIdHash: bounded non-capability identifiers
+  quietIntervalMs: frozen policy value
+  requiredIdenticalCaptures: 2
+  captureAttempts: integer 2..3
+  evidenceHash: bounded digest matching the accepted capture/envelope derivation
+  policyActivity: bounded summary
   assertions: AssertionEvidence[1..20]
-  evidenceHash: bounded digest identifier
 ```
 
 Each `AssertionEvidence` contains:
@@ -311,11 +347,13 @@ target_unreachable
 evidence_invalid
 ```
 
-`EvidenceGenerationRevision` is a trusted browser-adapter counter distinct from model-oriented `ObservationRevision` and legacy `DemoMutationRevision`. It advances on main-frame navigation/document replacement and on every observed mutation that can change URL, visible text, accessibility semantics, or allowlisted control state. The capture is stable only when main-frame identity is unchanged and the before/after evidence-generation revisions are equal. If the adapter cannot observe relevant changes or guarantee counter coverage, affected evidence is unverifiable.
+Stability is an operational bounded observation, not proof that every page mutation was detected. `public-safe-v1` freezes: serialized action queue empty; a 750 ms quiet interval; continuous relevant-activity monitoring from the start of quiet through acceptance; same main-frame document/loader identity; two consecutive byte-identical canonical captures; at most three capture attempts; and a 5 second capture deadline. Any relevant network, navigation, popup, download, dialog, or policy activity resets the quiet interval and capture sequence; if the deadline/attempt bound prevents reacquiring two identical captures, evidence is unverifiable. Any mismatch, identity change, timeout, or inability to observe these signals is likewise unverifiable.
 
-The evidence schema never contains a full DOM, arbitrary HTML, raw network response, credentials, sensitive entered data, CDP/replay capability, or page-provided script result.
+The full canonical final URL exists only in `TransientCanonicalCaptureV1` long enough to evaluate URL assertions. Persistence, logs, events, reports, and SSE receive only `redactedDisplayUrl`, assertion booleans/statuses, and bounded hashes/summaries. If the URL contains a value that the redaction/retention policy cannot safely retain or compare without exposing it, URL equality evidence is `unverifiable`; TraceGate does not persist a secret-derived equality proof.
 
-### 4.4 Grade result
+The evidence schema never contains a full DOM, arbitrary HTML, raw network response, credentials, sensitive entered data, CDP/replay capability, or page-provided script result. Browser-captured text and accessibility semantics remain explicitly untrusted page-authored content even after canonicalization.
+
+### 4.5 Grade result
 
 ```text
 GradeAssertionResult
@@ -337,24 +375,25 @@ GradeResultV2
 
 The assertion result set must match the submitted assertion IDs exactly once. The grader is pure, deterministic, and ignores model summaries, beliefs, and hidden conversation content.
 
-### 4.5 Runtime ports
+### 4.6 Runtime ports
 
 Required cross-lane ports:
 
 - `TargetAdmissionPort.assess(target, signal)` returns an admitted canonical target or a safe rejection; it never returns raw DNS/provider material to the client.
-- `EvaluationSubmissionRepository.transactionallyCreate(...)` atomically creates the evaluation, all run rows, and all `run.queued` events with exact-retry idempotency.
+- `EvaluationSubmissionRepository.transactionallyCreate(...)` atomically creates the evaluation, all run rows, and all `run.queued` events for one accepted request. HTTP create retry/idempotency is not promised in P0.
 - `RunTransitionRepository.transactionallyApply(...)` atomically applies an intermediate legal transition and its matching milestone.
 - `BrowserProvider.acquire(...)` returns a lease or a typed safe error.
 - `BrowserControllerFactory.create(lease, signal)` returns a fresh controller bound to that lease.
+- `ProviderSessionReconciliationPort.reconcileCreate(attemptCorrelationId, signal)` uses a TG-002R-measured provider inventory/correlation mechanism to classify an ambiguous create without retrying it; safe correlation metadata is durable and is neither a credential nor an idempotency claim.
 - `BrowserController` owns reviewed browser operations and explicit idempotent `close`.
 - `SafeAgentToolPort` exposes only policy-reviewed actions to the agent.
-- `AssertionEvidenceCapture.capture(assertions, signal)` runs after the action queue drains on the same controller and returns trusted evidence.
+- `AssertionEvidenceCapture.capture(assertions, signal)` runs after the action queue drains on the same controller and returns integrity-trusted capture metadata over explicitly untrusted page-authored content.
 - `Grader.grade(assertions, evidence, signal)` returns `GradeResultV2`.
 - Existing event, snapshot, repository, replay, clock, ID, failure-analysis, and terminal-finalization ports remain AbortSignal-aware.
 
-`AgentRunContext` contains the prompt, public configuration without assertions, initial observation, discovery, and `SafeAgentToolPort`. It does not contain assertions or a raw `BrowserController`.
+`AgentRunContext` is replaced by the dedicated data-only schema-parsed `AgentExecutionInputV2` above. The agent runner receives the separately injected `SafeAgentToolPort`; assertions and grading evidence use a separate control-plane path and never share an object graph with either the DTO or port construction.
 
-### 4.6 Typed provider capacity error
+### 4.7 Typed provider capacity error
 
 Acquisition-time provider concurrency limits use a strict safe error:
 
@@ -362,11 +401,12 @@ Acquisition-time provider concurrency limits use a strict safe error:
 code: "concurrency_limit_exceeded"
 category: "infrastructure"
 phase: "browser_acquire"
-retryable: true
+sessionCreation: "definitively_not_created"
+retryCurrentCreate: false
 retryAfterMs: integer 0..300000 | null
 ```
 
-`retryAfterMs` is normalized scheduler metadata, never a raw header. Provider bodies, headers, URLs, request IDs, capabilities, and arbitrary messages are forbidden from the safe value.
+`retryAfterMs` is normalized future-scheduling/capacity metadata, never permission to retry the current create and never a raw header. Provider bodies, headers, URLs, request IDs, capabilities, and arbitrary messages are forbidden from the safe value. If `sessionCreation` cannot truthfully be classified as `definitively_not_created`, this typed 429 form cannot be used; the result is ambiguous/potential-leak handling.
 
 ---
 
@@ -381,25 +421,27 @@ Before durable evaluation creation, admission must:
 3. Resolve A and AAAA records through an audited resolver.
 4. Reject any private, loopback, link-local, carrier-grade NAT, multicast, documentation, benchmark, reserved, unspecified, or cloud-metadata address.
 5. Reject mixed public/private answer sets.
-6. Perform a bounded reachability probe without credentials or body mutation.
-7. Validate every redirect hop against the same scheme, origin, DNS, and address rules.
+6. Perform any discovery/reachability fetch only through the same proven enforced browser/network path, or through a separately reviewed control-plane fetcher pinned to a vetted public IP:port set with pre-connect enforcement; an ordinary ambient Node/server fetch is forbidden.
+7. Validate every redirect hop against the same scheme, origin, DNS, actual pre-connect IP:port, and address rules.
 8. Return only canonical safe admission metadata and an expiry/recheck time.
 
 Admission is necessary but insufficient: runtime must enforce the actual resolved destination used by the remote browser.
 
 ### 5.2 DNS rebinding and destination enforcement
 
-P0 is blocked unless Solari or a TraceGate-controlled outbound enforcement layer can observe and deny the actual destination of **every browser request context** before connection. This includes main-frame and subframe navigation, redirects, fetch/XHR, scripts, styles, images, fonts, media, prefetch/preload, dedicated/shared workers, and any browser-generated request. Runtime must:
+P0 is blocked unless either the provider enforces destination policy server-side or every browser/browser-process connection is forced through a TraceGate-controlled outbound proxy that observes and denies the **actual IP:port before connection**. URL routing, CDP request interception, DNS preflight, hostname allowlisting, and post-response IP observation are useful defense-in-depth signals but cannot make TG-002R PASS.
 
-- validate the resolved IP and HTTPS scheme before every connection and redirect hop;
-- reject any request class whose destination or resolution cannot be observed and enforced;
-- revalidate after DNS changes and admission expiry;
-- block private/reserved/metadata destinations even if the hostname passed preflight;
-- disable service-worker registration and block service-worker-controlled requests in P0;
-- prevent alternate protocols, proxy bypass, off-policy navigation, and unresolved worker/subresource egress;
+The enforcement boundary must cover main-frame and subframe navigation; every redirect hop; fetch/XHR; script, style, image, font, and media; prefetch/preload/speculation rules; dedicated/shared/service workers; EventSource; beacon; WebSocket; WebTransport; WebRTC including STUN/TURN/data channels; popups/new windows; downloads; and browser-process traffic such as DNS, update, telemetry, certificate, or captive-portal probes. For every context it must:
+
+- validate the actual destination IP:port, HTTPS/protocol, origin relation, method, resource class, and credential state before connection;
+- reject any request class whose destination, resolution, protocol, or initiator cannot be observed and enforced;
+- revalidate each redirect, DNS change, connection reuse decision, and admission expiry;
+- block private/reserved/metadata destinations even when the hostname passed admission;
+- start in a fresh non-persistent browser context with service-worker registration and service-worker-controlled requests blocked;
+- prevent alternate protocols, direct/proxy bypass, off-policy navigation, and unresolved worker/subresource/browser-process egress;
 - record only bounded safe policy codes rather than raw network details.
 
-DNS preflight alone must never be presented as DNS-rebinding protection. TG-002R is green only when request-level tests cover every supported context and demonstrate default-deny behavior for an unobservable context.
+TG-006R freezes an exhaustive request decision table over `protocol/transport × method-or-not_applicable × resource/request context × origin relation × credential state × actual-destination observability`, including every context above. Each cell is an explicit allow or deny with required pre-connect IP:port enforcement; unknown, missing, or unobservable cells deny. DNS, UDP, STUN/TURN, WebRTC data channels, certificate probes, and other methodless/browser-process traffic use `not_applicable` rather than falling outside the table. TG-002R cannot pass unless every non-HTTP path is forced through equivalent pre-connect actual-IP:port enforcement or is proven blocked before transmission. TG-002R is a disposable feasibility prototype; TG-008 is the separately reviewed production implementation and inherits no acceptance credit from it.
 
 ### 5.3 Network mutation and subresource policy
 
@@ -413,13 +455,15 @@ For `public-safe-v1`, all browser egress is default-deny:
 - Every redirect repeats method, origin, DNS, address, destination, and resource-class checks.
 - Runs start with no preloaded cookies, HTTP authentication, client certificates, or authorization. Ephemeral anonymous cookies created during the run may accompany permitted GET/HEAD requests but never certify authentication or broaden policy; authorization headers and explicit credentials are always blocked.
 
-A request is denied when its method, body, initiator, resource class, redirect, actual destination, or credential state cannot be classified. A blocked mutation/request yields `run.policy.blocked` and makes the run INCONCLUSIVE even if optimistic DOM state appears successful.
+A request is denied when its method, body, initiator, resource class, redirect, actual destination, or credential state cannot be classified. Here “safe/reversible” means only that the action is within this closed, detectable-effect policy; it does not prove that a nominal GET has no backend side effect or that backend state is reversible.
+
+Before the first agent action, TraceGate records bounded passive blocked-page telemetry. Passive baseline blocks may be reported as warnings when deterministic evidence remains complete and no later action window overlaps them. A **causal action window** begins immediately before one serialized action dispatch and covers its synchronous work, microtasks, redirects, requests, workers, popups, dialogs, and downloads until the action reaches the fixed post-action quiet condition or times out. Initiator, request, frame, document, and loader identifiers link observed effects where available. Any prohibited activity inside that window, or prohibited activity after dispatch whose cause cannot be classified, emits `run.policy.blocked` and makes the run INCONCLUSIVE even if optimistic DOM state appears successful.
 
 ### 5.4 Trusted action/effect policy
 
-The browser adapter, not the prompt or model, is authoritative. Before executing an action it evaluates element semantics, control type, form method, target origin, predicted network effect, sensitivity, popup/download behavior, and current policy state.
+The browser adapter, not the prompt, model, or page-authored accessibility semantics, is authoritative. Immediately before dispatch it evaluates a closed typed effect decision using the current observation revision, element/control class, form method, admitted origin, predicted request/resource class, sensitivity, popup/download behavior, and policy state. The only decision is `allow` for a named reviewed effect class or `deny` with a bounded code; unknown, stale, ambiguous, or unobservable effects deny.
 
-Allowed actions include inspect, wait, bounded scroll, admitted GET navigation, reversible disclosure/tab/menu/filter/select controls, and typing into non-sensitive search/filter controls.
+Allowed actions include inspect, wait, bounded scroll, admitted GET navigation, reviewed disclosure/tab/menu/filter/select controls, and typing into non-sensitive search/filter controls. Browser roles/names/ARIA/text may locate a candidate but never certify its effect safety.
 
 Blocked actions include every prohibited category in §1.1, unknown-effect controls, submit buttons, sensitive inputs, file controls, popup/new-window activation, cross-origin frames, permission prompts, and generic native tools.
 
@@ -463,10 +507,12 @@ Cancellation and recovery edges remain governed by the frozen lease-disposition 
 One precedence applies to cancellation, safety, execution errors, and grading:
 
 1. A committed user/system cancellation produces `cancelled`; no grade is fabricated.
-2. Any unsafe/prohibited action or request attempt produces `inconclusive` with `unsafe_action_blocked`, regardless of visible state.
-3. If fresh trusted evidence cannot be captured/validated, or any required assertion is unverifiable, the outcome is `inconclusive`.
-4. When complete trusted evidence exists and no higher-precedence condition applies, all assertions true produces `passed`; any false assertion produces `failed`.
-5. Provider, model, budget, or agent-loop errors are terminal failure codes only when they prevent complete trusted evidence. If complete evidence is captured afterward, PASS/FAIL remains authoritative and the execution error is retained only as a bounded warning/trace fact.
+2. Any agent-caused prohibited action/request, or prohibited post-action activity whose cause cannot be classified, produces `inconclusive` with `unsafe_action_blocked`, regardless of visible state. Passive blocked-page telemetry captured before the first action may remain a warning only under §5.3.
+3. If a fresh capture with trusted integrity/provenance cannot be validated, or any required untrusted page-authored observation is unverifiable, the outcome is `inconclusive`.
+4. When a complete integrity-validated capture exists and no higher-precedence condition applies, all assertions true produces `passed`; any false assertion produces `failed`.
+5. Provider, model, budget, or agent-loop errors are terminal failure codes only when they prevent a complete integrity-validated capture. If complete evidence is captured afterward, PASS/FAIL remains authoritative and the execution error is retained only as a bounded warning/trace fact.
+
+Every terminal non-cancelled run has exactly one `passed`, `failed`, or `inconclusive` grade outcome. A terminal lifecycle/infrastructure/provider/execution failure without a complete grade maps to `inconclusive`; no terminal run falls outside aggregation.
 
 Authoritative codes include:
 
@@ -511,9 +557,9 @@ Persist only bounded policy codes, evidence hashes, assertion IDs/statuses, and 
 
 ### 6.5 TanStack event mapping
 
-The existing server-side mapping remains: consume AG-UI/TanStack streams, persist bounded milestones, validate/redact tool arguments and results, throttle usage, classify malformed events, and never expose raw provider streams directly as product SSE.
+Consume AG-UI/TanStack streams through the strict lifecycle state machine in §7.4: one start, ordered bounded phases/deltas with matched tool-call IDs, one terminal, and nothing after terminal. Validate/redact before bounded milestone persistence, enforce independent usage/history limits, and never expose raw provider streams directly as product SSE.
 
-Assertions and grader evidence are absent from model context and TanStack events. Unknown provider events produce warnings, not raw persistence.
+Assertion-origin values and grader evidence cannot flow into model context or TanStack events. Unknown events become warnings only when lifecycle validity and safety are unaffected; malformed, duplicate, out-of-order, unmatched, or post-terminal events fail closed as `provider_protocol_error`.
 
 ---
 
@@ -530,7 +576,7 @@ Assertions and grader evidence are absent from model context and TanStack events
 5. Create the evaluation, N run rows, and sequence-zero `run.queued` events atomically.
 6. Enqueue only after commit.
 
-Exact submission retry is idempotent. A conflict or abort leaves no partial graph and consumes no event cursors.
+The atomic repository operation leaves no partial graph and consumes no event cursors on conflict or abort. HTTP create retry/idempotency is intentionally deferred from P0; clients must not automatically retry an ambiguous create response.
 
 ### 7.2 One-evaluation queue and capacity
 
@@ -540,14 +586,15 @@ P0 allows one active evaluation and a process-global FIFO run queue. Effective S
 min(requested concurrency, configured maximum, measured safe provider capacity)
 ```
 
-Start from the measured safe cap recorded by TG-002, but do not exceed five. On typed concurrency-limit error:
+Start from the measured safe cap recorded by TG-002, but do not exceed five. Each run makes exactly one Solari create attempt because provider idempotency is not established. A typed provider concurrency rejection that definitively acknowledges **no session creation**:
 
-- release the local permit;
-- lower process capacity by one, floor one;
-- honor normalized bounded `retryAfterMs` or capped exponential backoff with jitter;
-- requeue the same durable run without creating a duplicate;
-- never raise capacity again without explicit capability refresh/restart;
-- after three acquisition attempts or deadline, classify the run inconclusive.
+- releases the local permit;
+- lowers process capacity by one, floor one, for later queued runs;
+- records normalized bounded `retryAfterMs` only as scheduling/capability evidence;
+- makes the current run INCONCLUSIVE without requeueing or retrying create;
+- never raises capacity again without explicit capability refresh/restart.
+
+Any timeout, disconnect, malformed response, or other ambiguous create result is not retried. It is recorded as a potential session leak and blocks acceptance until provider reconciliation proves whether a session exists and, if so, confirms release.
 
 ### 7.3 Per-run lifecycle
 
@@ -562,7 +609,7 @@ persist acquiring_browser + milestone atomically
 → discover and observe
 → run agent through SafeAgentToolPort only
 → drain serialized action queue
-→ capture fresh stable assertion evidence
+→ capture bounded operationally stable assertion evidence
 → pure deterministic grade
 → close controller
 → release Solari lease with fresh bounded signal
@@ -571,20 +618,13 @@ persist acquiring_browser + milestone atomically
 → transactionally persist terminal result and cleanup state
 ```
 
-After any provider session ID is acknowledged, lease release is attempted in `finally` regardless of connection, model, policy, persistence, evidence, timeout, shutdown, or grading failure. Controller close is attempted before lease release, but close failure cannot suppress release.
+After any provider session ID is acknowledged, lease release is attempted in `finally` regardless of connection, model, policy, persistence, evidence, timeout, shutdown, or grading failure. Controller close is attempted before lease release, but close failure cannot suppress release. A release succeeds only under measured provider semantics with explicit positive confirmation; HTTP 404 is not success. Failed or ambiguous release remains retryable with a fresh bounded cleanup signal and is a potential leak until reconciliation confirms release. Replay polling is optional, occurs only after cleanup disposition is durable, and never gates grading.
 
 ### 7.4 Safe agent loop
 
-The model receives:
+The model receives only `AgentExecutionInputV2` and the four prompt layers in §4.3. It does not receive assertions, assertion IDs/labels, expected state, grader evidence, policy secrets, admin endpoints, raw provider capabilities, or raw controller access.
 
-- the user prompt;
-- admitted start URL/origin policy in bounded form;
-- current semantic observations and safe tool results;
-- budgets and explicit safety limitations.
-
-It does not receive assertions, assertion IDs/labels, expected state, grader evidence, policy secrets, admin endpoints, or provider capabilities.
-
-The only model tools are policy-bound forms of:
+The following is an **upper bound**, not a promise that every tool is available on every page or turn:
 
 ```text
 navigate
@@ -598,32 +638,36 @@ wait
 finish
 ```
 
-`callNativeTool` is removed from the generic production path. Every tool call increments limits, validates Zod input, checks cancellation/deadline/origin/effect policy, executes under timeout and per-run serialization, forces a fresh observation after mutation, returns bounded untrusted output, and emits redacted milestones.
+The runtime constructs a dynamically reduced tool surface from admitted capabilities and current policy, omitting unavailable actions entirely. `callNativeTool` is removed from production. `pressKey` permits only a closed non-text navigation/editing set on reviewed non-sensitive controls; `Enter`, shortcut chords, function keys, and keys that may submit, activate, grant permission, escape confinement, or trigger an unclassified effect are denied.
 
-`finish` is a belief only. It never grades the run.
+Tool proposals enter one per-run FIFO. Immediately before dispatch, each proposal is revalidated against the current observation revision, semantic identity, admission, cancellation, deadline, and closed effect policy; stale proposals never execute. Wall-clock, model-turn, tool-proposal, executed-browser-action, history-byte/item, and token/usage budgets are independent and cannot be traded against one another. Cancellation interrupts stream consumption and queued work, prevents new dispatch, drains/rejects the FIFO deterministically, and proceeds to evidence/cleanup according to §6.3.
+
+TanStack lifecycle handling is strict: exactly one valid start, ordered bounded deltas/tool phases, matched tool-call IDs, exactly one terminal event, and no events after terminal. Unknown events may become bounded warnings only when lifecycle validity and safety are unaffected. Duplicate/out-of-order/missing start or terminal, unmatched tool calls, invalid deltas, over-limit payloads, or post-terminal activity are `provider_protocol_error`; raw malformed content is never persisted or passed to tools.
+
+Every accepted proposal validates Zod input, checks all independent budgets, executes under timeout and serialization, forces a fresh bounded untrusted observation after an effect, and emits redacted milestones. `finish` is a belief only and never grades the run.
 
 ### 7.5 Semantic observation and discovery
 
 Opaque refs, deterministic DOM order, stale-revision rejection, semantic identity recheck, bounded visible text, and safe attributes remain.
 
-Discovery may inspect same-origin `/llms.txt`, current-page JSON-LD, and WebMCP presence under strict size/redirect limits. All discovery is untrusted. Generic WebMCP is `unavailable`, `available_disabled`, or `discover_only`; it cannot broaden origins, actions, policy, or assertions.
+Discovery may inspect same-origin `/llms.txt`, current-page JSON-LD, and WebMCP presence under strict size/redirect limits. Network discovery uses the already proven enforced browser/network path, or a separately vetted control-plane fetcher pinned to public IP:port destinations with the same redirect and pre-connect rules; ordinary ambient fetch is forbidden. All discovery is untrusted. Generic WebMCP is `unavailable`, `available_disabled`, or `discover_only`; it cannot broaden origins, actions, policy, or assertions.
 
 Cross-origin iframe content is unavailable for action and grading in P0.
 
-### 7.6 Fresh stable evidence capture
+### 7.6 Bounded operational stability and evidence capture
 
 After acting stops:
 
-1. No model/tool action remains queued.
-2. Wait a bounded quiet/stability interval.
-3. Capture trusted main-frame identity and `EvidenceGenerationRevision` before evaluation.
-4. Evaluate every assertion through fixed reviewed browser-adapter logic while the adapter tracks relevant URL/DOM/accessibility/state mutations.
-5. Capture main-frame identity and `EvidenceGenerationRevision` again.
-6. Accept only when main-frame identity is unchanged, before/after evidence-generation revisions are equal, and the adapter can prove coverage of relevant changes; otherwise evidence is unverifiable.
-7. Retry at most twice within the grading deadline.
-8. Persistent instability, truncation, ambiguity, policy violation, or unsupported state becomes unverifiable.
+1. The model stream is terminal and the per-run FIFO is empty; no action remains queued or executing.
+2. Wait a fixed 750 ms quiet interval with no relevant network, navigation, popup, download, dialog, or policy activity.
+3. Keep relevant-activity monitoring armed and capture a bounded canonical observable-state projection and `evidenceHash`, including main-frame document and loader identity.
+4. Repeat until two consecutive captures are byte-identical with the same document/loader identity; use at most three captures total and a fixed five-second grading deadline. Any intervening relevant activity resets the quiet interval and capture sequence.
+5. Evaluate every assertion only against the accepted fresh canonical capture using fixed reviewed adapter logic.
+6. If quiet is not achieved, captures differ, document/loader changes, relevant activity occurs, a field is truncated/ambiguous/unsupported, or the deadline expires, required evidence is unverifiable.
 
-The fixed capture implementation may use reviewed CDP/Playwright primitives internally. The model cannot invoke or parameterize arbitrary script.
+This is bounded operational stability, not a claim of perfect revision/change proof. Browser-captured accessibility and text remain page-authored untrusted content even when their canonical projection is stable.
+
+The fixed capture implementation may use reviewed CDP/Playwright primitives internally. The model cannot invoke or parameterize arbitrary script. Capture integrity/provenance is trusted; captured page-authored text and accessibility semantics are not.
 
 ### 7.7 Demo fixture placement
 
@@ -650,11 +694,19 @@ A definitive false result does not override another required unverifiable result
 
 ### 7.9 Reliability aggregation
 
-Always show raw counts:
+Always show raw counts derived from persisted run rows and terminal outcomes:
 
 ```text
-requested, started, passed, failed, inconclusive, cancelled, potential leaks
+requested       = count(all durable runs for the evaluation)
+started         = count(runs with any persisted transition out of queued)
+passed          = count(terminal run grade outcome = passed)
+failed          = count(terminal run grade outcome = failed)
+inconclusive    = count(terminal run grade outcome = inconclusive)
+cancelled       = count(terminal run disposition = cancelled)
+potential leaks = count(distinct runs with ambiguous create or non-confirmed release)
 ```
+
+Because every terminal non-cancelled run has exactly one grade outcome, `requested = passed + failed + inconclusive + cancelled + nonterminal`; completed acceptance requires `nonterminal = 0`. Warnings never alter outcome counts. Run-scoped environment, discovery, admission, policy, grading, and cleanup evidence are joined by `runId`; no evaluation-level latest-value shortcut may substitute for a run record.
 
 Primary metric:
 
@@ -676,53 +728,64 @@ Zero denominator is “Not available.” Inconclusive/cancelled runs are never s
 
 ### 8.1 Persistence
 
-Retain local libSQL/Drizzle, WAL, foreign keys, bounded busy timeout, short transactions, and the process-local writer queue. The historical initial migration is immutable evidence; add a V2 pivot migration.
+TG-005 databases are disposable spike state. TG-005R owns a clean generated V2 Drizzle `0000` migration and recreates the local database from it; there is no V1 product reader, converter, compatibility migration, or legacy-row machinery. TG-010 consumes that frozen migration/repository contract and must not regenerate or reinterpret it. Retain local libSQL, WAL, foreign keys, bounded busy timeout, short transactions, and the process-local writer queue.
+
+Before creation, reject prompt/assertion values matching known credential, secret, financial, government-ID, signed-token, or similarly sensitive patterns. If central storage redaction would mutate the validated canonical prompt or assertion specification, reject it rather than changing its meaning. Accepted canonical prompts/assertions are stored unchanged in the local grading control plane under size bounds; redaction applies to derived display/log/event/trace projections. This is risk reduction, not proof that user text contains no sensitive data; the UI/report discloses residual local-storage risk and instructs users not to submit sensitive values.
 
 Persist:
 
-- V2 config JSON and schema version;
-- admitted canonical target/origin metadata and admission expiry/status;
-- safety policy version and bounded policy violations;
-- runs, usage, cleanup, replay status, warnings;
-- assertion specification hash and assertion IDs/types needed for reporting;
+- V2 config/schema version, redacted display URL, exact allowed origins, prompt, assertions, and their specification hash;
+- run-scoped execution environment/version evidence;
+- run-scoped discovery evidence and provenance;
+- run-scoped admission decision/expiry and bounded enforcement evidence;
+- run-scoped policy version, passive baseline warnings, causal-window decisions, and violations;
+- runs, usage, cleanup, optional replay status, warnings;
 - evidence hash, capture status/attempt count, bounded per-assertion evidence summaries;
 - generalized grade results and terminal failure;
-- ordered redacted events and steps.
+- ordered redacted agent-trace events and separate control-plane grading events/steps.
+
+The transient raw canonical URL used for URL grading is never durable or displayed. Persistence uses a separately redacted display URL plus bounded origin/equality evidence. If safe equality cannot be evaluated before discarding the raw value, the assertion is unverifiable.
 
 Do not persist:
 
 - full DOM/HTML, screenshots by default, arbitrary visible text dumps;
 - credentials, sensitive typed values, authorization, cookies, storage;
 - raw DNS/provider headers/bodies or private-address details returned to clients;
-- CDP endpoints, challenge URLs/tokens, replay URLs;
-- assertions in model conversation/history events.
+- raw canonical grading URLs, CDP endpoints, challenge URLs/tokens, or replay URLs;
+- assertions or grading evidence in model conversation/history/agent-trace events.
 
-V1 rows are legacy read-only and are not rescheduled or converted to V2. Privileged Demo evidence is not equivalent to observable browser evidence.
+Privileged Demo evidence is not equivalent to observable browser evidence.
 
 ### 8.2 API
 
-P0 endpoints:
+P0 binds only to loopback (`127.0.0.1` and/or `[::1]`) and rejects non-loopback Host/forwarded-host exposure. There is no remote read, report, trace, SSE, replay, or mutation surface.
 
 ```text
 GET  /api/health
 GET  /api/capabilities
-POST /api/targets/admit          # bounded admission preview, rate limited
-POST /api/evaluations            # V2 only
-GET  /api/evaluations/:id        # authoritative snapshot
-GET  /api/evaluations/:id/events # new persisted milestones via SSE
+POST /api/targets/admit                 # bounded admission preview, rate limited
+POST /api/evaluations                   # V2 only; no P0 create-idempotency promise
+GET  /api/evaluations/:id               # authoritative typed snapshot
+GET  /api/evaluations/:id/report        # bounded typed report projection
+GET  /api/evaluations/:id/trace         # bounded assertion-blind agent trace projection
+GET  /api/evaluations/:id/events        # new persisted control-plane milestones via SSE
 ```
 
-The server revalidates all client input. Admission responses expose canonical safe status/reasons, not DNS internals. Snapshot schemas expose assertion outcomes and policy limitations without model/private evidence.
+The server revalidates all client input. Admission responses expose canonical safe status/reasons, not DNS internals. The report and trace are separate bounded schemas: the trace excludes assertions/grading evidence; the report may show assertions/results but excludes raw agent/provider/private evidence. P0 freezes cursor pagination at default 100/max 200 items, 16 KiB per projected item, 512 KiB per response, and explicit `truncated`/`nextCursor` fields; schema-specific string/array bounds may be lower.
 
 ### 8.3 SSE
 
-SSE remains a process-local notification/projection channel:
+SSE remains a loopback-only, process-local notification/projection channel. The snapshot-to-stream handoff is race-free:
 
-- DB commit precedes publish;
-- only persisted redacted events are published;
-- clients load/refetch the authoritative snapshot on start/reconnect/gap;
-- event IDs/cursors make projection idempotent;
-- no public publish bypass exists.
+1. subscribe and begin buffering committed events for the evaluation;
+2. establish a ready handshake/cursor from the authoritative publisher;
+3. read the authoritative snapshot at a cursor no earlier than the subscription boundary;
+4. drain buffered events strictly after the snapshot cursor with ID deduplication;
+5. enter live delivery; on gap, overflow, reconnect, or process restart, refetch snapshot and repeat.
+
+DB commit precedes publish and only persisted redacted events publish. Every transaction family that appends an externally observable event—submission expansion, intermediate transition, policy/admission/evidence/grade milestones, terminalization, cancellation, cleanup/reconciliation, and warnings—has publish-after-commit and no-publish-on-rollback coverage. There is no public publish bypass.
+
+P0 freezes: persisted/projected event payload ≤16 KiB, SSE frame ≤20 KiB, heartbeat every 15 seconds, per-subscriber queue ≤128 events and ≤512 KiB, buffered handoff ≤5 seconds, and ≤8 concurrent SSE connections per process. Oversize events are safely summarized before persistence; exceeding either queue bound disconnects the slow consumer with a bounded reason and requires snapshot recovery. SSE is never authoritative state.
 
 ### 8.4 Configure UX
 
@@ -777,15 +840,15 @@ Admission plus runtime destination enforcement is mandatory. Any path that canno
 
 Central redaction applies before persistence, logging, events, UI, evidence, and exports. It removes known secrets and patterned authorization, credential, signed URL, challenge, CDP, replay, and sensitive query values. String/array/object sizes and cause chains remain bounded.
 
-The product refuses tasks that require sensitive data. Redaction is defense in depth, not permission to collect it.
+The product rejects known secret/sensitive patterns before locally persisting accepted prompts/assertions and refuses tasks that require sensitive data. Pattern rejection and redaction are defense in depth, not proof of absence and not permission to collect sensitive material; residual risk is disclosed. The transient raw canonical URL used for grading is separated from the redacted persisted/display URL as defined in §8.1.
 
 ### 9.4 Replay
 
-Replay remains optional P1 and capability-gated. Only provider session ID and safe replay status are durable. Fresh presigned replay access is requested server-side, returned only to an authorized local reviewer surface, never logged/persisted/SSE-published, and discarded immediately. Replay absence never changes deterministic grading.
+Replay remains optional P1 and capability-gated. Only provider session ID and safe replay status are durable. If implemented, fresh presigned replay access is requested server-side only after cleanup reconciliation, returned solely to the loopback reviewer surface, never logged/persisted/SSE-published, and discarded immediately. Replay absence never changes deterministic grading or P0 acceptance.
 
 ### 9.5 Cleanup and truthfulness
 
-Every acknowledged provider session must reconcile to a release record. Any unknown/unreleased acknowledged session blocks acceptance. Cancellation and shutdown use fresh bounded cleanup signals.
+Solari create is attempted once per run absent provider idempotency. An ambiguous create is a potential leak and blocks acceptance until reconciled. Every acknowledged provider session must reconcile to an explicit positive release result under measured provider semantics; 404 is not release success. Failed/ambiguous release remains retryable, and any unknown or unreleased session blocks acceptance. Cancellation and shutdown use fresh bounded cleanup signals.
 
 Never:
 
@@ -804,19 +867,19 @@ Never:
 
 - Generic V2 public target/prompt/assertions.
 - TG-002R runtime public-network and mutation-safety proof.
-- One verified DeepSeek path through TanStack/OpenRouter.
+- One verified `deepseek/deepseek-v4-flash-0731` path through TanStack/OpenRouter, limited to one bounded post-V2 safe-surface credentialed smoke.
 - One active evaluation, bounded Solari capacity and typed 429 degradation.
 - Safe semantic tool loop with assertions excluded from context.
-- Fresh stable browser evidence and pure deterministic grader.
+- Bounded operationally stable browser evidence and pure deterministic grader.
 - Fixture tests plus multi-site real Solari acceptance.
-- Drizzle persistence, authoritative snapshot, simple SSE refetch/reconnect.
+- Clean V2 Drizzle `0000`, authoritative snapshot/report/trace projections, and race-free bounded SSE handoff/recovery.
 - Generic configure/live/report UX.
 - Cleanup reconciliation, redaction, policy/admission evidence.
 
 ### TG-014 non-blocking P1
 
 - Replay UX when capability remains verified.
-- Optional verified models.
+- Optional models only after new measured verification; they remain unverified at the V2 freeze.
 - Richer assertion authoring that preserves deterministic safety.
 - Improved discovery display and evidence diagnostics.
 - Accessibility and report export polish beyond P0 minimum.
@@ -832,6 +895,7 @@ TG-014 is not on the P0 critical path and cannot delay an otherwise honest submi
 - Arbitrary scripts/selectors/assertion expressions.
 - Distributed queues, multi-process SSE, durable replay fan-out.
 - Remote DB, billing/cost estimates, retention automation, migration rollback automation.
+- HTTP create idempotency/retry semantics and broader API retry/caching policy.
 - Automated claim of backend business truth.
 
 ### Never cut
@@ -903,7 +967,8 @@ Only Agent A updates `pnpm-lock.yaml`. Regenerate with Node `26.1.0` and global 
 | Auth/password/file/payment/message/submit control | Block before interaction, inconclusive |
 | Unknown-effect click/Enter | Block; never guess |
 | Target unavailable | Inconclusive |
-| Solari 429 | Lower capacity, retry same run, no duplicate |
+| Definitive Solari 429 with no session created | Lower future capacity; current run inconclusive; do not retry create |
+| Ambiguous Solari create | Do not retry; potential leak blocks acceptance pending reconciliation |
 | Provider session acknowledged then connect fails | Close if created, release in finally, persist cleanup result |
 | Agent asks to finish | Drain actions and capture evidence; belief ignored |
 | Assertion not found on complete stable evidence | Observed false → failed if all other assertions verifiable |
@@ -996,9 +1061,9 @@ Configured credentialed suites must not silently skip. Unconfigured probes repor
 
 - V2 target/origin/assertion accept/reject fixtures, bounds, unique IDs, and schema version separation.
 - Public/private/reserved/mixed DNS, redirect hop, rebinding, unresolved destination, and alternate-protocol cases.
-- Network method/body/beacon/WebSocket mutation blocking.
+- Exhaustive frozen protocol/transport × method-or-not_applicable × request-context × origin-relation × credential-state × destination-observability decisions covering DNS/UDP/STUN/TURN/data channels plus navigation/subframes/redirects/fetch/XHR/static resources/speculation/workers/EventSource/beacon/WebSocket/WebTransport/WebRTC/popups/downloads/browser-process traffic, with pre-connect actual IP:port enforcement or block-before-transmission and default deny.
 - Auth, payment, messaging, upload/download, permission, submit, popup, iframe, and unknown-effect policy cases.
-- Assertion/model-context separation tests.
+- Assertion-only provenance canaries for the assertion-free DTO/prompt/tool/model-history/agent-trace/target-traffic boundary; coincidental lexical overlap negative controls.
 - URL/text/semantic/state truth tables and normalization.
 - Fresh capture stability/retry, truncation, ambiguity, unsupported state, and evidence-hash validation.
 - Exact outcome precedence, including false plus unverifiable → inconclusive.
@@ -1007,9 +1072,11 @@ Configured credentialed suites must not silently skip. Unconfigured probes repor
 - Finally cleanup after every acknowledged provider session ID.
 - Generic aggregation and zero denominators.
 - Redaction seeded with fake keys, CDP/replay URLs, sensitive values, and hostile page content.
-- V2 migration, snapshots, persisted events, publish-after-commit, reconnect/refetch.
+- Clean generated V2 `0000`, recreated local DB, typed snapshot/report/trace, every event transaction’s publish-after-commit/no-publish-on-rollback, and race-free subscribe-first SSE recovery.
 - Prompt injection and attempts to discover assertions or policy internals.
+- Strict TanStack lifecycle, dynamic tool omission, FIFO/current-revision revalidation, independent budget/history/cancellation, and restricted `pressKey` cases.
 - Demo fixture proves the same public V2 assertion path with no privileged grader.
+- Demo-independence negative checks fail composition/import/export/schema/API/report builds if production references Demo admin, challenge, scenario, cart, fixture host, or privileged evidence.
 
 ### 15.3 Manual/credentialed acceptance
 
@@ -1017,13 +1084,13 @@ Configured credentialed suites must not silently skip. Unconfigured probes repor
 2. Prove TG-002R destination enforcement with real Solari, including a denied private/reserved/rebinding case.
 3. Run a safe fixture task through the full generic path without Demo admin evidence.
 4. Run at least two materially different admitted public HTTPS sites through real Solari using safe read-only/reversible tasks and different assertion kinds.
-5. Confirm assertions never appear in prompts, tool schemas/results, model history, agent trace, or the evaluated target page’s input/content; confirm they remain visible only in TraceGate authoring/report UI.
+5. Seed assertion-only canaries and verify assertion-origin provenance never flows into `AgentExecutionInputV2`, prompt/tool/model history, agent trace, or evaluated-target traffic; coincidental lexical overlap is not classified as leakage.
 6. Attempt every prohibited action category; confirm block + INCONCLUSIVE + cleanup.
 7. Force unstable/truncated/ambiguous evidence; confirm INCONCLUSIVE.
 8. Run three repetitions; recalculate all counts/denominators from DB.
 9. Refresh/reconnect during live execution; confirm authoritative snapshot recovery.
 10. Compare acknowledged provider session IDs with release records; any mismatch blocks acceptance.
-11. Confirm no private addresses, credentials, CDP/replay URLs, full DOMs, or sensitive assertion values in DB/logs/SSE/export.
+11. Run seeded redaction/admission audits for private-address detail, known credential/secret patterns, CDP/replay URLs, and full DOM material across DB/logs/SSE/export; document residual user-text risk rather than claiming absolute sensitive-string absence.
 12. Verify report and video state that PASS proves browser-observable assertions only.
 13. Send SIGINT/SIGTERM during active work; confirm bounded cleanup.
 14. Use only real measured results in submission assets.
@@ -1038,13 +1105,13 @@ Configured credentialed suites must not silently skip. Unconfigured probes repor
 | DNS rebinding or unsafe redirect | Per-hop runtime destination enforcement | None; block target/run |
 | Generic action has hidden side effect | Conservative effect + network mutation policy | Block/INCONCLUSIVE |
 | GET endpoint has hostile side effect | Anonymous isolated scope and explicit limitation | Site/task unsupported; never claim absolute business safety |
-| Dynamic page never stabilizes | Bounded revision-consistent capture retries | INCONCLUSIVE |
+| Dynamic page never reaches two identical canonical captures within 3 attempts/5 s | Bounded quiet/capture protocol | INCONCLUSIVE |
 | Poor accessibility/canvas/shadow/cross-frame target | Semantic evidence reason codes | INCONCLUSIVE |
 | Prompt requests prohibited action | Admission UX plus authoritative runtime block | Reject or INCONCLUSIVE |
 | Assertions expose sensitive values | Schema limits, sensitive-control block, redaction | Reject/unverifiable |
 | Solari capacity below requested | Typed 429 degradation | Lower real concurrency |
 | Recording unavailable | Capability gate | Runs continue; replay unsupported |
-| DeepSeek incompatible with safe surface | Production-shaped recheck | P0 blocked until one verified model works |
+| `deepseek/deepseek-v4-flash-0731` incompatible with safe surface | One bounded post-V2 credentialed smoke | P0 blocked; do not substitute an unverified optional model |
 | DB unhealthy | Health gate and cleanup | Stop scheduling |
 | Cleanup uncertainty | Durable session/release reconciliation | Acceptance blocked |
 | Contract churn | TG-006R freeze and sole shared owner | Checkpointed changes only |
@@ -1067,18 +1134,18 @@ Configured credentialed suites must not silently skip. Unconfigured probes repor
 - **Limitation:** Not generic-site safety evidence.
 
 ### TG-002R — Generic-target safety feasibility
-- **Goal:** Prove enforceable public destination, redirect, DNS-rebinding, private-address, egress, request-method, and effect blocking in real Solari.
-- **Done when:** Actual connection destinations are observable/enforceable; private/reserved and mutation probes are blocked; cleanup is reconciled; redacted evidence exists.
-- **Stop rule:** If runtime destination enforcement is unavailable, V2 P0 is blocked rather than weakened.
+- **Goal:** Build a disposable prototype proving real-Solari feasibility for public destination, redirects/rebinding, private-address/egress, request-method, and effect blocking.
+- **Done when:** Provider-side enforcement or a forced outbound proxy observes and denies the actual IP:port before connection for every §5.2 context; non-HTTP paths have equivalent enforcement or block before transmission; a fresh service-worker-blocked context is used; private/reserved/rebinding/mutation probes deny; ambiguous egress denies; a provider inventory/safe correlation mechanism reconciles ambiguous creates without retry; cleanup reconciles; redacted measured evidence exists. URL/CDP request routing or post-response IP evidence alone cannot pass.
+- **Stop rule:** If any browser/browser-process context can bypass pre-connect enforcement, or an unidentified ambiguous create cannot be reconciled by measured provider semantics, V2 acceptance stops. The disposable prototype is not production code and creates no TG-008 acceptance credit.
 - **Owner:** B with A acceptance.
 
-### TG-003 — TanStack/OpenRouter compatibility — retained PASS
-- **Goal:** Preserve DeepSeek verification.
-- **Done when for V2:** The safe reduced tool surface compiles and one production-shaped smoke remains green; optional models stay unverified unless remeasured.
+### TG-003 — TanStack/OpenRouter compatibility — retained historical PASS
+- **Goal:** Preserve historical verification of exact P0 slug `deepseek/deepseek-v4-flash-0731`; TG-003 has no new V2 work.
+- **V2 follow-up:** TG-009/TG-017C alone own exactly one bounded post-V2 safe-surface credentialed smoke. Do not rerun a model matrix; optional models remain unverified.
 
 ### TG-004R — V2 shared contracts
-- **Goal:** Replace Demo target/grading production contracts with V2 target, assertion, evidence, policy, error, event, and port schemas.
-- **Done when:** Closed fixtures and negative tests cover bounds, assertion isolation, outcome precedence, atomic ports, factory, and typed 429; downstream lanes compile.
+- **Goal:** Replace Demo target/grading production contracts with V2 target, assertion, assertion-free agent DTO, evidence, policy, report/trace, error, event, and port schemas.
+- **Done when:** Closed fixtures and negative tests cover bounds; assertion-only provenance canaries; untrusted observations; outcome precedence; atomic ports; controller factory; typed 429; run-scoped environment/discovery/admission/policy evidence; separate trace/report DTOs; clean-V2 persistence handoff; and downstream lanes compile.
 - **Owner:** A.
 
 ### TG-005 — Historical persistence/SSE feasibility — retained PASS
@@ -1086,17 +1153,17 @@ Configured credentialed suites must not silently skip. Unconfigured probes repor
 - **Limitation:** Does not prove V2 privacy/schema.
 
 ### TG-005R — V2 persistence/privacy refresh
-- **Goal:** Prove V2 config/assertion/evidence/policy persistence and projection without DOM/sensitive leakage.
-- **Done when:** Pivot migration, snapshot, event publication, reconnect/refetch, redaction, and legacy-row handling pass.
-- **Owner:** D with A acceptance.
+- **Goal:** Establish the V2 persistence schema/migration and prove config/assertion/evidence/policy storage/projection under the stated residual-risk model.
+- **Done when:** A clean generated V2 Drizzle `0000` recreates a fresh local DB; no V1 reader/converter/migration exists; run-scoped environment/discovery/admission/policy evidence, separate agent trace/grading report, snapshot, every event-family publish-after-commit/no-publish-on-rollback case, subscribe-first buffered/ready-handshake SSE recovery, bounds, and seeded redaction tests pass.
+- **Ownership:** D authors and proves the TG-005R migration/repository surface; A accepts it at TG-006R. TG-010 consumes it unchanged.
 
 ### TG-006 — Historical V1 freeze — retained as superseded checkpoint
 - **Goal:** Preserve ownership/evidence history.
 - **Limitation:** V1 Demo contracts are not V2 production authority.
 
 ### TG-006R — Generic-site V2 pivot freeze
-- **Goal:** Integrate TG-002R/TG-004R/TG-005R, regenerate the sole lockfile after manifests settle, update ownership/interfaces, and authorize Wave 1.
-- **Done when:** Full frozen install/typecheck/test/build, redaction/ownership audit, lane acknowledgements, exact shared tree/lock hash, and explicit gate evidence are green.
+- **Goal:** Integrate TG-002R/TG-004R/TG-005R, regenerate the sole lockfile after manifests settle, freeze production interfaces/policies, and authorize Wave 1.
+- **Done when:** Full frozen install/typecheck/test/build and redaction/ownership audit are green; lane acknowledgements, shared tree/lock hash, and gate evidence are exact; the exhaustive `protocol/transport × method-or-not_applicable × resource/request context × origin relation × credential state × actual-destination observability` table covers every §5.2 HTTP and non-HTTP context with pre-connect IP:port enforcement/default deny; prompt layers/DTO, causal window, stability bounds, report/trace/SSE bounds, provider create/reconciliation/release semantics, and Demo-independence negative checks are frozen.
 - **Owner:** A.
 
 ### TG-007 — Generic evaluator and grader
@@ -1105,18 +1172,19 @@ Configured credentialed suites must not silently skip. Unconfigured probes repor
 - **Owner:** A.
 
 ### TG-008 — Safe browser, admission, discovery, and fixture slice
-- **Goal:** Implement public admission, runtime destination/egress/effect enforcement, semantic observations, stable evidence capture, and fixture-only Demo coverage.
-- **Done when:** Real Solari safely observes an admitted site, blocks prohibited probes, captures stable assertion evidence, and releases without capability leakage.
+- **Goal:** Implement and review the production admission, forced/provider network enforcement, closed effect policy, semantic observations, bounded operational capture, enforced discovery, and fixture-only Demo coverage; TG-002R code is disposable evidence only.
+- **Done when:** The frozen request table passes for every context, unknown/unobservable effects deny before dispatch, passive/causal telemetry classifies correctly, real Solari handles an admitted site and prohibited probes, 2–3 capture stability works, and cleanup releases without capability leakage. Production modules and public exports have no Demo admin/challenge/cart dependency.
 - **Owner:** B.
 
 ### TG-009 — Assertion-blind safe agent slice
-- **Goal:** Implement DeepSeek loop, prompt, budgets, serialized safe tools, cancellation, history bounds, and event mapping without assertions/native tools.
-- **Done when:** Agent sees only prompt/safe observations, cannot access assertions or raw controller, and provider/tool failures map safely.
+- **Goal:** Implement exact-slug DeepSeek loop over `AgentExecutionInputV2`, fixed prompt layers, dynamically reduced upper-bound tools, FIFO/current-revision effect revalidation, independent budgets/history, cancellation, and strict TanStack lifecycle without assertions/native tools.
+- **Done when:** Assertion-only canaries prove non-flow; all observations/results are explicitly untrusted; unavailable tools are omitted; `pressKey` restrictions and deny-unknown pre-dispatch policy pass; stale/FIFO/budget/history/cancellation cases pass; malformed/duplicate/out-of-order/unmatched/post-terminal TanStack events fail closed and are redacted; exactly one bounded credentialed V2 smoke for `deepseek/deepseek-v4-flash-0731` is green.
+- **Stop rules:** Stop on any assertion-origin flow, raw controller/native-tool exposure, effect execution before a current-revision allow decision, budget coupling/bypass, cancellation dispatch race, lifecycle ambiguity, or concrete compile/smoke failure. Optional models stay unverified.
 - **Owner:** C.
 
 ### TG-010 — V2 DB/API/minimal UI
-- **Goal:** Implement pivot migration, repositories, V2 API/snapshot/SSE, target/prompt/assertion form, and minimal report.
-- **Done when:** V2 create/live/report flow persists and reconnects without Demo-admin or sensitive evidence dependency.
+- **Goal:** Consume the TG-005R clean V2 `0000` unchanged and implement repositories, loopback-only V2 API, typed snapshot/report/assertion-blind trace, race-free bounded SSE, target/prompt/assertion form, and minimal grading report.
+- **Done when:** Fresh-DB create/live/report/trace flow persists run-scoped evidence, exact aggregates recalculate, subscribe-first handoff/reconnect/gap/slow-consumer behavior passes, every event transaction publishes only after commit, residual local-text risk is disclosed, and no Demo-admin/challenge/cart or raw grading URL dependency exists.
 - **Owner:** D.
 
 ### TG-011 — Single-run generic checkpoint
@@ -1130,7 +1198,7 @@ Configured credentialed suites must not silently skip. Unconfigured probes repor
 
 ### TG-013 — Policy, security, and cleanup evidence
 - **Goal:** Prove prohibited actions, SSRF/redirect/rebinding, mutation blocking, prompt injection, evidence privacy, shutdown, and session reconciliation.
-- **Done when:** Every adversarial case blocks safely and all acknowledged sessions reconcile.
+- **Done when:** Every adversarial case blocks safely; every create attempt is classified; ambiguous/unidentified creates reconcile; and every acknowledged session has explicit positive release confirmation.
 
 ### TG-014 — Non-blocking P1
 - **Goal:** Add only high-value capability-gated replay, optional models, richer safe assertions, or discovery polish.
@@ -1148,13 +1216,16 @@ Configured credentialed suites must not silently skip. Unconfigured probes repor
 - Assertion truth tables, evidence precedence, atomicity, queue, aggregation, cleanup.
 
 ### TG-017B — Browser/target verification
-- Public-network enforcement, redirects/rebinding, effect policy, stable evidence, fixture isolation, release/replay.
+- **Acceptance:** independently rerun the entire frozen request decision table against the reviewed TG-008 production boundary, including forced/provider pre-connect actual IP:port enforcement, fresh service-worker-blocked contexts, redirects/rebinding, all browser/browser-process contexts, closed pre-dispatch effect decisions, passive/causal telemetry, enforced discovery, 2–3 capture stability, explicit release confirmation, and fixture coverage.
+- **Stop:** any bypass/unobservable context, URL/post-response-only enforcement, unknown allowed effect, agent-caused/unclassifiable prohibited traffic without INCONCLUSIVE, 404 treated as release success, or production Demo admin/challenge/cart import/export.
 
 ### TG-017C — AI/agent verification
-- Assertion blindness, prompt injection, tool confinement, provider errors, budgets/history/cancellation.
+- **Acceptance:** independently rerun assertion-only provenance canaries, fixed-layer/assertion-free DTO tests, prompt-injection cases, dynamic tool omission, pre-dispatch deny-unknown/current-revision checks, FIFO ordering, `pressKey` restrictions, independent budget/history limits, cancellation races, and strict malformed TanStack lifecycle cases; confirm the single exact-slug credentialed smoke evidence and that optional models are still unverified.
+- **Stop:** any assertion-origin flow, raw controller/native tool, post-cancel dispatch, budget bypass, lifecycle ambiguity, unsafe action dispatch, raw malformed persistence, or failed exact-slug smoke.
 
 ### TG-017D — DB/SSE/UI verification
-- Migration, redaction, snapshots/SSE, assertion UX, report math, degraded and zero-denominator states.
+- **Acceptance:** recreate from clean V2 `0000`; verify there is no V1 reader/converter; audit local prompt/assertion pattern rejection plus residual-risk disclosure; verify transient raw URL separation; run-scoped environment/discovery/admission/policy evidence; exact aggregate derivations; bounded typed snapshot/report/assertion-blind trace; subscribe-first ready/buffer/drain/live SSE races; frame/heartbeat/queue/slow-consumer bounds; and publish coverage for every event transaction family.
+- **Stop:** any remote/non-loopback API exposure, V1 compatibility machinery, Demo dependency, assertion/grading data in agent trace, raw grading URL durability, rollback publication, snapshot/SSE race, unbounded transport, incorrect denominator, or seeded known-secret leakage.
 
 ### TG-018 — Submission acceptance and polish
 - **Goal:** Produce final README/video/evidence and run the submission checklist.
@@ -1165,7 +1236,7 @@ Configured credentialed suites must not silently skip. Unconfigured probes repor
 
 ```text
 TG-000 → TG-001
-  → (TG-002R, TG-003, TG-004R)
+  → (TG-002R, TG-004R)  # historical TG-003 evidence is retained, not rerun here
   → TG-005R
   → TG-006R
   → (TG-007, TG-008, TG-009, TG-010)
@@ -1185,16 +1256,16 @@ TG-014 is explicitly off the critical path.
 - [ ] Public repository is visibly a fork of `solari-sdk/solari-cookbook`.
 - [ ] TraceGate remains under `examples/tracegate/`.
 - [ ] Exact runtime/dependency pins and final lock hash are recorded.
-- [ ] TG-002R proves actual public destination/egress/mutation enforcement in real Solari.
-- [ ] DeepSeek or another declared P0 model is currently verified through the production-shaped safe tool path.
-- [ ] Assertions are absent from model context/history/tools/agent trace and the evaluated target page’s input/content; TraceGate authoring/report UI may display them.
+- [ ] TG-002R proves provider-side or forced-proxy actual IP:port enforcement before connection for every frozen request context in real Solari; URL routing/post-response IP evidence alone is rejected.
+- [ ] Exact P0 slug `deepseek/deepseek-v4-flash-0731` passes exactly one bounded post-V2 credentialed safe-surface smoke; optional models remain unverified.
+- [ ] Assertion-only canaries prove assertion-origin provenance/non-flow into the assertion-free DTO, model context/history/tools, agent trace, and evaluated-target traffic; coincidental lexical overlap is not leakage.
 - [ ] PASS/FAIL/INCONCLUSIVE truth tables and fresh evidence tests are green.
 - [ ] PASS is described only as declared browser-observable assertion success.
 - [ ] At least two materially different real public HTTPS sites have safe Solari acceptance evidence.
-- [ ] Demo Store is fixture-only and no production grader/admin dependency remains.
+- [ ] Demo Store is fixture-only; negative dependency/import/export/config/API/report checks prove no production grader/admin/challenge/cart/fixture-host dependency remains.
 - [ ] All prohibited action categories block safely.
-- [ ] All acknowledged provider sessions reconcile to release results.
-- [ ] No secret, sensitive data, private address detail, CDP/replay URL, or full DOM is durable or public.
+- [ ] Every provider create attempt is classified; ambiguous/unidentified creates reconcile; and every acknowledged session has explicit positive release confirmation (404 is not success).
+- [ ] Seeded audits find no known secret/private-address/CDP/replay/full-DOM leakage; prompt/assertion residual local-storage risk is disclosed without an absolute no-sensitive-string claim.
 - [ ] Snapshot/SSE refresh and reconnect are verified.
 - [ ] Raw counts, denominators, medians, usage, interface, and environment claims recalculate from persisted data.
 - [ ] No fabricated, edited, scripted, or hard-coded result is presented as measured.
@@ -1210,17 +1281,17 @@ TG-014 is explicitly off the critical path.
 
 ### Blocking before V2 implementation
 
-1. **Actual destination enforcement:** Can Solari/CDP or a controlled proxy expose and deny the resolved IP before each connection, redirect, and re-resolution? TG-002R must answer with measured evidence.
+1. **External actual-destination enforcement:** Does Solari provide server-side policy, or can all Solari browser/browser-process traffic be forced through a controlled proxy that exposes and denies the actual IP:port before connection, redirect, and re-resolution? TG-002R must answer with measured evidence; CDP URL routing or post-response observation cannot satisfy it.
 2. **Network mutation enforcement:** Can the runtime reliably block agent-caused non-idempotent requests, beacons, WebSocket sends, downloads, and service-worker bypass? If not, generic V2 is blocked.
 
 ### Frozen product decisions
 
 - Generic user-submitted public HTTPS targets and prompts: approved.
 - Assertions: 1–20 required bounded URL/text/semantic/state assertions.
-- Assertion secrecy: kept out of model context.
-- Evidence: fresh stable browser capture only.
+- Assertion isolation: provenance/non-flow through assertion-only canaries and an assertion-free agent DTO; not an impossible lexical-absence claim.
+- Evidence: bounded operationally stable browser capture only.
 - Unverifiable required evidence: INCONCLUSIVE.
-- Safe anonymous reversible tasks only; prohibited categories are closed above.
+- Safe anonymous tasks only within the closed detectable-effect policy; no claim of backend reversibility or GET truth.
 - Demo Store: fixture only.
 - Generic WebMCP invocation: disabled.
 - PASS meaning: browser-observable assertion satisfaction, not arbitrary backend truth.
