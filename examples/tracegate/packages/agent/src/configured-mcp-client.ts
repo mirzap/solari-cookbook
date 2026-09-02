@@ -204,9 +204,12 @@ function safeSessionId(value: string | null): string | null {
 
 function boundedOutput(result: Record<string, unknown>): { output: JsonObject; summary: string; truncated: boolean } {
   const source = record(result.structuredContent) ?? { content: result.content ?? [], isError: result.isError === true };
+  let sourceBytes = MAX_RESULT_BYTES + 1;
+  try { sourceBytes = Buffer.byteLength(JSON.stringify(source), "utf8"); }
+  catch { /* deeply nested untrusted JSON is conservatively treated as truncated */ }
   let output = redactJson(source, { maxStringLength: 2_000, maxDepth: 6, maxArrayLength: 40, maxObjectKeys: 50 });
   if (!record(output)) output = { value: output };
-  let truncated = JSON.stringify(output).length > MAX_RESULT_BYTES;
+  const truncated = sourceBytes > MAX_RESULT_BYTES || Buffer.byteLength(JSON.stringify(output), "utf8") > MAX_RESULT_BYTES;
   if (truncated) output = { summary: "Configured MCP result exceeded the safe output bound" };
   const text = Array.isArray(result.content)
     ? result.content.map(record).map((item) => item?.type === "text" ? boundedString(item.text, 500) : undefined).filter(Boolean).join(" ")
