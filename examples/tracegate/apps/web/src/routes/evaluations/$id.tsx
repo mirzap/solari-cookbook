@@ -87,7 +87,7 @@ function RunCard({ run }: { readonly run: RunSnapshot }) {
       </ol>
       <dl className="tg-run-metrics">
         <Metric label="Tool calls" value={run.toolCalls} />
-        <Metric label="Time" value={run.durationMs === null ? "—" : `${(run.durationMs / 1_000).toFixed(1)}s`} />
+        <Metric label="Time" value={run.startedAt === null || run.durationMs === null ? "—" : `${(run.durationMs / 1_000).toFixed(1)}s`} />
       </dl>
       {runFailureMessage(run) === null ? null : <InlineNotice tone={run.outcome === "inconclusive" ? "warning" : "error"}>{runFailureMessage(run)}</InlineNotice>}
       {run.warnings.map((warning, index) => <InlineNotice key={`${warning.code}-${index}`} tone="warning">{warning.message}</InlineNotice>)}
