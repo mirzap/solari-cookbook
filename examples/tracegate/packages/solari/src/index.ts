@@ -6,6 +6,7 @@ export {
   SolariCdpBrowserController,
   SolariBrowserControllerFactory,
   type CurrentOriginTextResult,
+  type BrowserRecoveryCounters,
   type CurrentPageDiscoverySnapshot,
   type RawCurrentOriginWebMcpTool,
   type SolariBrowserControllerOptions,

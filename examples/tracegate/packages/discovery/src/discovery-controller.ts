@@ -9,6 +9,7 @@ import {
   type DiscoveryController,
   type DiscoveryEvidence,
   type ObservationRevision,
+  type PolicyDenyCode,
   type WebMcpReadOnlyAdapterPort,
   type WebMcpToolDescriptorV1,
 } from "@tracegate/shared"
@@ -22,6 +23,19 @@ export interface BrowserDiscoverySource {
     jsonLdTexts: readonly string[]
     jsonLdTruncated?: boolean
     webMcpPresent: boolean
+    policyActivity?: {
+      readonly passiveWarningCount: number
+      readonly codes: readonly PolicyDenyCode[]
+    }
+    recoveryCounters?: {
+      readonly directHandle: number
+      readonly rebind: number
+      readonly ambiguous: number
+      readonly exhausted: number
+      readonly observationRecoveryAttempted: number
+      readonly observationRecoverySucceeded: number
+      readonly observationRecoveryExhausted: number
+    }
   }>
   readCurrentOriginText(
     path: string,
@@ -95,11 +109,18 @@ function collectJsonLdTypes(
   }
 }
 
+interface RunDiscoveryState {
+  readonly origin: string
+  readonly generation: number
+  readonly webMcpTools: readonly WebMcpToolDescriptorV1[]
+}
+
 export class TraceGateDiscoveryController implements DiscoveryController {
   readonly #source: BrowserDiscoverySource
   readonly #now: () => Date
   readonly #webMcp: TraceGateDiscoveryControllerOptions["webMcp"]
-  #lastWebMcpTools: readonly WebMcpToolDescriptorV1[] = []
+  readonly #runState = new Map<string, RunDiscoveryState>()
+  #lastCompletedRunId: string | null = null
 
   constructor(options: TraceGateDiscoveryControllerOptions) {
     this.#source = options.source
@@ -108,7 +129,13 @@ export class TraceGateDiscoveryController implements DiscoveryController {
   }
 
   get lastAdmittedWebMcpTools(): readonly WebMcpToolDescriptorV1[] {
-    return this.#lastWebMcpTools
+    return this.#lastCompletedRunId === null
+      ? []
+      : this.#runState.get(this.#lastCompletedRunId)?.webMcpTools ?? []
+  }
+
+  admittedWebMcpToolsForRun(runId: DiscoveryContext["runId"]): readonly WebMcpToolDescriptorV1[] {
+    return this.#runState.get(runId)?.webMcpTools ?? []
   }
 
   async discover(
@@ -116,7 +143,8 @@ export class TraceGateDiscoveryController implements DiscoveryController {
     signal: AbortSignal,
   ): Promise<DiscoveryEvidence> {
     if (signal.aborted) throw signal.reason
-    this.#lastWebMcpTools = []
+    const previousRunState = this.#runState.get(context.runId)
+    let admittedWebMcpTools: readonly WebMcpToolDescriptorV1[] = []
     const currentOrigin = PublicHttpsOriginSchema.parse(
       new URL(context.observation.url).origin,
     )
@@ -129,7 +157,18 @@ export class TraceGateDiscoveryController implements DiscoveryController {
       throw new Error("Discovery source revision does not match observation")
     }
 
+    const originChanged = previousRunState !== undefined && previousRunState.origin !== currentOrigin
+    const discoveryGeneration = Math.min(1_000, (previousRunState?.generation ?? 0) + 1)
     const discoveredAt = this.#now().toISOString()
+    const recoveryCounters = snapshot.recoveryCounters ?? {
+      directHandle: 0,
+      rebind: 0,
+      ambiguous: 0,
+      exhausted: 0,
+      observationRecoveryAttempted: 0,
+      observationRecoverySucceeded: 0,
+      observationRecoveryExhausted: 0,
+    }
     const interfaces: Array<{
       schemaVersion: 1
       kind: "semantic" | "llms_txt" | "json_ld" | "webmcp"
@@ -141,7 +180,21 @@ export class TraceGateDiscoveryController implements DiscoveryController {
         schemaVersion: 1,
         kind: "semantic",
         name: "semantic-controls",
-        metadata: { count: context.observation.elements.length },
+        metadata: {
+          count: context.observation.elements.length,
+          agentAccess: "agent_usable",
+          observationMode: "progressive_semantic",
+          originScoped: true,
+          originChanged,
+          discoveryGeneration,
+          directHandleCount: recoveryCounters.directHandle,
+          rebindCount: recoveryCounters.rebind,
+          ambiguousCount: recoveryCounters.ambiguous,
+          exhaustedCount: recoveryCounters.exhausted,
+          observationRecoveryAttemptedCount: recoveryCounters.observationRecoveryAttempted,
+          observationRecoverySucceededCount: recoveryCounters.observationRecoverySucceeded,
+          observationRecoveryExhaustedCount: recoveryCounters.observationRecoveryExhausted,
+        },
         discoveredAt,
       },
     ]
@@ -156,6 +209,8 @@ export class TraceGateDiscoveryController implements DiscoveryController {
           sizeBytes: llms.sizeBytes,
           sha256: llms.sha256,
           truncated: llms.truncated,
+          agentAccess: "discovery_only",
+          contentProvidedToAgent: false,
         },
         discoveredAt,
       })
@@ -183,7 +238,11 @@ export class TraceGateDiscoveryController implements DiscoveryController {
         schemaVersion: 1,
         kind: "json_ld",
         name: type,
-        metadata: { type },
+        metadata: {
+          type,
+          agentAccess: "discovery_only",
+          contentProvidedToAgent: false,
+        },
         discoveredAt,
       })
     }
@@ -195,17 +254,17 @@ export class TraceGateDiscoveryController implements DiscoveryController {
         webMcpGate = "available_disabled"
       } else {
         try {
-          this.#lastWebMcpTools = await this.#webMcp.adapter.discover(
+          admittedWebMcpTools = await this.#webMcp.adapter.discover(
             this.#webMcp.controller,
             currentOrigin,
             signal,
           )
-          webMcpGate = this.#lastWebMcpTools.length > 0
+          webMcpGate = admittedWebMcpTools.length > 0
             ? "admitted_read_only"
             : "discover_only"
         } catch (error) {
           if (signal.aborted) throw error
-          this.#lastWebMcpTools = []
+          admittedWebMcpTools = []
           webMcpDiscoveryFailed = true
           webMcpGate = "discover_only"
         }
@@ -216,13 +275,31 @@ export class TraceGateDiscoveryController implements DiscoveryController {
         name: "document.modelContext",
         metadata: {
           gate: webMcpGate,
-          admittedToolCount: this.#lastWebMcpTools.length,
+          admittedToolCount: admittedWebMcpTools.length,
+          agentAccess: webMcpGate === "admitted_read_only" ? "agent_usable_read_only" : "discovery_only",
+          originScoped: true,
+          originChanged,
+          discoveryGeneration,
         },
         discoveredAt,
       })
     }
 
     const warnings: ReturnType<typeof RunWarningSchema.parse>[] = []
+    if ((snapshot.policyActivity?.passiveWarningCount ?? 0) > 0) {
+      warnings.push(
+        RunWarningSchema.parse({
+          schemaVersion: 1,
+          category: "policy",
+          code: "passive_policy_blocked",
+          phase: "discovery",
+          retryable: false,
+          message: "Blocked passive browser activity was observed; trustworthy page evidence remains valid",
+          fieldIssues: [],
+          causeChain: [],
+        }),
+      )
+    }
     if (
       snapshot.webMcpPresent &&
       context.interfaceMode !== "semantic-only" &&
@@ -245,7 +322,7 @@ export class TraceGateDiscoveryController implements DiscoveryController {
       )
     }
 
-    return DiscoveryEvidenceSchema.parse({
+    const evidence = DiscoveryEvidenceSchema.parse({
       schemaVersion: 1,
       observationRevision: context.observation.revision,
       semanticControlCount: context.observation.elements.length,
@@ -256,6 +333,17 @@ export class TraceGateDiscoveryController implements DiscoveryController {
       warnings,
       truncated: context.observation.truncated || llms.truncated || jsonLdTruncated,
     })
+    if (!previousRunState && this.#runState.size >= 100) {
+      const oldestRunId = this.#runState.keys().next().value
+      if (oldestRunId !== undefined) this.#runState.delete(oldestRunId)
+    }
+    this.#runState.set(context.runId, {
+      origin: currentOrigin,
+      generation: discoveryGeneration,
+      webMcpTools: admittedWebMcpTools,
+    })
+    this.#lastCompletedRunId = context.runId
+    return evidence
   }
 
   async #discoverLlmsTxt(currentOrigin: string, signal: AbortSignal) {

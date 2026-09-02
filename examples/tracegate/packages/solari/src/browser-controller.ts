@@ -68,7 +68,9 @@ const MAX_INTERNAL_DEADLINE_HEADROOM_MS = 2_000
 const MIN_INTERNAL_DEADLINE_HEADROOM_MS = 250
 const MAX_DOM_CONTENT_LOADED_GRACE_MS = 1_000
 const MAX_DOCUMENT_QUIET_INTERVAL_MS = 150
-const MAX_SEMANTIC_CANDIDATES = 100
+const MAX_OBSERVATION_CAPTURE_ATTEMPTS = 2
+const MAX_SEMANTIC_CANDIDATES = 48
+const PROGRESSIVE_SEMANTIC_ANCHOR_COUNT = 12
 const MAX_ELEMENT_ROLE_CHARACTERS = 100
 const MAX_ELEMENT_FIELD_CHARACTERS = 500
 const MAX_VISIBLE_TEXT_CHARACTERS = 20_000
@@ -157,6 +159,25 @@ type BrowserTerminalPhase =
   | "observation"
   | "discovery"
   | "assertion_capture"
+
+type BrowserFailureOperation = "connect" | "guard" | "navigation" | "semantic_capture" | "document_change"
+type BrowserFailureSubphase = BrowserFailureOperation | "timeout"
+type BrowserEffectDisposition = "navigation_committed" | "interaction_dispatched_effect_uncertain"
+
+interface BrowserFailureDiagnostic {
+  readonly subphase: BrowserFailureSubphase
+  readonly operation: BrowserFailureOperation
+}
+
+export interface BrowserRecoveryCounters {
+  readonly directHandle: number
+  readonly rebind: number
+  readonly ambiguous: number
+  readonly exhausted: number
+  readonly observationRecoveryAttempted: number
+  readonly observationRecoverySucceeded: number
+  readonly observationRecoveryExhausted: number
+}
 
 interface SafeSemanticIdentity {
   readonly tag: string
@@ -268,6 +289,11 @@ export interface CurrentPageDiscoverySnapshot {
   readonly jsonLdTexts: readonly string[]
   readonly jsonLdTruncated: boolean
   readonly webMcpPresent: boolean
+  readonly policyActivity: {
+    readonly passiveWarningCount: number
+    readonly codes: readonly PolicyDenyCode[]
+  }
+  readonly recoveryCounters: BrowserRecoveryCounters
 }
 
 export interface CurrentOriginTextResult {
@@ -386,6 +412,45 @@ const BROWSER_TERMINAL_FAILURE = {
   { readonly code: "solari_unavailable" | "target_unavailable" | "target_evidence_lost"; readonly message: string }
 >
 
+function browserOperationForPhase(phase: string): BrowserFailureOperation {
+  if (phase === "browser_connect" || phase === "CDP connection" || phase === "context creation" || phase === "page creation") {
+    return "connect"
+  }
+  if (phase.includes("guard") || phase.includes("policy") || phase.includes("service-worker")) {
+    return "guard"
+  }
+  if (phase.includes("document change")) return "document_change"
+  if (phase.includes("navigation") || phase.includes("DOMContentLoaded") || phase.includes("document stabilization")) {
+    return "navigation"
+  }
+  return "semantic_capture"
+}
+
+class BrowserPhaseError extends Error {
+  constructor(
+    readonly diagnostic: BrowserFailureDiagnostic,
+    cause?: unknown,
+  ) {
+    super("Browser phase failed", { cause })
+    this.name = "BrowserPhaseError"
+  }
+}
+
+function browserDiagnosticFieldIssues(diagnostic: BrowserFailureDiagnostic) {
+  return [
+    {
+      path: "browser.subphase",
+      code: "closed_browser_diagnostic",
+      message: diagnostic.subphase,
+    },
+    {
+      path: "browser.operation",
+      code: "closed_browser_diagnostic",
+      message: diagnostic.operation,
+    },
+  ]
+}
+
 function normalizeBrowserTerminalFailure(
   phase: BrowserTerminalPhase,
   error: unknown,
@@ -394,6 +459,9 @@ function normalizeBrowserTerminalFailure(
   if (error instanceof TraceGateError && FailureRecordSchema.safeParse(error.safe).success) return error
   if (signal?.aborted) return abortedBrowserOperation(phase)
   const failure = BROWSER_TERMINAL_FAILURE[phase]
+  const diagnostic = error instanceof BrowserPhaseError
+    ? error.diagnostic
+    : { subphase: browserOperationForPhase(phase), operation: browserOperationForPhase(phase) }
   return new TraceGateError(
     FailureRecordSchema.parse({
       schemaVersion: 1,
@@ -404,7 +472,7 @@ function normalizeBrowserTerminalFailure(
       phase,
       retryable: false,
       message: failure.message,
-      fieldIssues: [],
+      fieldIssues: browserDiagnosticFieldIssues(diagnostic),
       causeChain: [],
     }),
     error,
@@ -413,16 +481,55 @@ function normalizeBrowserTerminalFailure(
 
 function browserPhaseFailure(
   phase: string,
-  message: string,
   cause?: unknown,
+  timedOut = false,
+): BrowserPhaseError {
+  const operation = browserOperationForPhase(phase)
+  return new BrowserPhaseError({
+    subphase: timedOut ? "timeout" : operation,
+    operation,
+  }, cause)
+}
+
+function documentChangeFailure(operation: BrowserFailureOperation): BrowserPhaseError {
+  return new BrowserPhaseError({ subphase: "document_change", operation })
+}
+
+function observationFailureAfterEffect(
+  disposition: BrowserEffectDisposition,
+  error: unknown,
 ): TraceGateError {
+  if (error instanceof TraceGateError) {
+    const parsed = FailureRecordSchema.safeParse(error.safe)
+    if (parsed.success && (parsed.data.category === "policy" || parsed.data.category === "cancellation")) {
+      return error
+    }
+  }
+  const parsed = error instanceof TraceGateError ? FailureRecordSchema.safeParse(error.safe) : null
+  const inheritedIssues = parsed?.success ? parsed.data.fieldIssues.slice(0, 8) : []
   return new TraceGateError(
-    createControlError("service_unavailable", `Browser ${phase} ${message}`, {
+    FailureRecordSchema.parse({
+      schemaVersion: 1,
       category: "infrastructure",
-      phase: "browser_action",
+      code: "target_evidence_lost",
+      outcome: "inconclusive",
+      policyCode: null,
+      phase: "observation",
       retryable: false,
+      message: disposition === "navigation_committed"
+        ? "Navigation committed, but a trustworthy post-navigation observation could not be recovered."
+        : "Browser interaction dispatch completed, but its effect remains uncertain because post-action observation could not be recovered.",
+      fieldIssues: [
+        ...inheritedIssues,
+        {
+          path: "browser.effectDisposition",
+          code: "closed_browser_diagnostic",
+          message: disposition,
+        },
+      ],
+      causeChain: [],
     }),
-    cause,
+    error,
   )
 }
 
@@ -439,7 +546,7 @@ function internalOperationTimeoutMs(outerTimeoutMs: number): number {
 
 function remainingPhaseMs(deadline: number, phase: string): number {
   const remaining = deadline - Date.now()
-  if (remaining <= 0) throw browserPhaseFailure(phase, "exceeded its internal deadline")
+  if (remaining <= 0) throw browserPhaseFailure(phase, undefined, true)
   return remaining
 }
 
@@ -456,7 +563,7 @@ async function runBrowserPhase<T>(
   let timedOut = false
   const timer = setTimeout(() => {
     timedOut = true
-    deadlineController.abort(new Error(`Browser ${phase} deadline exceeded`))
+    deadlineController.abort()
   }, timeoutMs)
   try {
     const pending = operation(phaseSignal)
@@ -465,9 +572,9 @@ async function runBrowserPhase<T>(
       : raceWithAbort(pending, phaseSignal))
   } catch (error) {
     if (signal.aborted) throw abortedBrowserOperation()
-    if (timedOut) throw browserPhaseFailure(phase, `timed out after ${timeoutMs}ms`, error)
-    if (error instanceof TraceGateError) throw error
-    throw browserPhaseFailure(phase, "failed", error)
+    if (timedOut) throw browserPhaseFailure(phase, error, true)
+    if (error instanceof TraceGateError || error instanceof BrowserPhaseError) throw error
+    throw browserPhaseFailure(phase, error)
   } finally {
     clearTimeout(timer)
   }
@@ -489,7 +596,7 @@ async function waitForOptionalBrowserPhase(
   const settled = operation.then(
     () => true,
     (error: unknown) => {
-      throw browserPhaseFailure(phase, "failed", error)
+      throw browserPhaseFailure(phase, error)
     },
   )
   try {
@@ -762,6 +869,16 @@ export class SolariCdpBrowserController implements BrowserController, AssertionS
   #nextPolicyActionToken = 0
   #documentSequence = 0
   #observedDocumentSequence: number | null = null
+  #semanticObservationPass = 0
+  readonly #recoveryCounters = {
+    directHandle: 0,
+    rebind: 0,
+    ambiguous: 0,
+    exhausted: 0,
+    observationRecoveryAttempted: 0,
+    observationRecoverySucceeded: 0,
+    observationRecoveryExhausted: 0,
+  }
   #passivePolicyCount = 0
   #fatalPolicyCount = 0
   #passivePolicyCodes: PolicyDenyCode[] = []
@@ -781,6 +898,10 @@ export class SolariCdpBrowserController implements BrowserController, AssertionS
     this.#internalOperationTimeoutMs = internalOperationTimeoutMs(options.actionTimeoutMs ?? 15_000)
     this.#connectOverCdp = dependencies.connectOverCdp ?? ((endpoint, connectOptions) =>
       chromium.connectOverCDP(endpoint, connectOptions))
+  }
+
+  browserDiagnosticsSnapshot(): BrowserRecoveryCounters {
+    return { ...this.#recoveryCounters }
   }
 
   async connect(lease: BrowserLease, signal: AbortSignal): Promise<void> {
@@ -830,6 +951,7 @@ export class SolariCdpBrowserController implements BrowserController, AssertionS
         if (frame === this.#page?.mainFrame()) {
           this.#documentSequence += 1
           this.#observedDocumentSequence = null
+          this.#semanticObservationPass = 0
           this.#clearRegistry()
         }
       })
@@ -891,7 +1013,7 @@ export class SolariCdpBrowserController implements BrowserController, AssertionS
     throwIfAborted(signal)
     const target = assertAllowedNavigation(url, this.#allowedOrigins)
     const page = this.#requirePage()
-    const performNavigation = async (): Promise<UntrustedAgentObservation> => {
+    const performNavigation = async (): Promise<void> => {
       const deadline = Date.now() + this.#internalOperationTimeoutMs
       let committed = false
       try {
@@ -909,15 +1031,13 @@ export class SolariCdpBrowserController implements BrowserController, AssertionS
         throwIfAborted(signal)
         this.#assertCurrentOrigin()
 
-        // Commit establishes the new main document. DOMContentLoaded is only a
-        // bounded stabilization hint because a committed page may never emit it.
+        // A committed document is usable even when generic sites never finish loading.
+        // Stabilization is only a bounded hint; observation owns the single recovery.
         const stabilizationBudget = Math.min(
           MAX_DOM_CONTENT_LOADED_GRACE_MS,
           Math.max(100, Math.floor(this.#internalOperationTimeoutMs * 0.15)),
           remainingPhaseMs(deadline, "navigation stabilization"),
         )
-        // Proceed after the grace period without forcibly stopping the document;
-        // generic sites may still need pending scripts and resources to become usable.
         await waitForOptionalBrowserPhase(
           "DOMContentLoaded stabilization",
           stabilizationBudget,
@@ -930,49 +1050,93 @@ export class SolariCdpBrowserController implements BrowserController, AssertionS
           Math.max(50, Math.floor(this.#internalOperationTimeoutMs * 0.02)),
           remainingPhaseMs(deadline, "document stabilization"),
         )
-        const documentSequence = this.#documentSequence
         await runBrowserPhase(
           "document stabilization",
           remainingPhaseMs(deadline, "document stabilization"),
           signal,
           (phaseSignal) => raceWithAbort(page.waitForTimeout(quietIntervalMs), phaseSignal),
         )
-        if (this.#documentSequence !== documentSequence) {
-          throw staleElement("Document changed during navigation stabilization")
-        }
         this.#assertCurrentOrigin()
-        return await runBrowserPhase(
-          "fresh navigation observation",
-          remainingPhaseMs(deadline, "fresh navigation observation"),
-          signal,
-          (phaseSignal) => this.observe(phaseSignal),
-        )
       } catch (error) {
         if (!committed || signal.aborted) {
           void page.close({ runBeforeUnload: false }).catch(() => {})
-        } else {
-          void page.evaluate(() => window.stop()).catch(() => {})
         }
         throw error
       }
     }
 
-    return this.#initialNavigationCompleted
-      ? this.#runWithPolicyAction("navigation", performNavigation)
-      : performNavigation()
+    if (this.#initialNavigationCompleted) {
+      await this.#runWithPolicyAction("navigation", performNavigation)
+    } else {
+      await performNavigation()
+    }
+    try {
+      return await this.observe(signal)
+    } catch (error) {
+      throw observationFailureAfterEffect("navigation_committed", error)
+    }
   }
 
   async observe(signal: AbortSignal): Promise<UntrustedAgentObservation> {
+    const deadline = Date.now() + this.#internalOperationTimeoutMs
+    let recoveryAttempted = false
+    let recoveryExhaustedRecorded = false
     try {
-      return await this.#observe(signal)
+      for (let attempt = 1; attempt <= MAX_OBSERVATION_CAPTURE_ATTEMPTS; attempt += 1) {
+        const remaining = remainingPhaseMs(deadline, "semantic observation capture")
+        const attemptBudget = attempt === 1
+          ? Math.min(remaining, Math.max(500, Math.floor(remaining * 0.6)))
+          : remaining
+        try {
+          const observation = await this.#observe(signal, attemptBudget)
+          if (!recoveryAttempted) return observation
+          this.#incrementRecoveryCounter("observationRecoverySucceeded")
+          return UntrustedAgentObservationSchema.parse({
+            ...observation,
+            discoverySummary: `${observation.discoverySummary}; one bounded fresh-observation recovery succeeded`,
+          })
+        } catch (error) {
+          this.#observedDocumentSequence = null
+          this.#clearRegistry()
+          if (
+            attempt === MAX_OBSERVATION_CAPTURE_ATTEMPTS ||
+            !this.#canRecoverObservation(error, signal)
+          ) {
+            if (recoveryAttempted) {
+              this.#incrementRecoveryCounter("observationRecoveryExhausted")
+              recoveryExhaustedRecorded = true
+            }
+            throw error
+          }
+          recoveryAttempted = true
+          this.#incrementRecoveryCounter("observationRecoveryAttempted")
+          const quietIntervalMs = Math.min(
+            MAX_DOCUMENT_QUIET_INTERVAL_MS,
+            remainingPhaseMs(deadline, "document change recovery"),
+          )
+          await runBrowserPhase(
+            "document change recovery",
+            remainingPhaseMs(deadline, "document change recovery"),
+            signal,
+            (phaseSignal) => raceWithAbort(
+              this.#requirePage().waitForTimeout(quietIntervalMs),
+              phaseSignal,
+            ),
+          )
+        }
+      }
+      throw new Error("Observation recovery exhausted unexpectedly")
     } catch (error) {
+      if (recoveryAttempted && !recoveryExhaustedRecorded) {
+        this.#incrementRecoveryCounter("observationRecoveryExhausted")
+      }
       this.#observedDocumentSequence = null
       this.#clearRegistry()
       throw normalizeBrowserTerminalFailure("observation", error, signal)
     }
   }
 
-  async #observe(signal: AbortSignal): Promise<UntrustedAgentObservation> {
+  async #observe(signal: AbortSignal, timeoutMs: number): Promise<UntrustedAgentObservation> {
     throwIfAborted(signal)
     this.#throwIfFatalPolicyViolation()
     const page = this.#requirePage()
@@ -982,9 +1146,11 @@ export class SolariCdpBrowserController implements BrowserController, AssertionS
     const revision = ObservationRevisionSchema.parse(this.#revision)
     this.#clearRegistry()
 
+    const semanticPass = this.#semanticObservationPass
+    this.#semanticObservationPass = (this.#semanticObservationPass + 1) % 1_000
     const { collected, candidateHandles } = await runBrowserPhase(
       "semantic observation capture",
-      this.#internalOperationTimeoutMs,
+      timeoutMs,
       signal,
       async (phaseSignal) => {
         let captureHandle: JSHandle<InPageSemanticCapture> | null = null
@@ -1003,10 +1169,9 @@ export class SolariCdpBrowserController implements BrowserController, AssertionS
           // those exact nodes in the same evaluation, while totalCount preserves truncation honesty.
           captureHandle = await raceWithAbortAndCleanup(
             page.evaluateHandle(
-              ({ selector, limits }): InPageSemanticCapture => {
+              ({ selector, limits, semanticPass }): InPageSemanticCapture => {
                 const semanticMatches = document.querySelectorAll(selector)
-                const nodes = Array.from(semanticMatches).slice(0, limits.maximumCandidates)
-                const totalCount = semanticMatches.length
+                const allNodes = Array.from(semanticMatches)
         const isVisibleTextNode = (node: Text): boolean => {
           const range = document.createRange()
           range.selectNode(node)
@@ -1026,6 +1191,74 @@ export class SolariCdpBrowserController implements BrowserController, AssertionS
           if (style.visibility !== "visible") return false
           const rect = element.getBoundingClientRect()
           return rect.width > 0 && rect.height > 0
+        }
+        const rankedNodes = allNodes
+          .map((node, sourceIndex) => {
+            try {
+              const element = node as HTMLElement
+              const rect = element.getBoundingClientRect()
+              const inViewport =
+                rect.bottom >= 0 &&
+                rect.right >= 0 &&
+                rect.top <= window.innerHeight &&
+                rect.left <= window.innerWidth
+              const tag = element.tagName.toLowerCase()
+              const role = element.getAttribute("role")?.toLowerCase() ?? ""
+              const actionable =
+                tag === "a" ||
+                tag === "button" ||
+                tag === "input" ||
+                tag === "select" ||
+                tag === "textarea" ||
+                element.isContentEditable ||
+                ["button", "link", "checkbox", "radio", "combobox", "textbox", "tab"].includes(role)
+              const verticalDistance = inViewport
+                ? 0
+                : rect.bottom < 0
+                  ? Math.abs(rect.bottom)
+                  : Math.max(0, rect.top - window.innerHeight)
+              return {
+                node,
+                sourceIndex,
+                visible: isVisible(element),
+                priority: inViewport && actionable ? 0 : inViewport ? 1 : actionable ? 2 : 3,
+                verticalDistance,
+              }
+            } catch {
+              return {
+                node,
+                sourceIndex,
+                visible: false,
+                priority: 4,
+                verticalDistance: Number.MAX_SAFE_INTEGER,
+              }
+            }
+          })
+          .filter((candidate) => candidate.visible)
+          .sort((left, right) =>
+            left.priority - right.priority ||
+            left.verticalDistance - right.verticalDistance ||
+            left.sourceIndex - right.sourceIndex,
+          )
+          .map((candidate) => candidate.node)
+        const totalCount = rankedNodes.length
+        const maximumCandidates = Math.min(limits.maximumCandidates, rankedNodes.length)
+        const anchorCount = Math.min(limits.progressiveAnchorCount, maximumCandidates)
+        let nodes: Element[]
+        if (semanticPass === 0 || rankedNodes.length <= maximumCandidates) {
+          nodes = rankedNodes.slice(0, maximumCandidates)
+        } else {
+          const anchors = rankedNodes.slice(0, anchorCount)
+          const remaining = rankedNodes.slice(anchorCount)
+          const windowSize = maximumCandidates - anchorCount
+          const offset = remaining.length === 0
+            ? 0
+            : ((semanticPass - 1) * Math.max(1, windowSize)) % remaining.length
+          const progressive = [
+            ...remaining.slice(offset, offset + windowSize),
+            ...remaining.slice(0, Math.max(0, windowSize - (remaining.length - offset))),
+          ].slice(0, windowSize)
+          nodes = [...anchors, ...progressive]
         }
         const readSnapshot = (node: Element): ElementSnapshot => {
           const element = node as HTMLElement
@@ -1196,10 +1429,12 @@ export class SolariCdpBrowserController implements BrowserController, AssertionS
         selector: SEMANTIC_SELECTOR,
         limits: {
           maximumCandidates: MAX_SEMANTIC_CANDIDATES,
+          progressiveAnchorCount: PROGRESSIVE_SEMANTIC_ANCHOR_COUNT,
           maximumElementRoleCharacters: MAX_ELEMENT_ROLE_CHARACTERS,
           maximumElementFieldCharacters: MAX_ELEMENT_FIELD_CHARACTERS,
           maximumVisibleTextCharacters: MAX_VISIBLE_TEXT_CHARACTERS,
         },
+        semanticPass,
       },
             ),
             phaseSignal,
@@ -1281,7 +1516,7 @@ export class SolariCdpBrowserController implements BrowserController, AssertionS
       title,
       visibleText,
       elements: candidateElements,
-      discoverySummary: `${candidateElements.length} visible semantic elements`,
+      discoverySummary: `${candidateElements.length} visible semantic elements; progressive semantic window ${semanticPass + 1}`,
       truncated,
     })
     try {
@@ -1353,7 +1588,7 @@ export class SolariCdpBrowserController implements BrowserController, AssertionS
       throw new Error("Observation serialization exceeded the configured byte budget")
     }
     throwIfAborted(signal)
-    if (this.#documentSequence !== documentSequence) throw staleElement("Document changed during observation")
+    if (this.#documentSequence !== documentSequence) throw documentChangeFailure("semantic_capture")
     this.#assertCurrentOrigin()
     this.#throwIfFatalPolicyViolation()
     this.#observedDocumentSequence = documentSequence
@@ -1369,10 +1604,15 @@ export class SolariCdpBrowserController implements BrowserController, AssertionS
       }
       assertAllowedNavigation(entry.identity.normalizedHref, this.#allowedOrigins)
     }
-    return this.#runWithPolicyAction(entry.identity.hrefPresent ? "navigation" : "direct_interaction", async () => {
+    const documentSequence = this.#documentSequence
+    await this.#runWithPolicyAction(entry.identity.hrefPresent ? "navigation" : "direct_interaction", async () => {
       await entry.handle.click({ timeout: this.#internalOperationTimeoutMs })
-      return this.observe(signal)
     })
+    const disposition: BrowserEffectDisposition =
+      entry.identity.hrefPresent && this.#documentSequence !== documentSequence
+        ? "navigation_committed"
+        : "interaction_dispatched_effect_uncertain"
+    return this.#observeAfterEffect(disposition, signal)
   }
 
   async type(
@@ -1382,11 +1622,11 @@ export class SolariCdpBrowserController implements BrowserController, AssertionS
     if (Buffer.byteLength(input.text, "utf8") > 4_000) throw new Error("Text is too large")
     const entry = await this.#resolve(input, signal, "type")
     this.#assertElementSafe(entry.snapshot)
-    return this.#runWithPolicyAction("direct_interaction", async () => {
+    await this.#runWithPolicyAction("direct_interaction", async () => {
       if (input.clearFirst) await entry.handle.fill(input.text)
       else await entry.handle.type(input.text)
-      return this.observe(signal)
     })
+    return this.#observeAfterEffect("interaction_dispatched_effect_uncertain", signal)
   }
 
   async select(
@@ -1395,10 +1635,10 @@ export class SolariCdpBrowserController implements BrowserController, AssertionS
   ): Promise<UntrustedAgentObservation> {
     const entry = await this.#resolve(input, signal, "select")
     this.#assertElementSafe(entry.snapshot)
-    return this.#runWithPolicyAction("direct_interaction", async () => {
+    await this.#runWithPolicyAction("direct_interaction", async () => {
       await entry.handle.selectOption(input.value)
-      return this.observe(signal)
     })
+    return this.#observeAfterEffect("interaction_dispatched_effect_uncertain", signal)
   }
 
   async pressKey(
@@ -1410,10 +1650,10 @@ export class SolariCdpBrowserController implements BrowserController, AssertionS
     }
     const entry = await this.#resolve(input, signal, "press_key")
     this.#assertElementSafe(entry.snapshot)
-    return this.#runWithPolicyAction("direct_interaction", async () => {
+    await this.#runWithPolicyAction("direct_interaction", async () => {
       await entry.handle.press(input.key)
-      return this.observe(signal)
     })
+    return this.#observeAfterEffect("interaction_dispatched_effect_uncertain", signal)
   }
 
   async scroll(
@@ -1426,7 +1666,7 @@ export class SolariCdpBrowserController implements BrowserController, AssertionS
       throw new Error("Scroll amount is out of bounds")
     }
     await this.#requirePage().mouse.wheel(0, direction === "down" ? amount : -amount)
-    return this.observe(signal)
+    return this.#observeAfterEffect("interaction_dispatched_effect_uncertain", signal)
   }
 
   async wait(durationMs: number, signal: AbortSignal): Promise<UntrustedAgentObservation> {
@@ -1436,7 +1676,7 @@ export class SolariCdpBrowserController implements BrowserController, AssertionS
     }
     await this.#requirePage().waitForTimeout(durationMs)
     throwIfAborted(signal)
-    return this.observe(signal)
+    return this.#observeAfterEffect("interaction_dispatched_effect_uncertain", signal)
   }
 
   async currentPageDiscoverySnapshot(
@@ -1484,6 +1724,11 @@ export class SolariCdpBrowserController implements BrowserController, AssertionS
       jsonLdTexts,
       jsonLdTruncated,
       webMcpPresent,
+      policyActivity: {
+        passiveWarningCount: this.#passivePolicyCount,
+        codes: [...this.#passivePolicyCodes],
+      },
+      recoveryCounters: this.browserDiagnosticsSnapshot(),
     }
   }
 
@@ -2175,12 +2420,12 @@ export class SolariCdpBrowserController implements BrowserController, AssertionS
 
     throwIfAborted(signal)
     if (this.#documentSequence !== documentSequence) {
-      throw staleElement("Document changed during assertion capture")
+      throw documentChangeFailure("semantic_capture")
     }
     this.#assertCurrentOrigin()
     this.#throwIfFatalPolicyViolation()
     if (collected.finalUrl.status === "captured" && collected.finalUrl.value !== page.url()) {
-      throw staleElement("URL changed during assertion capture")
+      throw documentChangeFailure("document_change")
     }
     const identity = Math.max(1, documentSequence)
     return TransientAssertionSnapshotV1Schema.parse({
@@ -2207,9 +2452,15 @@ export class SolariCdpBrowserController implements BrowserController, AssertionS
       input.observationRevision !== this.#revision ||
       this.#observedDocumentSequence === null ||
       this.#observedDocumentSequence !== this.#documentSequence
-    ) throw staleElement()
+    ) {
+      this.#incrementRecoveryCounter("exhausted")
+      throw staleElement()
+    }
     const entry = this.#registry.get(input.ref)
-    if (!entry || entry.revision !== input.observationRevision) throw staleElement()
+    if (!entry || entry.revision !== input.observationRevision) {
+      this.#incrementRecoveryCounter("exhausted")
+      throw staleElement()
+    }
 
     const documentSequence = this.#documentSequence
     this.#assertCurrentOrigin()
@@ -2223,6 +2474,7 @@ export class SolariCdpBrowserController implements BrowserController, AssertionS
         if (sameSafeSemanticIdentity(currentIdentity, entry.identity)) {
           this.#assertElementSafe(current)
           this.#assertRecoveryContext(documentSequence)
+          this.#incrementRecoveryCounter("directHandle")
           return { ...entry, identity: currentIdentity, snapshot: current }
         }
         identityChanged = true
@@ -2230,7 +2482,11 @@ export class SolariCdpBrowserController implements BrowserController, AssertionS
     }
 
     if (!entry.identity.recoverable) {
-      if (identityChanged) throw ambiguousElement()
+      if (identityChanged) {
+        this.#incrementRecoveryCounter("ambiguous")
+        throw ambiguousElement()
+      }
+      this.#incrementRecoveryCounter("exhausted")
       throw staleElement("Element reference cannot be safely rebound from a truncated identity")
     }
 
@@ -2245,22 +2501,29 @@ export class SolariCdpBrowserController implements BrowserController, AssertionS
       }
     }
     if (reboundHandle === null) {
-      if (identityChanged) throw ambiguousElement()
+      if (identityChanged) {
+        this.#incrementRecoveryCounter("ambiguous")
+        throw ambiguousElement()
+      }
+      this.#incrementRecoveryCounter("exhausted")
       throw staleElement("Element reference is stale and no unique semantic replacement exists")
     }
 
     if (!(await this.#isHandleActionable(reboundHandle, action))) {
       await reboundHandle.dispose().catch(() => {})
+      this.#incrementRecoveryCounter("exhausted")
       throw staleElement("Recovered element is no longer actionable")
     }
     const rebound = await readElement(reboundHandle).catch(() => null)
     if (!rebound) {
       await reboundHandle.dispose().catch(() => {})
+      this.#incrementRecoveryCounter("exhausted")
       throw staleElement("Recovered element detached before dispatch")
     }
     const reboundIdentity = safeSemanticIdentity(rebound)
     if (!sameSafeSemanticIdentity(reboundIdentity, entry.identity)) {
       await reboundHandle.dispose().catch(() => {})
+      this.#incrementRecoveryCounter("ambiguous")
       throw ambiguousElement("Recovered element identity changed before dispatch")
     }
     try {
@@ -2273,6 +2536,7 @@ export class SolariCdpBrowserController implements BrowserController, AssertionS
     const reboundEntry = { ...entry, handle: reboundHandle, identity: reboundIdentity, snapshot: rebound }
     this.#registry.set(entry.ref, reboundEntry)
     await entry.handle.dispose().catch(() => {})
+    this.#incrementRecoveryCounter("rebind")
     return reboundEntry
   }
 
@@ -2456,9 +2720,11 @@ export class SolariCdpBrowserController implements BrowserController, AssertionS
     })
     const result = await raceWithAbort(lookup, signal)
     if (result.matchingCount > 1) {
+      this.#incrementRecoveryCounter("ambiguous")
       throw ambiguousElement("Multiple visible actionable elements share the original semantic identity")
     }
     if (result.indeterminate) {
+      this.#incrementRecoveryCounter("exhausted")
       throw staleElement("Semantic recovery could not safely inspect every candidate")
     }
     if (result.matchingCount !== 1 || result.firstIndex === null) return null
@@ -2500,6 +2766,29 @@ export class SolariCdpBrowserController implements BrowserController, AssertionS
     for (const handle of handles) void handle.dispose().catch(() => {})
   }
 
+  #incrementRecoveryCounter(key: keyof BrowserRecoveryCounters): void {
+    this.#recoveryCounters[key] = Math.min(1_000, this.#recoveryCounters[key] + 1)
+  }
+
+  #canRecoverObservation(error: unknown, signal: AbortSignal): boolean {
+    if (signal.aborted || this.#firstFatalPolicyViolation) return false
+    if (error instanceof BrowserPhaseError) return true
+    if (!(error instanceof TraceGateError)) return false
+    const parsed = FailureRecordSchema.safeParse(error.safe)
+    return parsed.success && ["infrastructure", "timeout", "tool_error"].includes(parsed.data.category)
+  }
+
+  async #observeAfterEffect(
+    disposition: BrowserEffectDisposition,
+    signal: AbortSignal,
+  ): Promise<UntrustedAgentObservation> {
+    try {
+      return await this.observe(signal)
+    } catch (error) {
+      throw observationFailureAfterEffect(disposition, error)
+    }
+  }
+
   #assertElementSafe(snapshot: ElementSnapshot): void {
     const denyCode = obviousUnsafeControl(snapshot)
     if (denyCode) throw blockedByPolicy(denyCode, "Control is outside TraceGate's safe public-task policy")
@@ -2539,7 +2828,14 @@ export class SolariCdpBrowserController implements BrowserController, AssertionS
     this.#nextPolicyActionToken = activeAction.token
     this.#activePolicyAction = activeAction
     try {
-      return await operation()
+      try {
+        const result = await operation()
+        this.#throwIfFatalPolicyViolation()
+        return result
+      } catch (error) {
+        this.#throwIfFatalPolicyViolation()
+        throw error
+      }
     } finally {
       if (this.#activePolicyAction === activeAction) this.#activePolicyAction = null
       this.#disposeRetiredHandles()
@@ -2557,6 +2853,10 @@ export class SolariCdpBrowserController implements BrowserController, AssertionS
     } catch {
       return null
     }
+  }
+
+  #eventPolicyDisposition(): BlockedPolicyDisposition {
+    return this.#activePolicyAction === null ? "passive" : "fatal"
   }
 
   #eventPolicyDiagnostic(resourceType: PolicyDiagnosticResourceType): FirstFatalPolicyDiagnostic {
@@ -2617,13 +2917,13 @@ export class SolariCdpBrowserController implements BrowserController, AssertionS
 
   async #installPolicyHandlers(context: BrowserContext, page: Page): Promise<void> {
     page.on("dialog", (dialog) => {
-      this.#recordPolicy("unknown_effect", "fatal", this.#eventPolicyDiagnostic("dialog"))
+      this.#recordPolicy("unknown_effect", this.#eventPolicyDisposition(), this.#eventPolicyDiagnostic("dialog"))
       void dialog.dismiss().catch(() => {})
     })
     page.on("download", (download) => {
       this.#recordPolicy(
         "upload_or_download_forbidden",
-        "fatal",
+        this.#eventPolicyDisposition(),
         this.#eventPolicyDiagnostic("download"),
       )
       void download.cancel().catch(() => {})
@@ -2631,14 +2931,14 @@ export class SolariCdpBrowserController implements BrowserController, AssertionS
     page.on("filechooser", (chooser) => {
       this.#recordPolicy(
         "upload_or_download_forbidden",
-        "fatal",
+        this.#eventPolicyDisposition(),
         this.#eventPolicyDiagnostic("filechooser"),
       )
       void chooser.setFiles([]).catch(() => {})
     })
     context.on("page", (candidate) => {
       if (candidate !== page) {
-        this.#recordPolicy("popup_forbidden", "fatal", this.#eventPolicyDiagnostic("popup"))
+        this.#recordPolicy("popup_forbidden", this.#eventPolicyDisposition(), this.#eventPolicyDiagnostic("popup"))
         void candidate.close().catch(() => {})
       }
     })

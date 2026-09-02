@@ -1,9 +1,9 @@
 import { lookup as nodeLookup } from "node:dns/promises"
-import { isIP } from "node:net"
-
 import {
   PublicEvaluationTargetV2Schema,
   TargetAdmissionResultSchema,
+  classifyNetworkHostname,
+  classifyResolvedIp,
   type PublicEvaluationTargetV2,
   type AdmissionReasonCode,
   type TargetAdmissionPort,
@@ -24,76 +24,9 @@ export interface PracticalTargetAdmissionOptions {
   readonly requestInterception?: "get_head_only_observable" | "unavailable"
 }
 
-function isPublicIpv4(address: string): boolean {
-  const octets = address.split(".").map(Number)
-  if (octets.length !== 4 || octets.some((value) => !Number.isInteger(value) || value < 0 || value > 255)) return false
-  const [a, b, c] = octets as [number, number, number, number]
-  if (a === 0 || a === 10 || a === 127 || a >= 224) return false
-  if (a === 100 && b >= 64 && b <= 127) return false
-  if (a === 169 && b === 254) return false
-  if (a === 172 && b >= 16 && b <= 31) return false
-  if (a === 192 && b === 0 && c === 0) return false
-  if (a === 192 && b === 0 && c === 2) return false
-  if (a === 192 && b === 168) return false
-  if (a === 198 && (b === 18 || b === 19)) return false
-  if (a === 198 && b === 51 && c === 100) return false
-  if (a === 203 && b === 0 && c === 113) return false
-  return true
-}
-
-function parseIpv6Words(address: string): readonly number[] | null {
-  let value = address.toLowerCase().split("%")[0]!
-  if (isIP(value) !== 6) return null
-
-  const ipv4Separator = value.lastIndexOf(":")
-  const ipv4Tail = value.slice(ipv4Separator + 1)
-  if (ipv4Tail.includes(".")) {
-    if (isIP(ipv4Tail) !== 4) return null
-    const octets = ipv4Tail.split(".").map(Number)
-    value = `${value.slice(0, ipv4Separator)}:${((octets[0]! << 8) | octets[1]!).toString(16)}:${((octets[2]! << 8) | octets[3]!).toString(16)}`
-  }
-
-  const halves = value.split("::")
-  if (halves.length > 2) return null
-  const left = halves[0] ? halves[0].split(":") : []
-  const right = halves.length === 2 && halves[1] ? halves[1].split(":") : []
-  const explicit = [...left, ...right]
-  if (explicit.some((part) => !/^[0-9a-f]{1,4}$/.test(part))) return null
-  const omitted = 8 - explicit.length
-  if ((halves.length === 1 && omitted !== 0) || (halves.length === 2 && omitted < 1)) return null
-  return [
-    ...left.map((part) => Number.parseInt(part, 16)),
-    ...Array.from({ length: omitted }, () => 0),
-    ...right.map((part) => Number.parseInt(part, 16)),
-  ]
-}
-
-function isPublicIpv6(address: string): boolean {
-  const words = parseIpv6Words(address)
-  if (!words) return false
-  const [first, second, third] = words as [number, number, number, ...number[]]
-
-  // Only globally routed unicast space is eligible. All mapped/compatible IPv4,
-  // loopback, local, link-local, site-local, multicast, and unspecified forms
-  // consequently fail closed before the narrower special-purpose exclusions.
-  if (first < 0x2000 || first > 0x3fff) return false
-  if (first === 0x2002 || first === 0x3ffe) return false // 6to4 and retired 6bone
-  if (first === 0x2001 && second === 0x0000) return false // Teredo
-  if (first === 0x2001 && second === 0x0db8) return false // documentation
-  if (first === 0x2001 && second === 0x0002 && third === 0x0000) return false // benchmarking
-  if (first === 0x2001 && (second & 0xfff0) === 0x0010) return false // ORCHID
-  if (first === 0x2001 && (second & 0xfff0) === 0x0020) return false // ORCHIDv2
-  if (first === 0x3fff && second <= 0x0fff) return false // documentation 3fff::/20
-  return true
-}
-
+/** Compatibility predicate backed exclusively by the shared address classifier. */
 export function isPublicNetworkAddress(address: string): boolean {
-  const family = isIP(address)
-  return family === 4
-    ? isPublicIpv4(address)
-    : family === 6
-      ? isPublicIpv6(address)
-      : false
+  return classifyResolvedIp(address) === "public"
 }
 
 async function defaultLookup(hostname: string): Promise<readonly ResolvedAddress[]> {
@@ -174,10 +107,13 @@ export class PracticalTargetAdmission implements TargetAdmissionPort {
         return rejected("unsupported_port", "Only the default HTTPS port is supported")
       }
       const hostname = url.hostname.toLowerCase()
-      if (hostname === "localhost" || hostname.endsWith(".localhost") || hostname.endsWith(".local")) {
-        return rejected("private_or_reserved_address", "Local hostnames are not public targets")
+      const hostnameClassification = classifyNetworkHostname(hostname)
+      if (hostnameClassification === "ip_literal") {
+        return rejected("ip_literal", "IP-literal targets are not admitted")
       }
-      if (isIP(hostname)) return rejected("ip_literal", "IP-literal targets are not admitted")
+      if (hostnameClassification !== "public_dns_name") {
+        return rejected("private_or_reserved_address", "Special-use hostnames are not public targets")
+      }
       hostnames.add(hostname)
     }
 
@@ -195,11 +131,12 @@ export class PracticalTargetAdmission implements TargetAdmissionPort {
         return rejected("target_unreachable", "Public DNS preflight failed")
       }
       if (answers.length === 0) return rejected("target_unreachable", "Public DNS returned no addresses")
-      const publicAnswers = answers.filter((answer) => isPublicNetworkAddress(answer.address))
-      if (publicAnswers.length === 0) {
-        return rejected("private_or_reserved_address", "DNS resolved only to private or reserved addresses")
+      const answerClassifications = answers.map((answer) => classifyResolvedIp(answer.address))
+      const publicAnswerCount = answerClassifications.filter((classification) => classification === "public").length
+      if (publicAnswerCount === 0) {
+        return rejected("private_or_reserved_address", "DNS resolved only to private, reserved, or invalid addresses")
       }
-      if (publicAnswers.length !== answers.length) {
+      if (publicAnswerCount !== answers.length) {
         return rejected("mixed_address_set", "DNS returned a mixed public and non-public address set")
       }
     }

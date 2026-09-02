@@ -56,27 +56,28 @@ function sha256(value: string): string {
 function assertionRelevantProjection(
   snapshot: TransientAssertionSnapshotV1,
   assertions: readonly AssertionV1[],
+  observations: readonly CanonicalAssertionObservation[],
 ): unknown {
   const captureFinalUrl = assertions.some((assertion) => assertion.kind === "url")
-  const captureTitle = assertions.some(
-    (assertion) => assertion.kind === "text" && assertion.scope === "title",
-  )
-  const captureDocumentVisibleText = assertions.some(
-    (assertion) => assertion.kind === "text" && assertion.scope === "document_visible_text",
-  )
   return {
+    documentId: snapshot.documentId,
+    loaderId: snapshot.loaderId,
     finalUrl: captureFinalUrl ? snapshot.finalUrl : null,
-    title: captureTitle ? snapshot.title : null,
-    documentVisibleText: captureDocumentVisibleText ? snapshot.documentVisibleText : null,
-    semanticStateValues: snapshot.semanticStateValues,
+    assertions: observations.map((observation) => ({
+      assertionId: observation.assertionId,
+      status: observation.status,
+      observedResult: observation.observedResult,
+      reasonCode: observation.reasonCode,
+    })),
   }
 }
 
 function canonicalFingerprint(
   snapshot: TransientAssertionSnapshotV1,
   assertions: readonly AssertionV1[],
+  observations: readonly CanonicalAssertionObservation[],
 ): string {
-  return sha256(JSON.stringify(assertionRelevantProjection(snapshot, assertions)))
+  return sha256(JSON.stringify(assertionRelevantProjection(snapshot, assertions, observations)))
 }
 
 function unstableAssertions(
@@ -128,7 +129,7 @@ export class FreshBrowserAssertionEvidenceCapture implements AssertionEvidenceCa
       const assertions = input.assertions.map((assertion) =>
         evaluateCapturedAssertion(assertion, snapshot),
       )
-      const fingerprint = canonicalFingerprint(snapshot, input.assertions)
+      const fingerprint = canonicalFingerprint(snapshot, input.assertions, assertions)
       last = { snapshot, assertions, fingerprint }
       if (fingerprint === previousFingerprint) {
         accepted = { snapshot, assertions, fingerprint, attempts: attempt }
