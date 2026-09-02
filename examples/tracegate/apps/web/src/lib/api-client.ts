@@ -68,6 +68,15 @@ export class TracegateApiClient {
     })));
   }
 
+  async cancelEvaluation(evaluationId: EvaluationId, signal?: AbortSignal): Promise<void> {
+    const id = EvaluationIdSchema.parse(evaluationId);
+    await parsedJson(await fetch(`${this.baseUrl}/api/evaluations/${encodeURIComponent(id)}/cancel`, {
+      method: "POST",
+      headers: { Accept: "application/json" },
+      ...(signal === undefined ? {} : { signal }),
+    }));
+  }
+
   async snapshot(evaluationId: EvaluationId, signal?: AbortSignal): Promise<EvaluationSnapshot> {
     const id = EvaluationIdSchema.parse(evaluationId);
     return EvaluationSnapshotSchema.parse(await parsedJson(await fetch(`${this.baseUrl}/api/evaluations/${encodeURIComponent(id)}`, {

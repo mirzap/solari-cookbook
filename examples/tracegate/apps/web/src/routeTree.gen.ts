@@ -15,6 +15,7 @@ import { Route as ApiEvaluationsRouteImport } from './routes/api/evaluations'
 import { Route as ApiHealthRouteImport } from './routes/api/health'
 import { Route as EvaluationsIdRouteImport } from './routes/evaluations/$id'
 import { Route as ApiEvaluationsIdRouteImport } from './routes/api/evaluations/$id'
+import { Route as ApiEvaluationsIdCancelRouteImport } from './routes/api/evaluations/$id/cancel'
 import { Route as ApiEvaluationsIdEventsRouteImport } from './routes/api/evaluations/$id/events'
 import { Route as ApiEvaluationsIdReportRouteImport } from './routes/api/evaluations/$id/report'
 import { Route as ApiEvaluationsIdTraceRouteImport } from './routes/api/evaluations/$id/trace'
@@ -49,6 +50,11 @@ const ApiEvaluationsIdRoute = ApiEvaluationsIdRouteImport.update({
   path: '/$id',
   getParentRoute: () => ApiEvaluationsRoute,
 } as any)
+const ApiEvaluationsIdCancelRoute = ApiEvaluationsIdCancelRouteImport.update({
+  id: '/cancel',
+  path: '/cancel',
+  getParentRoute: () => ApiEvaluationsIdRoute,
+} as any)
 const ApiEvaluationsIdEventsRoute = ApiEvaluationsIdEventsRouteImport.update({
   id: '/events',
   path: '/events',
@@ -72,6 +78,7 @@ export interface FileRoutesByFullPath {
   '/api/health': typeof ApiHealthRoute
   '/evaluations/$id': typeof EvaluationsIdRoute
   '/api/evaluations/$id': typeof ApiEvaluationsIdRouteWithChildren
+  '/api/evaluations/$id/cancel': typeof ApiEvaluationsIdCancelRoute
   '/api/evaluations/$id/events': typeof ApiEvaluationsIdEventsRoute
   '/api/evaluations/$id/report': typeof ApiEvaluationsIdReportRoute
   '/api/evaluations/$id/trace': typeof ApiEvaluationsIdTraceRoute
@@ -83,6 +90,7 @@ export interface FileRoutesByTo {
   '/api/health': typeof ApiHealthRoute
   '/evaluations/$id': typeof EvaluationsIdRoute
   '/api/evaluations/$id': typeof ApiEvaluationsIdRouteWithChildren
+  '/api/evaluations/$id/cancel': typeof ApiEvaluationsIdCancelRoute
   '/api/evaluations/$id/events': typeof ApiEvaluationsIdEventsRoute
   '/api/evaluations/$id/report': typeof ApiEvaluationsIdReportRoute
   '/api/evaluations/$id/trace': typeof ApiEvaluationsIdTraceRoute
@@ -95,6 +103,7 @@ export interface FileRoutesById {
   '/api/health': typeof ApiHealthRoute
   '/evaluations/$id': typeof EvaluationsIdRoute
   '/api/evaluations/$id': typeof ApiEvaluationsIdRouteWithChildren
+  '/api/evaluations/$id/cancel': typeof ApiEvaluationsIdCancelRoute
   '/api/evaluations/$id/events': typeof ApiEvaluationsIdEventsRoute
   '/api/evaluations/$id/report': typeof ApiEvaluationsIdReportRoute
   '/api/evaluations/$id/trace': typeof ApiEvaluationsIdTraceRoute
@@ -108,6 +117,7 @@ export interface FileRouteTypes {
     | '/api/health'
     | '/evaluations/$id'
     | '/api/evaluations/$id'
+    | '/api/evaluations/$id/cancel'
     | '/api/evaluations/$id/events'
     | '/api/evaluations/$id/report'
     | '/api/evaluations/$id/trace'
@@ -119,6 +129,7 @@ export interface FileRouteTypes {
     | '/api/health'
     | '/evaluations/$id'
     | '/api/evaluations/$id'
+    | '/api/evaluations/$id/cancel'
     | '/api/evaluations/$id/events'
     | '/api/evaluations/$id/report'
     | '/api/evaluations/$id/trace'
@@ -130,6 +141,7 @@ export interface FileRouteTypes {
     | '/api/health'
     | '/evaluations/$id'
     | '/api/evaluations/$id'
+    | '/api/evaluations/$id/cancel'
     | '/api/evaluations/$id/events'
     | '/api/evaluations/$id/report'
     | '/api/evaluations/$id/trace'
@@ -187,6 +199,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiEvaluationsIdRouteImport
       parentRoute: typeof ApiEvaluationsRoute
     }
+    '/api/evaluations/$id/cancel': {
+      id: '/api/evaluations/$id/cancel'
+      path: '/cancel'
+      fullPath: '/api/evaluations/$id/cancel'
+      preLoaderRoute: typeof ApiEvaluationsIdCancelRouteImport
+      parentRoute: typeof ApiEvaluationsIdRoute
+    }
     '/api/evaluations/$id/events': {
       id: '/api/evaluations/$id/events'
       path: '/events'
@@ -212,12 +231,14 @@ declare module '@tanstack/react-router' {
 }
 
 interface ApiEvaluationsIdRouteChildren {
+  ApiEvaluationsIdCancelRoute: typeof ApiEvaluationsIdCancelRoute
   ApiEvaluationsIdEventsRoute: typeof ApiEvaluationsIdEventsRoute
   ApiEvaluationsIdReportRoute: typeof ApiEvaluationsIdReportRoute
   ApiEvaluationsIdTraceRoute: typeof ApiEvaluationsIdTraceRoute
 }
 
 const ApiEvaluationsIdRouteChildren: ApiEvaluationsIdRouteChildren = {
+  ApiEvaluationsIdCancelRoute: ApiEvaluationsIdCancelRoute,
   ApiEvaluationsIdEventsRoute: ApiEvaluationsIdEventsRoute,
   ApiEvaluationsIdReportRoute: ApiEvaluationsIdReportRoute,
   ApiEvaluationsIdTraceRoute: ApiEvaluationsIdTraceRoute,

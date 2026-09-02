@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, createFileRoute } from "@tanstack/react-router";
 import type {
   AgentTraceProjection,
@@ -7,8 +7,8 @@ import type {
   InterfaceChannel,
   RunSnapshot,
 } from "@tracegate/shared";
-import { InlineNotice, Metric, Panel, StatusBadge } from "@tracegate/ui";
-import { TracegateApiClient } from "../../lib/api-client.ts";
+import { InlineNotice, Metric, Panel, PrimaryButton, StatusBadge } from "@tracegate/ui";
+import { TracegateApiClient, TracegateApiError } from "../../lib/api-client.ts";
 import { projectInterfaceUsageMetrics } from "../../lib/interface-usage.ts";
 import { useLiveEvaluation } from "../../lib/use-live-evaluation.ts";
 
@@ -151,7 +151,7 @@ function GradingReport({ report }: { readonly report: EvaluationReportProjection
         {report.runs.map((run) => (
           <section key={run.id} className="tg-report-run">
             <header><strong>Run {run.runIndex + 1}</strong><StatusBadge status={run.outcome ?? run.status} /></header>
-            {run.grade === null ? <p className="tg-muted">Waiting for fresh, independent verification.</p> : (
+            {run.grade === null ? <p className="tg-muted">{run.status === "cancelled" ? "Cancelled before fresh, independent verification completed." : "Waiting for fresh, independent verification."}</p> : (
               <table className="tg-result-table">
                 <thead><tr><th>Success criterion</th><th>Result</th><th>What TraceGate observed</th></tr></thead>
                 <tbody>{run.grade.assertions.map((result, index) => <tr key={result.assertionId}>
@@ -212,6 +212,16 @@ function LiveEvaluationPage() {
   const [trace, setTrace] = useState<AgentTraceProjection | null>(null);
   const [history, setHistory] = useState<readonly EventEnvelope[] | null>(null);
   const [now, setNow] = useState(() => Date.now());
+  const [cancellationPending, setCancellationPending] = useState(false);
+  const [cancellationError, setCancellationError] = useState<string | null>(null);
+  const cancellationRequest = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    cancellationRequest.current?.abort();
+    cancellationRequest.current = null;
+    setCancellationPending(false);
+    setCancellationError(null);
+  }, [id]);
 
   useEffect(() => {
     if (snapshot === null) return undefined;
@@ -250,14 +260,39 @@ function LiveEvaluationPage() {
     && latestMilestone !== undefined
     && quietForMs >= quietThresholdMs;
 
+  async function requestCancellation(): Promise<void> {
+    if (snapshot === null || snapshot.status !== "running" || cancellationPending) return;
+    const evaluationId = snapshot.evaluationId;
+    const controller = new AbortController();
+    cancellationRequest.current?.abort();
+    cancellationRequest.current = controller;
+    setCancellationPending(true);
+    setCancellationError(null);
+    try {
+      await client.cancelEvaluation(evaluationId, controller.signal);
+    } catch (error) {
+      if (controller.signal.aborted) return;
+      setCancellationError(error instanceof TracegateApiError
+        ? error.safe.message
+        : "Cancellation could not be requested safely. Refresh and try again if the evaluation is still running.");
+      setCancellationPending(false);
+    }
+  }
+
   return (
     <main id="main-content" className="tg-shell">
       <nav className="tg-breadcrumb" aria-label="Breadcrumb"><Link to="/">New evaluation</Link><span>/</span><span>Reliability</span></nav>
       <header className="tg-page-header">
         <div><p className="tg-eyebrow">Live evaluation</p><h1>Progress and reliability</h1><p className="tg-lede">Saved progress is restored after refresh or reconnect. Live updates appear only after they have been saved.</p></div>
-        <div className="tg-status-stack"><StatusBadge status={snapshot?.status ?? "loading"} /><span className="tg-connection" data-state={live.connection}><span aria-hidden="true" />{live.connection === "live" ? "Live updates" : live.connection}</span></div>
+        <div className="tg-status-stack">
+          <StatusBadge status={snapshot?.status ?? "loading"} />
+          <span className="tg-connection" data-state={live.connection}><span aria-hidden="true" />{live.connection === "live" ? "Live updates" : live.connection}</span>
+          {snapshot?.status === "running" ? <PrimaryButton type="button" disabled={cancellationPending} onClick={() => void requestCancellation()}>{cancellationPending ? "Requesting cancellation…" : "Cancel evaluation"}</PrimaryButton> : null}
+        </div>
       </header>
 
+      {cancellationError === null ? null : <InlineNotice tone="error">{cancellationError}</InlineNotice>}
+      {cancellationPending && snapshot?.status === "running" ? <InlineNotice tone="info">Cancellation requested. TraceGate is safely stopping active runs and releasing their browsers.</InlineNotice> : null}
       {live.error === null ? null : <InlineNotice tone="warning">Live updates paused. TraceGate is reconnecting and will restore the latest saved progress.</InlineNotice>}
       {evaluationFailure?.type === "evaluation.failed" ? <InlineNotice tone="error">Evaluation could not continue. {evaluationFailure.payload.error.message}</InlineNotice> : null}
       {progressDelayed ? <InlineNotice tone="warning">No new progress has been saved for {Math.floor(quietForMs / 1_000)} seconds. The current step may be taking longer than expected; TraceGate will show the next durable update when it arrives.</InlineNotice> : null}

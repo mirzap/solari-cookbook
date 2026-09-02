@@ -123,6 +123,7 @@ export interface EvaluationSubmissionReservation {
 
 export interface EvaluationSubmissionScheduler {
   reserve(evaluation: Evaluation, runs: readonly Run[]): EvaluationSubmissionReservation;
+  cancel?(evaluationId: EvaluationId): boolean;
 }
 
 export interface TracegateServerOptions {
@@ -284,6 +285,28 @@ export class TracegateServer {
 
   getSnapshot(evaluationId: EvaluationId, signal: AbortSignal): Promise<EvaluationSnapshot | null> {
     return this.database.getEvaluationSnapshot(evaluationId, signal);
+  }
+
+  async cancelEvaluation(evaluationId: EvaluationId, signal: AbortSignal): Promise<void> {
+    const evaluation = await this.database.getEvaluation(evaluationId, signal);
+    if (evaluation === null) {
+      throw new TraceGateError(createControlError("not_found", "Evaluation not found.", {
+        category: "incorrect_state",
+        phase: "evaluation_cancel",
+      }));
+    }
+    if (evaluation.status !== "running") {
+      throw new TraceGateError(createControlError("conflict", "Only a running evaluation can be cancelled.", {
+        category: "incorrect_state",
+        phase: "evaluation_cancel",
+      }));
+    }
+    if (this.#scheduler?.cancel?.(evaluationId) !== true) {
+      throw new TraceGateError(createControlError("conflict", "This evaluation can no longer be cancelled.", {
+        category: "incorrect_state",
+        phase: "evaluation_cancel",
+      }));
+    }
   }
 
   async getReport(evaluationId: EvaluationId, signal: AbortSignal): Promise<EvaluationReportProjection | null> {

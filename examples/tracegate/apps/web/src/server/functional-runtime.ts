@@ -917,7 +917,7 @@ export interface FunctionalRuntimeOptions {
 }
 
 export class FunctionalTracegateRuntime {
-  readonly #queue = new OneEvaluationQueue(4);
+  readonly #queue = new OneEvaluationQueue(0);
   readonly #registry = new RunRuntimeRegistry();
   readonly #executor: FunctionalEvaluationExecutor;
   readonly #provider: SolariBrowserProvider;
@@ -935,7 +935,10 @@ export class FunctionalTracegateRuntime {
     this.#provider = new SolariBrowserProvider({ apiKey: options.solariApiKey });
     const repositories = createTracegateRepositories(database);
     const capacity = new RuntimeCapacity(options.maximumConcurrency ?? 3);
-    this.#server = serverFactory({ reserve: (evaluation, runs) => this.reserve(evaluation, runs) });
+    this.#server = serverFactory({
+      reserve: (evaluation, runs) => this.reserve(evaluation, runs),
+      cancel: (evaluationId) => this.#queue.cancel(evaluationId),
+    });
     this.#evaluations = publishingEvaluationRepository(repositories.evaluations, this.#server, this.#ids, this.#clock);
     const webMcp = new SolariWebMcpReadOnlyAdapter();
     const grader = new PersistingGrader(new DeterministicObservableGrader(this.#clock), database, this.#registry, this.#runContext, this.#server, this.#ids, this.#clock);
@@ -995,10 +998,6 @@ export class FunctionalTracegateRuntime {
     return {
       commit: () => {
         try {
-          if (this.#closing) {
-            queueReservation.release();
-            return;
-          }
           this.#registry.register(evaluation, runs);
           try {
             const job = queueReservation.commit();
@@ -1041,11 +1040,11 @@ export class FunctionalTracegateRuntime {
   async close(): Promise<void> {
     if (this.#closing) return;
     this.#closing = true;
+    await Promise.allSettled([...this.#inFlightSubmissions]);
     const state = this.#queue.state();
     if (state.activeEvaluationId !== null) this.#queue.cancel(state.activeEvaluationId);
     for (const id of state.pendingEvaluationIds) this.#queue.cancel(id);
     for (const id of state.reservedEvaluationIds) this.#queue.cancel(id);
-    await Promise.allSettled([...this.#inFlightSubmissions]);
     await this.#queue.idle();
     await this.#provider.close();
     await this.#server.database.close();
