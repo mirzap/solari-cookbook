@@ -2,7 +2,7 @@
 
 **Source of truth:** 2026-09-01
 **Product boundary:** local functional proof of concept
-**Current status:** P0 lane code is integrated through A `647e4dd`, C `ef7e1fb`, B `e478598`, D `443c5e7`, and D correction `c8f79c2`; production/clean-DB gates, F3's single provider run, and the explicitly authorized F4 three-run provider/API/SSE/DB gate pass, while browser-hydrated live UI projection and broader F5 verification remain open
+**Current status:** P0 plus F5 lane commits C `7eb59a8`, B evidence `749eb3a`, and D `d041c79` are integrated; F3 is fully closed, F4 passed `3/3`, configured-MCP manual validation passed within its narrow fixture/stub limits, and page WebMCP invocation remains externally unavailable/unverified with semantic fallback proven; F5 is blocked on the D-owned awaited durable-cancellation handoff before A can close executor reconciliation and run the final running-reload/UI-cancellation gate
 
 ## 1. Product outcome
 
@@ -301,11 +301,11 @@ Re-audited and verified on 2026-09-02: frozen install, environment parsing, all 
 
 The three former D blockers are resolved in code. Equal evidence hashes no longer carry run identity. Semantic positive readiness is derived only when the first deduplicated terminal completion proves actual dispatch through the admitted semantic tool surface, and the same rule is used by runtime finalization, DB reconstruction, and UI projection. Shutdown sets closing synchronously, rejects new reservations, waits for all already-registered submission settlements, then waits for queue idle before provider/database close.
 
-### F3 — One real run — provider/API/DB subgate passed; live UI gate open
+### F3 — One real run — fully closed 2026-09-02
 
 One semantic-only evaluation was submitted through the production-built API against `https://www.talon.ba` using the configured DeepSeek model and one origin/path plus `planId=12` assertion. The independent run completed `passed` after four model iterations, four successful dispatched tool calls, three browser actions, two-attempt fresh evidence with zero unverifiable assertions, and 17,968 total tokens. Snapshot/report projections agreed, the complete durable event history contained 38 contiguous events, live SSE covered cursors 7–38 after the POST returned the evaluation ID, and the sole `passive_policy_blocked` warning remained visible and non-fatal. Solari acquisition and model usage advanced their capabilities to verified; release was provider-confirmed with zero unresolved sessions/attempts, potential leaks, or nonterminal runs after server shutdown. No Talon-specific production source was found. See `docs/evidence/f3-real-provider-talon-2026-09-02.md`.
 
-The run directly observed API, SSE transport, and DB state. It did not place a browser UI on the evaluation page during the run. A later read-only terminal route GET returned HTTP 200 with the expected client-loading shell but cannot prove live client consumption or hydrated terminal projection. The original F3 live-UI criterion therefore remains open. This is a one-run provider-path validation, not a reliability-rate claim. Page/configured MCP, recording/replay, optional models, queue saturation, reconnect/restart, and provider-grade egress hardening remain unverified or deferred.
+A separately authorized D-owned browser-attached run then observed the hydrated product UI from running through terminal state with durable live updates, warnings, interface metrics, assertion-blind trace, grade, and released cleanup matching API/DB projections. That UI run honestly ended INCONCLUSIVE after trustworthy final evidence was lost; the product did not invent a PASS or evidence row. Together with the earlier deterministic PASS provider/API/DB run, this closes F3 without turning either observation into a general reliability claim. See `docs/evidence/agent-d-f3-ui-live-2026-09-02.md`.
 
 ### F4 — Repeated runs/report — provider/API/SSE/DB gate passed 2026-09-02
 
@@ -315,9 +315,15 @@ All three captures shared exactly one evidence hash. The DB nevertheless contain
 
 F4 does not claim general reliability beyond these three observations and does not validate browser-hydrated UI, replay, page/configured MCP, visual fallback, optional models, cancellation, reconnect/restart, or queue saturation.
 
-### F5 — Functional verification — deferred
+### F5 — Functional verification — blocked on durable cancellation handoff
 
-After F3/F4, run production builds, clean-DB migration, manual local UI/API flow, one real credentialed run, repeated-run aggregation, refresh/reconnect, assertion non-flow inspection, Demo-independence scan, redaction review, cancellation, and cleanup audit. Automated-test work remains paused by user directive.
+C `7eb59a8` manually validated the narrow unauthenticated configured-MCP client with a real loopback Streamable HTTP fixture and deterministic public-DNS/transport stubs: explicit opt-in, request-by-request admission, read-only enforcement, bounded/redacted untrusted results, truthful truncation, cleanup attempts, and grading isolation passed. It does not prove an external public/authenticated MCP service, connection-pinned DNS, or provider-grade egress.
+
+B evidence `749eb3a` records that the managed browser did not expose current page WebMCP, so descriptor admission/invocation/result handling remain externally blocked and unverified. The same real run proved truthful `0/0/0/0/0` page metrics, semantic fallback, model-prose non-authority, fresh-evidence grading, and confirmed release. Visual fallback remains unavailable.
+
+D `d041c79` added the cancellation API/control and manually passed hydrated running state, queue 409 with no rejected-request artifacts, terminal hard reload, redaction, and cleanup. The run completed before running-state reload or visible cancellation could be exercised. More importantly, accepted cancellation is not durable: D's synchronous `EvaluationSubmissionScheduler.cancel(...): boolean` directly calls the in-memory queue abort, while A persists `running → cancelling` only after active runs drain. A cannot guarantee an asynchronous DB commit before D returns 202 under that fixed interface.
+
+F5 therefore remains open for an atomic D/A handoff: D must await an async scheduler cancellation that durably commits `cancelling` before abort delivery/202. A must then reconcile precommitted intent and completion races, durably cancel never-dispatched queued runs without acquiring or grading, and refuse `cancelling → cancelled` when any dispatched run lacks trustworthy cleanup/terminalization. This preserves internal CAS/re-read idempotence, terminal non-overwrite, CANCELLED/INCONCLUSIVE authority, and no fabricated grade; it does not yet promise idempotent repeated HTTP cancellation. After production re-gating, one final separately authorized browser-attached validation must observe running-state reload and visible cancellation through confirmed release. See `docs/evidence/f5-agent-a-integration-2026-09-02.md`. Automated tests remain paused.
 
 ## 11. Current verification commands
 
@@ -335,7 +341,7 @@ DATABASE_URL=file:/tmp/tracegate-p0-server.db mise exec -- pnpm start
 
 Package `typecheck` scripts currently include paused automated-test sources in some workspaces, so they are not checkpoint evidence while the test prohibition is active. Production `build` configurations are the compile authority for this phase. Do not run `db:generate` unless an intentional schema change requires it.
 
-Manual inspection verified clean DBs, health/capabilities/snapshot/report/trace/events/SSE behavior, real semantic interface selection and usage metrics, fresh deterministic grading, one single-run and one three-concurrent-run credentialed Solari/DeepSeek evaluation, identical-evidence run attribution, aggregate denominators, and confirmed cleanup. Evaluation-specific SSE subscriptions necessarily began after their POST responses; complete cursor histories were recovered through the authoritative JSON endpoint. The terminal UI route returned its client-loading shell, but browser-hydrated live update/final projection was not observed. No fixture output or hard-coded result satisfied either provider gate.
+Manual inspection verified clean DBs, health/capabilities/snapshot/report/trace/events/SSE behavior, browser-hydrated live projection, real semantic interface metrics, fresh deterministic grading, single and three-concurrent-run Solari/DeepSeek evaluations, identical-evidence run attribution, aggregate denominators, queue rejection without artifacts, terminal reload, redaction, and confirmed cleanup. Configured MCP passed only its documented loopback/stub manual boundary; page WebMCP invocation remains unavailable/unverified with semantic fallback observed. No fixture output or hard-coded result satisfied provider grading.
 
 Review focus:
 
@@ -381,4 +387,4 @@ Paths remain exclusive:
 
 No agent edits, stages, formats, resets, or commits another lane’s WIP. Shared changes go through Agent A and require a concrete cross-lane contract reason. Only Agent A regenerates `pnpm-lock.yaml`, after manifests settle, using Node `26.1.0` and global pnpm `12.0.0`.
 
-The immediate next action is the remaining **browser-observed UI projection/F5 gate during a separately authorized live evaluation**: verify hydrated live SSE consumption plus warning, trace, semantic-readiness, deterministic-grade, aggregate, and cleanup projection against authoritative API/DB state. Queue saturation, configured/page MCP capability validation, assertion-canary inspection, restart/reconnect recovery, and broader functional verification remain subsequent gates.
+The immediate blocker is the **D-owned async cancellation admission handoff** in `apps/web/src/server/{tracegate-server,functional-runtime}.ts`. After D awaits durable admission, Agent A can reconcile completion races, cancel never-dispatched rows, gate clean cancellation on trustworthy dispatched-run cleanup/terminalization, and production re-gate. Only then is one final provider run ready to validate running-state reload plus visible UI cancellation through durable `cancelling/cancelled`, per-run cleanup, confirmed release, no fabricated grades, and zero leaks/nonterminal work. Replay, external page-WebMCP invocation, authenticated/external configured MCP, visual fallback, optional models, and broader recovery remain unsupported or unverified.

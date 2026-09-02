@@ -13,7 +13,7 @@ A developer describes an outcome-oriented task and observable success criteria. 
 - interface strategy: automatic, semantic-only, or MCP-preferred;
 - optional page WebMCP and explicitly configured unauthenticated MCP endpoints.
 
-Initial configured MCP support is deliberately narrow: MCP Streamable HTTP on explicit loopback HTTP or public-hostname HTTPS, no URL credentials/query secrets, no authentication headers, explicit endpoint and selected-tool configuration, a separate local sanitized admitted/denied tool decision, per-run client cleanup, read-only admitted tools, bounded closed inputs/results, and semantic fallback. Every request receives best-effort hostname/address admission, but DNS is not connection-pinned. Server read-only annotations are only untrusted hints; raw MCP schemas and results remain untrusted. Authenticated enterprise MCP is deferred. Real configured-MCP provider validation has not yet been performed.
+Initial configured MCP support is deliberately narrow: MCP Streamable HTTP on explicit loopback HTTP or public-hostname HTTPS, no URL credentials/query secrets, no authentication headers, explicit endpoint and selected-tool configuration, a separate local sanitized admitted/denied tool decision, per-run client cleanup, read-only admitted tools, bounded closed inputs/results, and semantic fallback. Every request receives best-effort hostname/address admission, but DNS is not connection-pinned. Server read-only annotations are only untrusted hints; raw MCP schemas and results remain untrusted. Authenticated enterprise MCP is deferred. A bounded manual gate passed against a real loopback Streamable HTTP fixture with deterministic public-DNS and transport stubs; it did not validate an external public or authenticated MCP server.
 
 ## Interfaces TraceGate evaluates
 
@@ -22,6 +22,8 @@ Agent-usable paths implemented in the POC:
 - semantic and accessibility UI;
 - page-provided WebMCP;
 - developer-configured MCP.
+
+Implementation does not imply live availability in every managed browser. The bounded page-WebMCP provider gate did not expose `document.modelContext`, so invocation and result sanitization remain externally blocked and unverified; semantic fallback completed and was graded only from fresh browser evidence. Configured-MCP validation is limited to the bounded manual fixture described above.
 
 Readiness signals detected for reporting only, and not provided to the agent:
 
@@ -51,6 +53,6 @@ Demo Store is a fixture only. Production evaluation, grading, and reporting must
 
 ## Current readiness
 
-Production package composition, frozen installation, clean migration/check, unsafe-prompt no-row rejection, Host enforcement, and safe built-server reads pass. Agent D correction `c8f79c2` removes evidence hashes as run identity, verifies grading against run-scoped committed evidence, projects semantic readiness consistently from authoritative dispatched terminal activity, and waits for in-flight submission settlement before shutdown closes runtime resources.
+Production package composition, migration/check, and the bounded safe built-server gates pass. F3 now includes a bounded live-provider API PASS and a separately observed live UI run that remained honestly INCONCLUSIVE; F4 passed three independent concurrent runs with run-scoped evidence attribution, deterministic 3/3 PASS aggregation, acknowledged session release, and no leaks. Queue rejection without artifacts, terminal hard reload, redaction, and configured-MCP manual validation also pass within their documented limits. Page WebMCP remains externally unavailable and unverified, with semantic fallback proven instead.
 
-The code is ready to enter one bounded real Solari/OpenRouter validation workstream. No provider session was run in this checkpoint, so successful browser acquisition, deterministic outcome, confirmed release, provider metadata/usage, and report/trace behavior remain unverified. Repeated-run identical-evidence attribution, queue saturation, in-flight submission shutdown, page/configured MCP invocation, and restart/reconnect behavior remain later manual validation conditions—not completed product claims.
+F5 is not closed. The cancellation API and UI exist, but the runtime scheduler currently reports acceptance through a synchronous boolean after only an in-memory abort. HTTP 202 can therefore precede the durable `running → cancelling` transition. The required next handoff is an awaited D-owned scheduler cancellation contract; A can then make the durable compare-and-set the acceptance point and reconcile executor terminalization without fabricating a grade. Running-state reload and a live UI cancellation also remain unobserved. Until that ordering fix lands and one final bounded cancellation validation confirms persistence, independent cleanup, release, and reload behavior, the cancellation validation workstream is not ready.
