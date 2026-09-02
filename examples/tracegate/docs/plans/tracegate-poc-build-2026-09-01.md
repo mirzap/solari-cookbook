@@ -2,7 +2,7 @@
 
 **Source of truth:** 2026-09-01
 **Product boundary:** local functional proof of concept
-**Current status:** P0 plus F5 lane commits C `7eb59a8`, B evidence `749eb3a`, D `d041c79`, D durable-cancellation handoff `00725bc`, and A cancellation reconciliation are integrated; F3 is fully closed, F4 passed `3/3`, configured-MCP manual validation passed within its narrow fixture/stub limits, and page WebMCP invocation remains externally unavailable/unverified with semantic fallback proven; production/clean-DB gates pass and F5 is ready for its final separately authorized running-reload/UI-cancellation validation
+**Current status:** the scoped functional P0 plan is complete through F3, F4, and F5; all lane commits are integrated, F3 includes provider/API/DB plus live-UI observation, F4 passed `3/3`, and F5 closed durable cancellation, running reload/SSE recovery, queue rejection, redaction, truthful terminalization, and confirmed cleanup; configured MCP passed only its documented loopback/stub manual boundary, while page WebMCP invocation remains externally unavailable/unverified because Solari did not expose `document.modelContext` and semantic fallback/fresh-evidence authority passed instead
 
 ## 1. Product outcome
 
@@ -25,7 +25,7 @@ Supported assertions are:
 - accessibility-semantic role/name/count checks;
 - checked, selected, expanded, disabled, or bounded non-sensitive value state.
 
-TraceGate is designed to run isolated Solari Browser sessions through the DeepSeek/OpenRouter path. The implemented agent surfaces are semantic/accessibility UI, page WebMCP, and developer-configured MCP through bounded untrusted adapters. `llms.txt` and JSON-LD are discovery-only readiness signals in this POC; they are not provided to the agent. Visual fallback is not implemented as a functional agent path. TraceGate captures fresh browser evidence after action execution stops, grades deterministically, persists local results, streams live state, explains divergence, and reports interface usage and repeatability. Real-provider validation remains pending at the current checkpoint.
+TraceGate is designed to run isolated Solari Browser sessions through the DeepSeek/OpenRouter path. The implemented agent surfaces are semantic/accessibility UI, page WebMCP, and developer-configured MCP through bounded untrusted adapters. `llms.txt` and JSON-LD are discovery-only readiness signals in this POC; they are not provided to the agent. Visual fallback is not implemented as a functional agent path. TraceGate captures fresh browser evidence after action execution stops, grades deterministically, persists local results, streams live state, explains divergence, and reports interface usage and repeatability. Bounded real-provider validation completed for F3 and F4; broader site/task coverage, optional models, visual fallback, replay, and live page-WebMCP invocation remain unsupported, deferred, or externally unverified.
 
 A **PASS** means only that every declared browser-observable assertion was true in the accepted fresh capture. It is not proof of arbitrary backend state, durable external effects, identity, authorization, payment, publication, or business truth.
 
@@ -315,7 +315,7 @@ All three captures shared exactly one evidence hash. The DB nevertheless contain
 
 F4 does not claim general reliability beyond these three observations and does not validate browser-hydrated UI, replay, page/configured MCP, visual fallback, optional models, cancellation, reconnect/restart, or queue saturation.
 
-### F5 — Functional verification — final live cancellation gate ready
+### F5 — Functional verification — closed 2026-09-02
 
 C `7eb59a8` manually validated the narrow unauthenticated configured-MCP client with a real loopback Streamable HTTP fixture and deterministic public-DNS/transport stubs: explicit opt-in, request-by-request admission, read-only enforcement, bounded/redacted untrusted results, truthful truncation, cleanup attempts, and grading isolation passed. It does not prove an external public/authenticated MCP service, connection-pinned DNS, or provider-grade egress.
 
@@ -325,7 +325,7 @@ D `d041c79` added the cancellation API/control and manually passed hydrated runn
 
 A now makes durable `running → cancelling` the acceptance linearization point, stops new dispatch after admission, drains active runs, and transactionally cancels every never-dispatched queued run through an already-aborted executor path that cannot acquire resources or grade. `cancelling → cancelled` requires trustworthy durable cancellation and confirmed acknowledged-session release for every cancellation-required run; any rejection, wrong/nonterminal record, leak, or unconfirmed cleanup instead attempts `cancelling → failed`. CAS/reread reconciliation preserves terminal non-overwrite and internal idempotence without promising repeated-route idempotence. Production composition, fresh migration/check, and an empty-DB built-server gate pass without a provider session. See `docs/evidence/f5-agent-a-integration-2026-09-02.md` for the prior blocker and `docs/evidence/f5-agent-a-cancellation-implementation-2026-09-02.md` for the implementation checkpoint. Automated tests remain paused.
 
-F5 remains open only for one separately authorized browser-attached validation of running-state reload and visible cancellation through durable intent, truthful per-run terminalization, confirmed release, and zero leaks/nonterminal rows.
+D final validation `dd5161e` exercised the production-built UI against a fresh DB with three runs at concurrency one. A hard reload recovered authoritative running state and live SSE; the visible cancel action returned HTTP 202 only after durable `running → cancelling`; the active acknowledged Solari session released successfully; the active run and two never-dispatched rows then committed `cancelled` with no evidence or grades; and the evaluation committed `cancelled` last. Snapshot/report/trace/events/UI reconciled, queue/redaction gates remained clean, and zero leaks or nonterminal rows remained. See `docs/evidence/agent-d-f5-cancellation-live-2026-09-02.md`.
 
 ## 11. Current verification commands
 
@@ -343,7 +343,7 @@ DATABASE_URL=file:/tmp/tracegate-p0-server.db mise exec -- pnpm start
 
 Package `typecheck` scripts currently include paused automated-test sources in some workspaces, so they are not checkpoint evidence while the test prohibition is active. Production `build` configurations are the compile authority for this phase. Do not run `db:generate` unless an intentional schema change requires it.
 
-Manual inspection verified clean DBs, health/capabilities/snapshot/report/trace/events/SSE behavior, browser-hydrated live projection, real semantic interface metrics, fresh deterministic grading, single and three-concurrent-run Solari/DeepSeek evaluations, identical-evidence run attribution, aggregate denominators, queue rejection without artifacts, terminal reload, redaction, and confirmed cleanup. Configured MCP passed only its documented loopback/stub manual boundary; page WebMCP invocation remains unavailable/unverified with semantic fallback observed. No fixture output or hard-coded result satisfied provider grading.
+Manual inspection verified clean DBs, health/capabilities/snapshot/report/trace/events/SSE behavior, browser-hydrated live projection and running reload, real semantic interface metrics, fresh deterministic grading, single and three-concurrent-run Solari/DeepSeek evaluations, identical-evidence run attribution, aggregate denominators, queue rejection without artifacts, durable UI cancellation, terminal reload, redaction, and confirmed cleanup. Configured MCP passed only its documented loopback/stub manual boundary; page WebMCP invocation remains unavailable/unverified with semantic fallback observed. No fixture output or hard-coded result satisfied provider grading.
 
 Review focus:
 
@@ -389,4 +389,4 @@ Paths remain exclusive:
 
 No agent edits, stages, formats, resets, or commits another lane’s WIP. Shared changes go through Agent A and require a concrete cross-lane contract reason. Only Agent A regenerates `pnpm-lock.yaml`, after manifests settle, using Node `26.1.0` and global pnpm `12.0.0`.
 
-The immediate next gate is **one separately authorized live cancellation validation**. It must observe running-state reload plus visible UI cancellation through durable `cancelling/cancelled`, truthful cancellation of active and never-dispatched runs, confirmed provider release, no fabricated grades, and zero leaks/nonterminal work. Repeated route cancellation may still return documented HTTP 409 after the durable status leaves `running`; internal CAS/reread reconciliation remains idempotent and terminal-safe. Replay, external page-WebMCP invocation, authenticated/external configured MCP, visual fallback, optional models, and broader recovery remain unsupported or unverified.
+No remaining P0 code gate is identified within the scoped local functional plan. Repeated route cancellation may still return documented HTTP 409 after the durable status leaves `running`; internal CAS/reread reconciliation remains idempotent and terminal-safe. External page-WebMCP invocation, authenticated/external configured MCP, visual fallback, replay, optional models, provider-grade whole-browser egress, stronger DNS pinning, and broader recovery remain unsupported, externally blocked, or deferred rather than incomplete hidden requirements.

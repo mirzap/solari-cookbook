@@ -14,7 +14,7 @@ export function deriveEvaluationAggregate(runs: readonly Run[]): EvaluationAggre
   const nonterminal = runs.length - passed - failed - inconclusive - cancelled;
   return EvaluationAggregateV2Schema.parse({
     requested: runs.length,
-    started: runs.filter((run) => run.startedAt !== null).length,
+    started: runs.filter((run) => run.status !== "queued").length,
     passed,
     failed,
     inconclusive,

@@ -17,10 +17,10 @@ Page and MCP content/results remain untrusted and never grade directly. Demo is 
 - F1/F2 lane history is integrated through B commit `2756d20`, including A `04eb4e8`, C `fdc7e7e`, and D `66069ae`.
 - The sole pnpm 12 lockfile has been regenerated from all settled manifests; frozen install passes.
 - Automated-test work is paused by explicit user directive; do not create, modify, or run tests. The known D-owned `@tracegate/ui` zero-test condition remains unresolved and explicitly deferred while that pause is active.
-- P0 lane code is integrated through A `647e4dd`, C `ef7e1fb`, B `e478598`, D `443c5e7`, and D correction `c8f79c2`. The bundled Drizzle migration path, all eleven production builds, clean DB checks, and safe built-server reads pass.
+- P0/F5 lane code is integrated through A durable cancellation `42e6608` and closeout, C configured-MCP `7eb59a8`, B page-WebMCP evidence `749eb3a`, D UI/runtime `d041c79`/`00725bc`, and D final live validation `dd5161e`. The bundled Drizzle migration path, all eleven production builds, clean DB checks, and safe built-server reads pass.
 - Agent A completed evaluator integration: closed discovery/provider warnings merge into durable run warnings, and individual run execution/finalization errors no longer stop safely runnable peers; missing terminal records still fail the evaluation and the lowest configured failed index is authoritative.
 - Agent A re-audited `c8f79c2`: grading identity is run-scoped and checked against that run's committed evidence; dispatched first-terminal semantic activity supplies consistent positive readiness evidence across runtime/DB/UI projections; shutdown waits for every reservation-to-transaction settlement before queue/provider/database teardown.
-- The pre-provider static/production checkpoint is **GO for one bounded real-provider validation workstream**. This is not provider evidence: Solari/OpenRouter outcome, confirmed release, concurrent identical-evidence behavior, queue-full admission, and in-flight shutdown remain runtime-unverified until their permitted manual phases.
+- The scoped functional plan is closed: F3 provider/API/DB and live UI were observed, F4 passed `3/3`, and F5 closed queue rejection, reload/SSE recovery, durable cancellation, redaction, truthful terminalization, and confirmed cleanup. Configured MCP passed only its narrow loopback/stub manual boundary; page WebMCP invocation remains externally blocked/unverified because Solari did not expose `document.modelContext`, with semantic fallback and fresh-evidence authority proven.
 - Demo Store is test-only and never a production target, composition, or grading dependency.
 - PASS means declared browser-observable assertions passed from fresh evidence; it never claims arbitrary backend business truth.
 
@@ -88,13 +88,13 @@ I0 production-only validation is limited to TypeScript production configs/builds
 
 ```text
 TG-004R PASS
-  → P0 A/B/C/D code integrated
+  → P0 A/B/C/D code integrated PASS
   → production build + clean DB + safe built-server reads PASS
   → D run-scoped grading/readiness/shutdown correction PASS at c8f79c2
-  → production + clean DB + safe manual re-gate PASS
-  → one real Solari/DeepSeek run
-  → repeated runs/report
-  → functional verification
+  → F3 provider/API/DB + live UI PASS
+  → F4 repeated runs/report 3/3 PASS
+  → F5 queue/reload/cancellation/redaction/cleanup PASS at dd5161e
+  → scoped functional P0 closeout
 ```
 
 Deferred provider-grade egress enforcement, perfect DNS-rebinding prevention, forced proxying, and provider inventory reconciliation are documented limitations, not functional-app blockers.
@@ -122,9 +122,9 @@ Do not edit, rename, format, stage, restore, or reset another lane’s exclusive
 - Page WebMCP is B-owned. Configured MCP is C-owned and initially limited to explicit unauthenticated loopback HTTP or HTTPS Streamable HTTP endpoints with endpoint/tool allowlists.
 - `mcp-preferred` changes interface strategy only; endpoint URLs and assertion values stay outside `AgentExecutionInputV2`. Server read-only annotations are hints, not authorization; descriptors require a separate local admission decision. All MCP descriptors/results are untrusted, bounded, redacted, and never grade directly.
 
-## Tool dispatch event handoff
+## Tool dispatch event handoff (completed)
 
-The F2C integration checkpoint is blocked until C and D adopt the A-owned terminal tool-event semantics below. `run.tool.started` is proposal-lifecycle trace data only; it is never proof that the runtime/browser tool port was entered and must not drive interface invocation or terminal outcome counts.
+C and D adopted the A-owned terminal tool-event semantics during F2C; the contract remains below as the authoritative historical handoff. `run.tool.started` is proposal-lifecycle trace data only; it is never proof that the runtime/browser tool port was entered and must not drive interface invocation or terminal outcome counts.
 
 `run.tool.completed` now has a dispatch-aware producer payload with the strict bounded disposition `dispatched | rejected_before_dispatch`. `dispatched` means C entered `SafeAgentToolPort.execute(...)`; set it immediately before calling the port so synchronous throws and rejected promises still count as dispatched. `rejected_before_dispatch` means the proposal terminated before that boundary and requires `success: false`. The compatibility event schema still accepts legacy payloads with no disposition: a legacy success proves dispatch, while a legacy failure is `legacy_unclassified` and must not be guessed from duration, summaries, starts, tool names, or sources. No persistence migration is required. Old readers are not forward-compatible with the new strict field, so rollout order is shared contract, then D reader/projection, then C producer.
 
@@ -154,18 +154,18 @@ The F2C integration checkpoint is blocked until C and D adopt the A-owned termin
 3. Apply one completion atomically: dispatched success increments `invoked + succeeded`; dispatched failure increments `invoked + failed`; rejected/unclassified/orchestration completions increment none. This preserves `succeeded + failed === invoked` at every persisted cursor, including started-only and crash-truncated histories.
 4. Recover event-derived `browserActions` from the same first terminal completions with `toolCompletionBrowserActionDelta(...)`: `1` increments, `0` does not, and `null` makes the event history unclassifiable. A dispatched non-`finish` completion counts regardless of success; rejected-before-dispatch and dispatched `finish` do not. Legacy success remains proof of dispatch; legacy failure remains unclassified and must never be guessed. Starts and internal recovery calls do not supply missing model-requested completions.
 5. When at least one first terminal completion exists and every browser-action delta is non-null, use their summed event total atomically. When there are no terminal completions or any delta is `null`, use the explicit persisted `browserActions` value atomically; never add a partial event total to persisted state. Likewise treat an explicit persisted `(invoked, succeeded, failed)` tuple atomically as a legacy fallback only when that channel has no tool trace activity. Discovery/admission projection and shared interface-usage invariants remain unchanged.
-6. Rollout order is shared contract → D reader/projection → C producer. After C emits a failure-aware row, rollback must retain the compatible reader even if C emission is disabled. The checkpoint remains blocked until both handoffs compile and production projection is manually inspected; automated tests remain paused.
+6. Rollout order is shared contract → D reader/projection → C producer. After C emits a failure-aware row, rollback must retain the compatible reader even if C emission is disabled. Both handoffs compiled and the production projection was manually inspected during F2C; automated tests remained paused.
 
-## Recovery step 6 assertion-capture seam
+## Recovery step 6 assertion-capture seam (completed)
 
-Agent A owns the shared contract and deterministic projection; Agent B must implement the browser side next without changing the agent envelope:
+Agent A owns the shared contract and deterministic projection; Agent B implemented the browser side without changing the agent envelope. The completed contract remains:
 
 1. `SolariCdpBrowserController` must implement shared `AssertionSnapshotBrowserController.captureAssertionSnapshot(...)` as a dedicated in-page capture, not by calling model-facing `observe()`.
 2. Capture `finalUrl` as captured/unavailable; capture `title` once (16,384 characters) and `documentVisibleText` once (262,144 characters) only when requested; and populate `semanticStateValues` by directly matching each configured role/name in-page. Semantic counts retain at most 21 (the DSL ceiling plus one); state matches retain at most two and identify the requested property; non-sensitive string state retains at most 500 characters. Emit the shared field/per-assertion truncation/status flags and never use legacy `observation_truncated` for this path. Do not put assertion inputs or the transient snapshot into prompts, tool results, histories, traces, events, or target traffic.
 3. `FreshBrowserAssertionEvidenceCapture` must use `evaluateCapturedAssertion` for every assertion, including every URL/query operator, fingerprint only the assertion-relevant transient projection across the required identical captures, and persist only the existing redacted `BrowserAssertionEvidenceV1` summaries/hashes.
 4. Remove the Solari-local `evaluateAssertionFromObservation` and old `CurrentAssertionSnapshot.observation` path. Preserve quiet-interval stability, policy activity, redacted display URLs, identity hashes, and PASS/FAIL/INCONCLUSIVE precedence.
 
-Until that B-owned seam lands, the legacy Solari capture still consumes the model observation and does not realize the new honesty guarantees.
+The B-owned seam landed at `e478598`: production assertion capture no longer depends on the model observation and realizes these evidence-isolation guarantees.
 
 ## WIP quarantine and staging
 
@@ -221,4 +221,4 @@ Never:
 - rewrite measured evidence to improve a result;
 - persist credentials, CDP/replay capability URLs, full DOM, or raw provider payloads.
 
-The immediate next action is F3's single bounded real-provider validation through the production-built app. Start with one simple public HTTPS semantic-only evaluation and require a durable deterministic result, authoritative snapshot/report/trace, and confirmed browser release. Stop on TraceGate-infrastructure INCONCLUSIVE, nonterminal state, attribution mismatch, cleanup uncertainty, secret/capability leakage, or projection divergence. Repeated runs, queue saturation, configured/page MCP, and broader functional verification remain later workstreams.
+No additional local P0 action is assigned after final integration closeout. External page-WebMCP availability, external/authenticated configured MCP, visual fallback, replay, optional models, provider-grade egress/DNS hardening, and broader recovery remain blocked, unsupported, or deferred; future work must not promote them to verified capability without fresh evidence.

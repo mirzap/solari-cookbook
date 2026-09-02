@@ -6,6 +6,7 @@ import {
   GradeResultV2Schema,
   RunStatusChangedEventAppendInputSchema,
   RunWarningSchema,
+  ReleaseResultSchema,
   TERMINAL_FAILURE_SEMANTICS,
   buildAgentExecutionInputV2,
   createControlError,
@@ -330,25 +331,28 @@ export class FunctionalRunExecutor {
         if (safeToolRuntime !== null) {
           try {
             await safeToolRuntime.close(AbortSignal.timeout(15_000));
-          } catch (error) {
-            appendRunWarning(warnings, warning("cleanup_failed", "safe_tool_close", error instanceof Error ? error.message : "Safe tool runtime close failed.", true));
+          } catch {
+            appendRunWarning(warnings, warning("cleanup_failed", "safe_tool_close", "Safe tool runtime cleanup failed.", true));
           }
         }
         if (controller !== null) {
           try {
             await controller.close(AbortSignal.timeout(15_000));
-          } catch (error) {
-            appendRunWarning(warnings, warning("cleanup_failed", "browser_close", error instanceof Error ? error.message : "Controller close failed.", true));
+          } catch {
+            appendRunWarning(warnings, warning("cleanup_failed", "browser_close", "Browser controller cleanup failed.", true));
           }
         }
         try {
-          release = await lease.release(signal.aborted ? "cancelled" : "run finished", AbortSignal.timeout(15_000));
-        } catch (error) {
+          release = ReleaseResultSchema.parse(await lease.release(
+            signal.aborted ? "cancelled" : "run finished",
+            AbortSignal.timeout(15_000),
+          ));
+        } catch {
           release = {
             status: "failed",
             confirmation: "unconfirmed",
             releasedAt: null,
-            warning: warning("cleanup_failed", "browser_release", error instanceof Error ? error.message : "Session release failed.", true),
+            warning: warning("cleanup_failed", "browser_release", "Browser session release failed.", true),
           };
         }
         if (release.warning !== null) appendRunWarning(warnings, release.warning);
