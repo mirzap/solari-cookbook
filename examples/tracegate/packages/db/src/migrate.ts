@@ -2,20 +2,16 @@ import type { Client } from "@libsql/client";
 import { drizzle } from "drizzle-orm/libsql";
 import { migrate } from "drizzle-orm/libsql/migrator";
 import { existsSync } from "node:fs";
-import { resolve } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 function resolveMigrationsFolder(): string {
   const configured = process.env.TRACEGATE_MIGRATIONS_DIR?.trim();
-  const candidates = [
-    configured,
-    fileURLToPath(new URL("../drizzle", import.meta.url)),
-    resolve(process.cwd(), "packages/db/drizzle"),
-    resolve(process.cwd(), "../../packages/db/drizzle"),
-    resolve(process.cwd(), "examples/tracegate/packages/db/drizzle"),
-  ].filter((candidate): candidate is string => candidate !== undefined && candidate.length > 0);
-  const folder = candidates.find((candidate) => existsSync(resolve(candidate, "meta/_journal.json")));
-  if (folder === undefined) {
+  if (configured !== undefined && configured.length > 0 && !isAbsolute(configured)) {
+    throw new Error("TRACEGATE_MIGRATIONS_DIR must be an absolute path.");
+  }
+  const folder = configured ?? fileURLToPath(new URL("../drizzle/", import.meta.resolve("@tracegate/db")));
+  if (!existsSync(join(folder, "meta", "_journal.json"))) {
     throw new Error("TraceGate database migrations are unavailable. Set TRACEGATE_MIGRATIONS_DIR to the packaged Drizzle migration directory.");
   }
   return folder;

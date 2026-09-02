@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import {
   type InterfaceMode,
@@ -14,11 +14,8 @@ import {
 } from "../lib/evaluation-form.ts";
 
 const client = new TracegateApiClient();
-const MODEL_LABELS: Record<ModelId, string> = {
-  "deepseek/deepseek-v4-flash-0731": "DeepSeek V4 Flash",
-  "mistralai/mistral-small-2603": "Mistral Small",
-  "openai/gpt-5-mini": "GPT-5 mini",
-};
+const VERIFIED_MODEL_ID: ModelId = "deepseek/deepseek-v4-flash-0731";
+const VERIFIED_MODEL_LABEL = "DeepSeek V4 Flash";
 
 export const Route = createFileRoute("/")({ component: ConfigurePage });
 
@@ -36,10 +33,9 @@ function ConfigurePage() {
   const [startUrl, setStartUrl] = useState("");
   const [origins, setOrigins] = useState("");
   const [prompt, setPrompt] = useState("");
-  const [modelIds, setModelIds] = useState<readonly ModelId[]>(["deepseek/deepseek-v4-flash-0731"]);
+  const modelIds: readonly ModelId[] = [VERIFIED_MODEL_ID];
   const [runs, setRuns] = useState(3);
   const [concurrency, setConcurrency] = useState(1);
-  const [recordingRequested, setRecordingRequested] = useState(false);
   const [interfaceMode, setInterfaceMode] = useState<InterfaceMode>("auto");
   const [webMcpReadOnlyEnabled, setWebMcpReadOnlyEnabled] = useState(false);
   const [configuredMcpEnabled, setConfiguredMcpEnabled] = useState(false);
@@ -56,20 +52,12 @@ function ConfigurePage() {
     const controller = new AbortController();
     void client.capabilities(controller.signal).then((value) => {
       setCapabilities(value);
-      const firstAvailable = value.checks.find(
-        (check) => check.kind === "model" && (check.status === "pending" || check.status === "verified") && check.subject in MODEL_LABELS,
-      );
-      if (firstAvailable !== undefined) setModelIds([firstAvailable.subject as ModelId]);
     }).catch((error: unknown) => {
       if (!controller.signal.aborted) setLoadError(safeMessage(error));
     });
     return () => controller.abort();
   }, []);
 
-  const modelChecks = useMemo(
-    () => capabilities?.checks.filter((check) => check.kind === "model" && check.subject in MODEL_LABELS) ?? [],
-    [capabilities],
-  );
   const blocked = capabilities === null || capabilities.blockerCodes.length > 0;
 
   function updateAssertion(key: number, patch: Partial<AssertionDraft>) {
@@ -95,7 +83,7 @@ function ConfigurePage() {
         configuredMcpLabel,
         configuredMcpEndpointUrl,
         configuredMcpSelectedToolsText,
-        recordingRequested,
+        recordingRequested: false,
       });
       const created = await client.createEvaluation(input);
       await navigate({ to: "/evaluations/$id", params: { id: created.evaluationId } });
@@ -146,20 +134,20 @@ function ConfigurePage() {
                   <select value={assertion.kind} onChange={(event) => updateAssertion(assertion.key, { kind: event.target.value as AssertionKind })}>
                     <option value="text">Visible text</option>
                     <option value="url">Final page</option>
-                    <option value="url_query">Registration page with plan</option>
+                    <option value="url_query">Final page with query parameter</option>
                     <option value="semantic">Page element</option>
                     <option value="state">Selected state</option>
                   </select>
                 </label>
-                <label>{assertion.kind === "url_query" ? "Registration page URL" : assertion.kind === "url" ? "Expected page URL" : assertion.kind === "text" ? "Expected visible text" : "Element role"}
-                  <input required type={assertion.kind === "url" || assertion.kind === "url_query" ? "url" : "text"} placeholder={assertion.kind === "url_query" ? "https://your-site.example/register" : assertion.kind === "url" ? "https://your-site.example/result" : assertion.kind === "text" ? "Support plan" : "heading"} value={assertion.value} onChange={(event) => updateAssertion(assertion.key, { value: event.target.value })} />
+                <label>{assertion.kind === "url_query" ? "Expected page URL" : assertion.kind === "url" ? "Expected page URL" : assertion.kind === "text" ? "Expected visible text" : "Element role"}
+                  <input required type={assertion.kind === "url" || assertion.kind === "url_query" ? "url" : "text"} placeholder={assertion.kind === "url_query" ? "https://your-site.example/results" : assertion.kind === "url" ? "https://your-site.example/result" : assertion.kind === "text" ? "Support plan" : "heading"} value={assertion.value} onChange={(event) => updateAssertion(assertion.key, { value: event.target.value })} />
                 </label>
                 {assertion.kind === "url_query" ? <>
                   <label>Query parameter name
-                    <input required placeholder="planId" value={assertion.queryParameterName ?? ""} onChange={(event) => updateAssertion(assertion.key, { queryParameterName: event.target.value })} />
+                    <input required placeholder="campaign" value={assertion.queryParameterName ?? ""} onChange={(event) => updateAssertion(assertion.key, { queryParameterName: event.target.value })} />
                   </label>
                   <label>Expected value
-                    <input required placeholder="12" value={assertion.queryParameterValue ?? ""} onChange={(event) => updateAssertion(assertion.key, { queryParameterValue: event.target.value })} />
+                    <input required placeholder="standard" value={assertion.queryParameterValue ?? ""} onChange={(event) => updateAssertion(assertion.key, { queryParameterValue: event.target.value })} />
                   </label>
                 </> : null}
                 {assertion.kind === "semantic" || assertion.kind === "state" ? <label>Accessible name
@@ -190,20 +178,20 @@ function ConfigurePage() {
           <div className="tg-details__body">
             <section>
               <h2>Agent Interfaces</h2>
-              <p>TraceGate checks whether agents can use Semantic UI, page WebMCP, a configured MCP endpoint, llms.txt, JSON-LD, or visual fallback—and records what they actually used.</p>
+              <p>TraceGate measures agent-usable page controls and admitted read-only tools. llms.txt and JSON-LD are detected for readiness reporting only and are not provided to the agent in this version.</p>
               <label className="tg-check"><input type="checkbox" checked={webMcpReadOnlyEnabled} onChange={(event) => setWebMcpReadOnlyEnabled(event.target.checked)} /> Let this site offer admitted read-only WebMCP tools</label>
               <label className="tg-check"><input type="checkbox" checked={configuredMcpEnabled} onChange={(event) => setConfiguredMcpEnabled(event.target.checked)} /> Add a read-only MCP endpoint</label>
               {configuredMcpEnabled ? <div className="tg-field-stack tg-inset-fields">
                 <label htmlFor="mcp-label">Name
                   <input id="mcp-label" required value={configuredMcpLabel} placeholder="Product catalog" onChange={(event) => setConfiguredMcpLabel(event.target.value)} />
                 </label>
-                <label htmlFor="mcp-url">Endpoint
-                  <input id="mcp-url" type="url" required value={configuredMcpEndpointUrl} placeholder="https://mcp.your-site.example/mcp" onChange={(event) => setConfiguredMcpEndpointUrl(event.target.value)} />
+                <label htmlFor="mcp-url">Loopback endpoint
+                  <input id="mcp-url" type="url" required value={configuredMcpEndpointUrl} placeholder="http://127.0.0.1:8787/mcp" onChange={(event) => setConfiguredMcpEndpointUrl(event.target.value)} />
                 </label>
                 <label htmlFor="mcp-tools">Allowed read-only tools
                   <textarea id="mcp-tools" required rows={2} value={configuredMcpSelectedToolsText} placeholder="searchCatalog, getProductDetails" onChange={(event) => setConfiguredMcpSelectedToolsText(event.target.value)} />
                 </label>
-                <p className="tg-field-help">TraceGate accepts only unauthenticated HTTPS (or loopback HTTP) endpoints and locally admits the named read-only tools. It never persists endpoint URLs or raw tool output in readiness evidence.</p>
+                <p className="tg-field-help">This version exposes only unauthenticated loopback MCP endpoints. TraceGate locally admits the named read-only tools and does not show endpoint URLs or raw tool output in readiness reports.</p>
               </div> : null}
               <label htmlFor="interface-mode">Interface preference
                 <select id="interface-mode" value={interfaceMode} onChange={(event) => setInterfaceMode(event.target.value as InterfaceMode)}>
@@ -220,29 +208,13 @@ function ConfigurePage() {
                 <textarea id="origins" rows={2} placeholder="https://docs.your-site.example" value={origins} onChange={(event) => setOrigins(event.target.value)} />
               </label>
               <p className="tg-field-help">Leave blank to stay on the website origin. Add only exact public HTTPS origins, separated by commas or new lines.</p>
-              <fieldset className="tg-model-list">
-                <legend>Model</legend>
-                {(Object.keys(MODEL_LABELS) as ModelId[]).map((id) => {
-                  const capability = modelChecks.find((check) => check.subject === id);
-                  const selected = modelIds.includes(id);
-                  const available = capability?.status === "pending" || capability?.status === "verified";
-                  return <label className="tg-check" key={id}>
-                    <input
-                      type="checkbox"
-                      checked={selected}
-                      disabled={!available || (!selected && modelIds.length >= 3)}
-                      onChange={(event) => setModelIds((current) => event.target.checked
-                        ? [...current, id]
-                        : current.length === 1 ? current : current.filter((item) => item !== id))}
-                    />
-                    {MODEL_LABELS[id]} · {capability?.status === "verified" ? "live verified" : capability?.status === "pending" ? "requested · not yet live verified" : "unavailable"}
-                  </label>;
-                })}
-              </fieldset>
+              <div className="tg-field-stack">
+                <label>Supported model</label>
+                <p>{VERIFIED_MODEL_LABEL}</p>
+              </div>
               <label htmlFor="concurrency">Concurrent runs
                 <input id="concurrency" type="number" min={1} max={5} value={concurrency} onChange={(event) => setConcurrency(Number(event.target.value))} />
               </label>
-              <label className="tg-check"><input type="checkbox" checked={recordingRequested} onChange={(event) => setRecordingRequested(event.target.checked)} /> Request a provider recording</label>
             </section>
 
             <section>

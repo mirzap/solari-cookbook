@@ -1,5 +1,7 @@
 import type { EvaluationId, EventEnvelope } from "@tracegate/shared";
 
+import { redactProviderSessionIdentifiers } from "./http.ts";
+
 export interface SseOptions {
   readonly heartbeatMs?: number;
   readonly maxFrameBytes?: number;
@@ -40,7 +42,7 @@ export function createMilestoneSseResponse(
         controller.enqueue(bytes);
       };
       const unsubscribe = source.subscribe(evaluationId, (event) => {
-        enqueue(`id: ${event.cursor}\nevent: milestone\ndata: ${JSON.stringify(event)}\n\n`);
+        enqueue(`id: ${event.cursor}\nevent: milestone\ndata: ${JSON.stringify(redactProviderSessionIdentifiers(event))}\n\n`);
       });
       const heartbeat = setInterval(() => enqueue(": heartbeat\n\n"), heartbeatMs);
       const abort = (): void => {

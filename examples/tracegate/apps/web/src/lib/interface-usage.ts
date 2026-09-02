@@ -22,18 +22,53 @@ export type ProjectedInterfaceUsageMetric = InterfaceUsageMetric & Readonly<{
   durationMs: number | null;
 }>;
 
-function channelForDiscoveredKind(
-  kind: "semantic" | "llms_txt" | "json_ld" | "webmcp" | "configured_mcp" | "visual_fallback",
-): InterfaceChannel {
-  if (kind === "semantic") return "semantic_ui";
-  if (kind === "webmcp") return "page_webmcp";
-  return kind;
-}
+type DiscoveryEvent = Extract<EventEnvelope, { readonly type: "run.discovery.completed" }>;
+type TerminalUsage = {
+  invoked: number;
+  succeeded: number;
+  failed: number;
+  durationMs: number;
+};
 
-const runChannelKey = (runId: RunId | null, channel: InterfaceChannel): string => `${runId ?? "evaluation"}\u0000${channel}`;
+const runChannelKey = (runId: RunId, channel: InterfaceChannel): string => `${runId}\u0000${channel}`;
 const toolCompletionKey = (event: Extract<EventEnvelope, { readonly type: "run.tool.completed" }>): string => (
   `${event.runId ?? "evaluation"}\u0000${event.payload.toolCallId}`
 );
+const binary = (value: number): number => value > 0 ? 1 : 0;
+
+function metadataNumber(value: unknown, key: string): number {
+  if (typeof value !== "object" || value === null || !(key in value)) return 0;
+  const candidate = (value as Record<string, unknown>)[key];
+  return typeof candidate === "number" && Number.isFinite(candidate) ? candidate : 0;
+}
+
+function readinessFromDiscovery(
+  event: DiscoveryEvent | undefined,
+  channel: InterfaceChannel,
+): { readonly discovered: number; readonly admitted: number } {
+  if (event === undefined || channel === "visual_fallback") return { discovered: 0, admitted: 0 };
+  if (channel === "semantic_ui") {
+    const available = binary(event.payload.semanticControlCount);
+    return { discovered: available, admitted: available };
+  }
+  if (channel === "page_webmcp") {
+    return {
+      discovered: event.payload.webMcpGate === "unavailable" ? 0 : 1,
+      admitted: event.payload.webMcpGate === "admitted_read_only" ? 1 : 0,
+    };
+  }
+  if (channel === "llms_txt") {
+    return { discovered: event.payload.llmsTxt.status === "available" ? 1 : 0, admitted: 0 };
+  }
+  if (channel === "json_ld") {
+    return { discovered: binary(event.payload.jsonLdTypes.length), admitted: 0 };
+  }
+
+  const configured = event.payload.interfaces.filter((item) => item.kind === "configured_mcp");
+  const reached = configured.some((item) => item.metadata.status !== "unavailable");
+  const admitted = configured.some((item) => metadataNumber(item.metadata, "admittedToolCount") > 0);
+  return { discovered: reached ? 1 : 0, admitted: admitted ? 1 : 0 };
+}
 
 export function projectInterfaceUsageMetrics(
   runs: readonly RunSnapshot[],
@@ -41,13 +76,8 @@ export function projectInterfaceUsageMetrics(
 ): readonly ProjectedInterfaceUsageMetric[] {
   const tracedRunChannels = new Set<string>();
   const completedToolCalls = new Set<string>();
-  const terminalByChannel = new Map<InterfaceChannel, {
-    invoked: number;
-    succeeded: number;
-    failed: number;
-    durationMs: number;
-    usedRunIds: Set<RunId>;
-  }>();
+  const terminalByRunChannel = new Map<string, TerminalUsage>();
+  const latestDiscoveryByRun = new Map<RunId, DiscoveryEvent>();
 
   const orderedEvents = [...(events ?? [])].sort((left, right) => {
     const leftCursor = BigInt(left.cursor);
@@ -55,13 +85,17 @@ export function projectInterfaceUsageMetrics(
     return leftCursor < rightCursor ? -1 : leftCursor > rightCursor ? 1 : 0;
   });
   for (const event of orderedEvents) {
-    if (event.type === "run.tool.started") {
+    if (event.type === "run.discovery.completed" && event.runId !== null) {
+      latestDiscoveryByRun.set(event.runId, event);
+      continue;
+    }
+    if (event.type === "run.tool.started" && event.runId !== null) {
       if (event.payload.interfaceSource !== "orchestration") {
         tracedRunChannels.add(runChannelKey(event.runId, event.payload.interfaceSource));
       }
       continue;
     }
-    if (event.type !== "run.tool.completed") continue;
+    if (event.type !== "run.tool.completed" || event.runId === null) continue;
 
     const completionKey = toolCompletionKey(event);
     if (completedToolCalls.has(completionKey)) continue;
@@ -72,57 +106,50 @@ export function projectInterfaceUsageMetrics(
     const delta = toolCompletionInterfaceUsageDelta(event.payload);
     if (delta === null) continue;
 
-    const current = terminalByChannel.get(delta.channel) ?? {
-      invoked: 0,
-      succeeded: 0,
-      failed: 0,
-      durationMs: 0,
-      usedRunIds: new Set<RunId>(),
-    };
+    const key = runChannelKey(event.runId, delta.channel);
+    const current = terminalByRunChannel.get(key) ?? { invoked: 0, succeeded: 0, failed: 0, durationMs: 0 };
     current.invoked += 1;
     current[delta.outcome] += 1;
     current.durationMs += event.payload.durationMs;
-    if (event.runId !== null) current.usedRunIds.add(event.runId);
-    terminalByChannel.set(delta.channel, current);
+    terminalByRunChannel.set(key, current);
   }
 
   const projected = INTERFACE_CHANNELS.map((channel) => {
-    const runMetrics = runs.flatMap((run) => {
-      const metric = run.interfaceUsage?.metrics.find((candidate) => candidate.channel === channel);
-      return metric === undefined ? [] : [{ run, metric }];
-    });
-    const fallbackMetrics = runMetrics.filter(({ run }) => !tracedRunChannels.has(runChannelKey(run.id, channel)));
-    const terminal = terminalByChannel.get(channel) ?? {
-      invoked: 0,
-      succeeded: 0,
-      failed: 0,
-      durationMs: 0,
-      usedRunIds: new Set<RunId>(),
-    };
-    const invoked = terminal.invoked + fallbackMetrics.reduce((sum, { metric }) => sum + metric.invoked, 0);
-    const succeeded = terminal.succeeded + fallbackMetrics.reduce((sum, { metric }) => sum + metric.succeeded, 0);
-    const failed = terminal.failed + fallbackMetrics.reduce((sum, { metric }) => sum + metric.failed, 0);
-    const discoveryEvents = events?.filter((event) => event.type === "run.discovery.completed") ?? [];
-    const discoveredFromEvents = discoveryEvents.reduce(
-      (sum, event) => sum + event.payload.interfaces.filter((entry) => channelForDiscoveredKind(entry.kind) === channel).length,
-      0,
-    );
-    const admittedFromDiscovery = channel === "page_webmcp"
-      ? discoveryEvents.filter((event) => event.payload.webMcpGate === "admitted_read_only").length
-      : 0;
-    const discovered = Math.max(
-      runMetrics.reduce((sum, { metric }) => sum + metric.discovered, 0),
-      discoveredFromEvents,
-      invoked > 0 ? 1 : 0,
-    );
-    const admitted = Math.max(
-      runMetrics.reduce((sum, { metric }) => sum + metric.admitted, 0),
-      admittedFromDiscovery,
-      invoked > 0 ? 1 : 0,
-    );
-    const usedRunIds = new Set(terminal.usedRunIds);
-    for (const { run, metric } of fallbackMetrics) if (metric.invoked > 0) usedRunIds.add(run.id);
-    const hasDurationlessFallback = fallbackMetrics.some(({ metric }) => metric.invoked > 0);
+    let discovered = 0;
+    let admitted = 0;
+    let invoked = 0;
+    let succeeded = 0;
+    let failed = 0;
+    let durationMs = 0;
+    let hasDurationlessFallback = false;
+    const usedRunIds = new Set<RunId>();
+
+    for (const run of runs) {
+      const explicit = run.interfaceUsage?.metrics.find((candidate) => candidate.channel === channel);
+      const readiness = explicit === undefined
+        ? readinessFromDiscovery(latestDiscoveryByRun.get(run.id), channel)
+        : { discovered: binary(explicit.discovered), admitted: binary(explicit.admitted) };
+      discovered += readiness.discovered;
+      admitted += readiness.admitted;
+
+      const key = runChannelKey(run.id, channel);
+      const terminal = terminalByRunChannel.get(key) ?? { invoked: 0, succeeded: 0, failed: 0, durationMs: 0 };
+      if (tracedRunChannels.has(key)) {
+        invoked += terminal.invoked;
+        succeeded += terminal.succeeded;
+        failed += terminal.failed;
+        durationMs += terminal.durationMs;
+        if (terminal.invoked > 0) usedRunIds.add(run.id);
+      } else if (explicit !== undefined) {
+        invoked += explicit.invoked;
+        succeeded += explicit.succeeded;
+        failed += explicit.failed;
+        if (explicit.invoked > 0) {
+          usedRunIds.add(run.id);
+          hasDurationlessFallback = true;
+        }
+      }
+    }
 
     return {
       channel,
@@ -132,7 +159,7 @@ export function projectInterfaceUsageMetrics(
       succeeded,
       failed,
       usedRunIds: [...usedRunIds],
-      durationMs: hasDurationlessFallback ? null : terminal.durationMs,
+      durationMs: hasDurationlessFallback ? null : durationMs,
     } satisfies ProjectedInterfaceUsageMetric;
   });
 

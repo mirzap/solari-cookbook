@@ -1,5 +1,6 @@
 import { TracegateDatabase } from "@tracegate/db";
 import { parseServerEnv } from "@tracegate/shared";
+import { isAbsolute } from "node:path";
 
 import { FunctionalTracegateRuntime, SystemClock, persistBootCapabilities } from "./functional-runtime.ts";
 import { TracegateServer } from "./tracegate-server.ts";
@@ -23,11 +24,15 @@ async function getRuntime(): Promise<FunctionalTracegateRuntime> {
       NODE_ENV: process.env.NODE_ENV,
       OPENROUTER_API_KEY: process.env.OPENROUTER_API_KEY,
       SOLARI_API_KEY: process.env.SOLARI_API_KEY,
-      DATABASE_URL: process.env.DATABASE_URL ?? "file:tracegate-v2.db",
+      DATABASE_URL: process.env.DATABASE_URL,
       TRACEGATE_BIND_HOST: process.env.TRACEGATE_BIND_HOST,
       TRACEGATE_PORT: process.env.TRACEGATE_PORT,
       TRACEGATE_LOG_LEVEL: process.env.TRACEGATE_LOG_LEVEL,
     });
+    const databasePath = env.DATABASE_URL.slice("file:".length);
+    if (databasePath.length === 0 || databasePath.startsWith("//") || !isAbsolute(databasePath)) {
+      throw new Error("DATABASE_URL must be the absolute local file URL supplied by the TraceGate wrapper.");
+    }
     const database = await TracegateDatabase.open({
       url: env.DATABASE_URL,
       knownSecrets: [env.OPENROUTER_API_KEY, env.SOLARI_API_KEY],
@@ -38,7 +43,7 @@ async function getRuntime(): Promise<FunctionalTracegateRuntime> {
         openRouterApiKey: env.OPENROUTER_API_KEY,
         solariApiKey: env.SOLARI_API_KEY,
         maximumConcurrency: 3,
-      }, (schedule) => new TracegateServer(database, { onEvaluationCreated: schedule }));
+      }, (scheduler) => new TracegateServer(database, { scheduler }));
       await runtime.recover(AbortSignal.timeout(10_000));
       installLifecycle();
       return runtime;

@@ -2,7 +2,14 @@ import { AgentPolicy, TraceGateAgentRunner, createConfiguredMcpClient, type Agen
 import { createDeepSeekOpenRouterDriverFactory } from "@tracegate/ai";
 import { createTracegateRepositories, type TracegateDatabase, type TracegateRepositories } from "@tracegate/db";
 import { PracticalTargetAdmission, TraceGateDiscoveryController, type BrowserDiscoverySource } from "@tracegate/discovery";
-import { FunctionalEvaluationExecutor, FunctionalRunExecutor, OneEvaluationQueue, type SafeAgentToolFactory, type SafeAgentToolRuntime } from "@tracegate/evaluation";
+import {
+  EvaluationQueueReservationStateError,
+  FunctionalEvaluationExecutor,
+  FunctionalRunExecutor,
+  OneEvaluationQueue,
+  type SafeAgentToolFactory,
+  type SafeAgentToolRuntime,
+} from "@tracegate/evaluation";
 import { DeterministicObservableGrader } from "@tracegate/grading";
 import {
   AgentRunResultSchema,
@@ -89,7 +96,11 @@ import {
   obviousUnsafeControl,
 } from "@tracegate/solari";
 
-import { TracegateServer } from "./tracegate-server.ts";
+import {
+  TracegateServer,
+  type EvaluationSubmissionReservation,
+  type EvaluationSubmissionScheduler,
+} from "./tracegate-server.ts";
 import { UuidV7Generator } from "./ids.ts";
 
 const DEEPSEEK = "deepseek/deepseek-v4-flash-0731" as const;
@@ -164,7 +175,10 @@ class RunRuntimeRegistry {
 
   setReadiness(runId: RunId, channel: InterfaceChannel, discovered: number, admitted: number): void {
     const metrics = this.readiness.get(runId) ?? new Map();
-    metrics.set(channel, { discovered, admitted });
+    metrics.set(channel, {
+      discovered: discovered > 0 ? 1 : 0,
+      admitted: admitted > 0 ? 1 : 0,
+    });
     this.readiness.set(runId, metrics);
   }
 
@@ -502,12 +516,12 @@ class PersistingDiscoveryController implements DiscoveryController {
     const evidence = await discovery.discover(context, signal);
     this.registry.observations.set(context.runId, context.observation);
     this.registry.webMcpTools.set(context.runId, discovery.lastAdmittedWebMcpTools);
-    const semanticSurfaceCount = evidence.semanticControlCount;
-    this.registry.setReadiness(context.runId, "semantic_ui", semanticSurfaceCount, semanticSurfaceCount);
-    this.registry.setReadiness(context.runId, "page_webmcp", evidence.webMcpGate === "unavailable" ? 0 : 1, discovery.lastAdmittedWebMcpTools.length);
+    const semanticAvailable = evidence.semanticControlCount > 0 ? 1 : 0;
+    this.registry.setReadiness(context.runId, "semantic_ui", semanticAvailable, semanticAvailable);
+    this.registry.setReadiness(context.runId, "page_webmcp", evidence.webMcpGate === "unavailable" ? 0 : 1, discovery.lastAdmittedWebMcpTools.length > 0 ? 1 : 0);
     this.registry.setReadiness(context.runId, "llms_txt", evidence.llmsTxt.status === "available" ? 1 : 0, 0);
-    this.registry.setReadiness(context.runId, "json_ld", evidence.jsonLdTypes.length, 0);
-    this.registry.setReadiness(context.runId, "visual_fallback", evidence.interfaces.filter((item) => item.kind === "visual_fallback").length, 0);
+    this.registry.setReadiness(context.runId, "json_ld", evidence.jsonLdTypes.length > 0 ? 1 : 0, 0);
+    this.registry.setReadiness(context.runId, "visual_fallback", 0, 0);
     await this.database.replaceDiscoveredInterfaces(context.runId, evidence.interfaces, signal);
     await appendRunStep(this.server, this.registry, this.ids, this.clock, context.runId, {
       type: "run.discovery.completed",
@@ -679,9 +693,9 @@ class RuntimeSafeToolFactory implements SafeAgentToolFactory {
         try {
           const discoverySignal = AbortSignal.any([signal, AbortSignal.timeout(config.budgets.toolTimeoutMs)]);
           const result = await configuredMcp.discover(endpoint, discoverySignal);
-          configuredDiscovered += result.readiness.selectedTools.length;
+          configuredDiscovered = 1;
           configuredCatalog.push(...result.admittedTools);
-          configuredAdmitted += result.admittedTools.length;
+          if (result.admittedTools.length > 0) configuredAdmitted = 1;
           configuredInterfaces.push(DiscoveredInterfaceSchema.parse({
             schemaVersion: 1,
             kind: "configured_mcp",
@@ -821,8 +835,8 @@ class PersistingAgentRunner implements AgentRunner {
       const used = activity.get(channel) ?? { invoked: 0, succeeded: 0, failed: 0 };
       return {
         channel,
-        discovered: Math.max(available.discovered, used.invoked > 0 ? 1 : 0),
-        admitted: Math.max(available.admitted, used.invoked > 0 ? 1 : 0),
+        discovered: available.discovered,
+        admitted: available.admitted,
         invoked: used.invoked,
         succeeded: used.succeeded,
         failed: used.failed,
@@ -917,13 +931,13 @@ export class FunctionalTracegateRuntime {
   readonly #ids: UuidV7Generator;
   #closing = false;
 
-  constructor(database: TracegateDatabase, options: FunctionalRuntimeOptions, serverFactory: (schedule: (evaluation: Evaluation, runs: readonly Run[]) => void) => TracegateServer) {
+  constructor(database: TracegateDatabase, options: FunctionalRuntimeOptions, serverFactory: (scheduler: EvaluationSubmissionScheduler) => TracegateServer) {
     this.#clock = new SystemClock();
     this.#ids = new UuidV7Generator();
     this.#provider = new SolariBrowserProvider({ apiKey: options.solariApiKey });
     const repositories = createTracegateRepositories(database);
     const capacity = new RuntimeCapacity(options.maximumConcurrency ?? 3);
-    this.#server = serverFactory((evaluation, runs) => this.schedule(evaluation, runs));
+    this.#server = serverFactory({ reserve: (evaluation, runs) => this.reserve(evaluation, runs) });
     this.#evaluations = publishingEvaluationRepository(repositories.evaluations, this.#server, this.#ids, this.#clock);
     const webMcp = new SolariWebMcpReadOnlyAdapter();
     const grader = new PersistingGrader(new DeterministicObservableGrader(this.#clock), this.#registry, this.#server, this.#ids, this.#clock);
@@ -949,17 +963,37 @@ export class FunctionalTracegateRuntime {
 
   get server(): TracegateServer { return this.#server; }
 
-  schedule(evaluation: Evaluation, runs: readonly Run[]): void {
-    if (this.#closing) return;
-    this.#registry.register(evaluation, runs);
-    const job = this.#queue.enqueue(evaluation.id, async (signal) => {
+  reserve(evaluation: Evaluation, runs: readonly Run[]): EvaluationSubmissionReservation {
+    if (this.#closing) throw new EvaluationQueueReservationStateError("cancelled");
+    const queueReservation = this.#queue.reserve(evaluation.id, async (signal) => {
       try {
         await this.#executor.execute(evaluation, runs, signal);
       } finally {
         this.#registry.unregister(runs);
       }
     });
-    void job.catch((error: unknown) => this.#failScheduledEvaluation(evaluation.id, error));
+    let committed = false;
+
+    return {
+      commit: () => {
+        if (this.#closing) {
+          queueReservation.release();
+          return;
+        }
+        this.#registry.register(evaluation, runs);
+        try {
+          const job = queueReservation.commit();
+          committed = true;
+          void job.catch((error: unknown) => this.#failScheduledEvaluation(evaluation.id, error));
+        } catch (error) {
+          this.#registry.unregister(runs);
+          throw error;
+        }
+      },
+      release: () => {
+        if (!committed) queueReservation.release();
+      },
+    };
   }
 
   async recover(signal: AbortSignal): Promise<void> {
@@ -968,7 +1002,7 @@ export class FunctionalTracegateRuntime {
     for (const evaluation of recoverableEvaluations) {
       if (evaluation.status === "queued") {
         const runs = recoverableRuns.filter((run) => run.evaluationId === evaluation.id && run.status === "queued");
-        if (runs.length > 0) this.schedule(evaluation, runs);
+        if (runs.length > 0) this.reserve(evaluation, runs).commit();
       } else {
         await this.#evaluations.compareAndSetStatus(evaluation.id, evaluation.status, "failed", {
           finishedAt: this.#clock.nowIso(),
@@ -984,12 +1018,14 @@ export class FunctionalTracegateRuntime {
     const state = this.#queue.state();
     if (state.activeEvaluationId !== null) this.#queue.cancel(state.activeEvaluationId);
     for (const id of state.pendingEvaluationIds) this.#queue.cancel(id);
+    for (const id of state.reservedEvaluationIds) this.#queue.cancel(id);
     await this.#queue.idle();
     await this.#provider.close();
     await this.#server.database.close();
   }
 
   async #failScheduledEvaluation(evaluationId: EvaluationId, error: unknown): Promise<void> {
+    if (this.#closing) return;
     const current = await this.#evaluations.get(evaluationId, AbortSignal.timeout(5_000)).catch(() => null);
     if (current === null || ["completed", "cancelled", "failed"].includes(current.status)) return;
     const safe = redactError(error);

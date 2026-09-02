@@ -27,22 +27,22 @@ const INTERFACE_DESCRIPTIONS: Record<InterfaceChannel, string> = {
   page_webmcp: "Read-only tools offered by the website",
   configured_mcp: "Read-only tools from your optional endpoint",
   semantic_ui: "Accessible names, roles, and page structure",
-  llms_txt: "Agent guidance published by the website",
-  json_ld: "Structured page data",
-  visual_fallback: "Rendered-page understanding when no stronger interface helps",
+  llms_txt: "Detected for readiness reporting; not provided to the agent in this version",
+  json_ld: "Detected for readiness reporting; not provided to the agent in this version",
+  visual_fallback: "Not available in this version",
 };
-const INTERFACE_ORDER: readonly InterfaceChannel[] = ["page_webmcp", "configured_mcp", "semantic_ui", "llms_txt", "json_ld", "visual_fallback"];
+const INTERFACE_ORDER: readonly InterfaceChannel[] = ["page_webmcp", "configured_mcp", "semantic_ui", "llms_txt", "json_ld"];
 
-async function loadAllEvents(evaluationId: Parameters<TracegateApiClient["events"]>[0], signal: AbortSignal): Promise<readonly EventEnvelope[]> {
+async function loadAllEvents(evaluationId: Parameters<TracegateApiClient["events"]>[0], signal: AbortSignal): Promise<readonly EventEnvelope[] | null> {
   const events: EventEnvelope[] = [];
   let cursor: Parameters<TracegateApiClient["events"]>[1] = null;
   for (let pageNumber = 0; pageNumber < 10; pageNumber += 1) {
     const page = await client.events(evaluationId, cursor, signal);
     events.push(...page.events);
-    if (!page.truncated || page.nextCursor === null) break;
+    if (!page.truncated || page.nextCursor === null) return events;
     cursor = page.nextCursor;
   }
-  return events;
+  return null;
 }
 
 function progressIndex(run: RunSnapshot): number {
@@ -65,13 +65,17 @@ function runStatus(run: RunSnapshot): string {
   return run.status;
 }
 
-function replayStatusLabel(status: RunSnapshot["replayStatus"]): string {
-  if (status === "pending") return "requested, not yet verified";
-  return status.replaceAll("_", " ");
+function runFailureMessage(run: RunSnapshot): string | null {
+  if (run.failure === null) return null;
+  if (run.failure.code === "agent_policy_refused") return "The agent stopped because it could not safely complete the task.";
+  if (run.failure.code === "agent_blocked") return "The agent could not complete the task with the safe actions available in this run.";
+  if (run.failure.code === "agent_needs_input") return "The agent needed information that was not available in this run.";
+  return run.failure.message;
 }
 
 function RunCard({ run }: { readonly run: RunSnapshot }) {
   const activeStep = progressIndex(run);
+  const terminal = run.status === "completed" || run.status === "cancelled";
   return (
     <article className="tg-run-card">
       <header className="tg-run-card__header">
@@ -79,16 +83,16 @@ function RunCard({ run }: { readonly run: RunSnapshot }) {
         <StatusBadge status={runStatus(run)} />
       </header>
       <ol className="tg-pipeline" aria-label={`Run ${run.runIndex + 1} progress`}>
-        {PIPELINE_STEPS.map((step, index) => <li key={step} data-state={index < activeStep || run.outcome === "passed" ? "done" : index === activeStep ? "active" : "waiting"}>{step}</li>)}
+        {PIPELINE_STEPS.map((step, index) => <li key={step} data-state={terminal || index < activeStep ? "done" : index === activeStep ? "active" : "waiting"}>{step}</li>)}
       </ol>
       <dl className="tg-run-metrics">
         <Metric label="Tool calls" value={run.toolCalls} />
         <Metric label="Time" value={run.durationMs === null ? "—" : `${(run.durationMs / 1_000).toFixed(1)}s`} />
       </dl>
-      {run.failure === null ? null : <InlineNotice tone={run.outcome === "inconclusive" ? "warning" : "error"}>{run.failure.message}</InlineNotice>}
+      {runFailureMessage(run) === null ? null : <InlineNotice tone={run.outcome === "inconclusive" ? "warning" : "error"}>{runFailureMessage(run)}</InlineNotice>}
       {run.warnings.map((warning, index) => <InlineNotice key={`${warning.code}-${index}`} tone="warning">{warning.message}</InlineNotice>)}
       {run.potentialSessionLeak ? <InlineNotice tone="warning">Browser cleanup could not be confirmed, so this run is not presented as conclusive.</InlineNotice> : null}
-      <details className="tg-inline-details"><summary>Run details</summary><p>Model iterations: {run.iterations} · Browser actions: {run.browserActions} · Cleanup: {run.releaseStatus.replaceAll("_", " ")} · Replay: {replayStatusLabel(run.replayStatus)}</p></details>
+      <details className="tg-inline-details"><summary>Run details</summary><p>Model iterations: {run.iterations} · Browser actions: {run.browserActions} · Cleanup: {run.releaseStatus.replaceAll("_", " ")}</p></details>
     </article>
   );
 }
@@ -111,7 +115,7 @@ function AgentInterfaceInsights({ runs, history }: { readonly runs: readonly Run
 
   return (
     <Panel eyebrow="Agent Interfaces" title="How ready is this website for agents?">
-      <p className="tg-section-copy">Availability shows what TraceGate found. Usage shows what agents actually relied on; it does not imply that an interface caused a pass.</p>
+      <p className="tg-section-copy">Availability shows what TraceGate found in each run. Usage is counted only from completed tool activity and does not imply that an interface caused an outcome.</p>
       <div className="tg-interface-grid">
         {totals.map((metric) => {
           const state = metric.invoked > 0 ? "used" : metric.discovered > 0 || metric.admitted > 0 ? "available" : "not observed";
@@ -212,16 +216,22 @@ function LiveEvaluationPage() {
   useEffect(() => {
     if (snapshot === null) return undefined;
     const controller = new AbortController();
-    void Promise.all([
-      client.report(snapshot.evaluationId, controller.signal),
-      client.trace(snapshot.evaluationId, null, controller.signal),
-      loadAllEvents(snapshot.evaluationId, controller.signal),
-    ]).then(([nextReport, nextTrace, nextHistory]) => {
-      setReport(nextReport);
-      setTrace(nextTrace);
-      setHistory(nextHistory);
-    }).catch(() => undefined);
-    return () => controller.abort();
+    const terminal = ["completed", "cancelled", "failed"].includes(snapshot.status);
+    const timer = setTimeout(() => {
+      void Promise.all([
+        client.report(snapshot.evaluationId, controller.signal),
+        client.trace(snapshot.evaluationId, null, controller.signal),
+        loadAllEvents(snapshot.evaluationId, controller.signal),
+      ]).then(([nextReport, nextTrace, nextHistory]) => {
+        setReport(nextReport);
+        setTrace(nextTrace);
+        setHistory(nextHistory);
+      }).catch(() => undefined);
+    }, terminal ? 0 : 350);
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
   }, [snapshot?.evaluationId, snapshot?.latestCursor]);
 
   useEffect(() => {
@@ -244,11 +254,11 @@ function LiveEvaluationPage() {
     <main id="main-content" className="tg-shell">
       <nav className="tg-breadcrumb" aria-label="Breadcrumb"><Link to="/">New evaluation</Link><span>/</span><span>Reliability</span></nav>
       <header className="tg-page-header">
-        <div><p className="tg-eyebrow">Live evaluation</p><h1>Progress and reliability</h1><p className="tg-lede">Results recover from the durable snapshot after refresh or reconnect; live updates only announce milestones that are already committed.</p></div>
+        <div><p className="tg-eyebrow">Live evaluation</p><h1>Progress and reliability</h1><p className="tg-lede">Saved progress is restored after refresh or reconnect. Live updates appear only after they have been saved.</p></div>
         <div className="tg-status-stack"><StatusBadge status={snapshot?.status ?? "loading"} /><span className="tg-connection" data-state={live.connection}><span aria-hidden="true" />{live.connection === "live" ? "Live updates" : live.connection}</span></div>
       </header>
 
-      {live.error === null ? null : <InlineNotice tone="warning">Live updates paused. TraceGate is reconnecting and will load a fresh durable snapshot.</InlineNotice>}
+      {live.error === null ? null : <InlineNotice tone="warning">Live updates paused. TraceGate is reconnecting and will restore the latest saved progress.</InlineNotice>}
       {evaluationFailure?.type === "evaluation.failed" ? <InlineNotice tone="error">Evaluation could not continue. {evaluationFailure.payload.error.message}</InlineNotice> : null}
       {progressDelayed ? <InlineNotice tone="warning">No new progress has been saved for {Math.floor(quietForMs / 1_000)} seconds. The current step may be taking longer than expected; TraceGate will show the next durable update when it arrives.</InlineNotice> : null}
       {snapshot === null ? <Panel title="Loading evaluation"><p className="tg-muted">Loading the latest saved progress…</p></Panel> : <>
@@ -295,7 +305,7 @@ function LiveEvaluationPage() {
               <ul className="tg-limitations">
                 <li>A pass proves only the declared, fresh browser-observable outcome—not arbitrary backend business truth.</li>
                 <li>TraceGate does not guarantee whole-browser network confinement or perfect DNS-rebinding prevention.</li>
-                <li>Website and MCP content remains untrusted even when it is useful to an agent.</li>
+                <li>Website and MCP content remains untrusted and cannot determine the result directly.</li>
               </ul>
             </section>
           </div>

@@ -16,6 +16,7 @@ import {
   RuntimeCapabilitySchema,
   TraceGateError,
   UtcDateTimeSchema,
+  classifyPromptAdmission,
   createControlError,
   redactError,
   type AgentTraceProjection,
@@ -115,38 +116,83 @@ function deniedToolArray(value: unknown): readonly { readonly name: string; read
   });
 }
 
+export interface EvaluationSubmissionReservation {
+  commit(): void;
+  release(): void;
+}
+
+export interface EvaluationSubmissionScheduler {
+  reserve(evaluation: Evaluation, runs: readonly Run[]): EvaluationSubmissionReservation;
+}
+
 export interface TracegateServerOptions {
   readonly ids?: IdGenerator;
   readonly now?: () => Date;
-  readonly onEvaluationCreated?: (evaluation: Evaluation, runs: readonly Run[]) => void;
+  readonly scheduler?: EvaluationSubmissionScheduler;
+}
+
+function schedulerConflict(error: unknown): TraceGateError | null {
+  const code = typeof error === "object" && error !== null && "code" in error
+    ? String(error.code)
+    : null;
+  const message = code === "evaluation_queue_full"
+    ? "TraceGate is at capacity. Try again after an evaluation finishes."
+    : code === "duplicate_evaluation_job"
+      ? "This evaluation is already queued or running."
+      : code === "invalid_evaluation_queue_reservation_state"
+        ? "This evaluation could not be queued in its current state."
+        : null;
+  return message === null ? null : new TraceGateError(createControlError("conflict", message, {
+    category: "incorrect_state",
+    phase: "evaluation_queue_admission",
+    retryable: code === "evaluation_queue_full",
+  }));
 }
 
 export class TracegateServer {
   readonly #milestones = new PersistedMilestoneBus();
   readonly #ids: IdGenerator;
   readonly #now: () => Date;
-  readonly #onEvaluationCreated: ((evaluation: Evaluation, runs: readonly Run[]) => void) | undefined;
+  readonly #scheduler: EvaluationSubmissionScheduler | undefined;
   readonly database: TracegateDatabase;
 
   constructor(database: TracegateDatabase, options: TracegateServerOptions = {}) {
     this.database = database;
     this.#ids = options.ids ?? new UuidV7Generator();
     this.#now = options.now ?? (() => new Date());
-    this.#onEvaluationCreated = options.onEvaluationCreated;
+    this.#scheduler = options.scheduler;
   }
 
   async createEvaluation(inputValue: unknown, signal: AbortSignal): Promise<CreateEvaluationResponse> {
+    const rawPrompt = typeof inputValue === "object" && inputValue !== null && "prompt" in inputValue
+      ? inputValue.prompt
+      : undefined;
+    if (typeof rawPrompt === "string") {
+      const admission = classifyPromptAdmission(rawPrompt);
+      if (admission.decision === "reject") {
+        throw new TraceGateError(createControlError("unsafe_prompt_rejected", admission.message, {
+          category: "policy",
+          phase: "prompt_admission",
+        }));
+      }
+    }
+
     const input = CreateEvaluationRequestSchema.parse(inputValue);
     const capabilities = await this.getCapabilities(signal);
     const unavailableModels = input.modelIds.filter((modelId) => !FUNCTIONAL_MODEL_IDS.has(modelId) || !capabilities.checks.some(
       (check) => check.kind === "model" && check.subject === modelId && (check.status === "pending" || check.status === "verified"),
     ));
-    if (capabilities.blockerCodes.length > 0 || unavailableModels.length > 0) {
+    const recordingVerified = capabilities.checks.some(
+      (check) => check.kind === "replay" && check.status === "verified",
+    );
+    if (capabilities.blockerCodes.length > 0 || unavailableModels.length > 0 || (input.recordingRequested && !recordingVerified)) {
       throw new TraceGateError(createControlError(
         "capability_blocked",
         unavailableModels.length > 0
-          ? `Requested model capability is unavailable: ${unavailableModels.join(", ")}.`
-          : "Evaluation creation is blocked by unavailable runtime capabilities.",
+          ? "The selected model is not available in this version."
+          : input.recordingRequested && !recordingVerified
+            ? "Recording and replay are not available in this version."
+            : "Evaluation creation is blocked by unavailable runtime capabilities.",
         { category: "infrastructure", phase: "evaluation_create" },
       ));
     }
@@ -206,9 +252,27 @@ export class TracegateServer {
       occurredAt: now,
       payload: { runIndex: run.runIndex },
     }));
-    const persisted = await this.database.transactionallyCreateSubmission({ evaluation, runs, queuedEvents }, signal);
+
+    let reservation: EvaluationSubmissionReservation | undefined;
+    try {
+      reservation = this.#scheduler?.reserve(evaluation, runs);
+    } catch (error) {
+      throw schedulerConflict(error) ?? error;
+    }
+
+    let persisted;
+    try {
+      persisted = await this.database.transactionallyCreateSubmission({ evaluation, runs, queuedEvents }, signal);
+    } catch (error) {
+      reservation?.release();
+      throw error;
+    }
     this.#publishPersisted(persisted.queuedEvents);
-    this.#onEvaluationCreated?.(evaluation, runs);
+    try {
+      reservation?.commit();
+    } catch (error) {
+      throw schedulerConflict(error) ?? error;
+    }
     return CreateEvaluationResponseSchema.parse({
       evaluationId,
       status: evaluation.status,

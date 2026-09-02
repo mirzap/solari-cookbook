@@ -1,13 +1,14 @@
 import { createFileRoute } from "@tanstack/react-router";
 
 import { getTracegateServer } from "../../server/composition.ts";
-import { apiErrorResponse, noStoreJson } from "../../server/http.ts";
+import { apiErrorResponse, assertLoopbackControlPlaneRequest, noStoreJson } from "../../server/http.ts";
 
 export const Route = createFileRoute("/api/health")({
   server: {
     handlers: {
       GET: async ({ request }) => {
         try {
+          assertLoopbackControlPlaneRequest(request);
           const health = await (await getTracegateServer()).health(request.signal);
           return noStoreJson(health, { status: health.status === "unavailable" ? 503 : 200 });
         } catch (error) {

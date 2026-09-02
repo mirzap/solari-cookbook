@@ -38,6 +38,8 @@ export function useLiveEvaluation(rawEvaluationId: string): LiveEvaluationState 
     let projection: EvaluationProjection | undefined;
     let buffered: EventEnvelope[] = [];
     let refreshInFlight = false;
+    let refreshTimer: ReturnType<typeof setTimeout> | undefined;
+    let trailingRefresh = false;
 
     const recover = () => {
       if (stopped) return;
@@ -76,7 +78,11 @@ export function useLiveEvaluation(rawEvaluationId: string): LiveEvaluationState 
     };
 
     const refreshAuthoritativeSnapshot = async () => {
-      if (stopped || refreshInFlight || projection === undefined) return;
+      if (stopped || projection === undefined) return;
+      if (refreshInFlight) {
+        trailingRefresh = true;
+        return;
+      }
       refreshInFlight = true;
       activeController = new AbortController();
       try {
@@ -91,7 +97,22 @@ export function useLiveEvaluation(rawEvaluationId: string): LiveEvaluationState 
         if (!stopped && !activeController.signal.aborted) recover();
       } finally {
         refreshInFlight = false;
+        if (trailingRefresh && !stopped) {
+          trailingRefresh = false;
+          refreshTimer = setTimeout(() => {
+            refreshTimer = undefined;
+            void refreshAuthoritativeSnapshot();
+          }, 350);
+        }
       }
+    };
+
+    const scheduleAuthoritativeRefresh = () => {
+      if (refreshTimer !== undefined) return;
+      refreshTimer = setTimeout(() => {
+        refreshTimer = undefined;
+        void refreshAuthoritativeSnapshot();
+      }, 350);
     };
 
     function connect() {
@@ -101,12 +122,16 @@ export function useLiveEvaluation(rawEvaluationId: string): LiveEvaluationState 
         ready: () => void hydrateAfterReady(),
         event: (event) => {
           if (stopped) return;
+          if (projection?.value.latestCursor !== null
+            && projection?.value.latestCursor !== undefined
+            && BigInt(event.cursor) <= BigInt(projection.value.latestCursor)) return;
           if (projection === undefined || refreshInFlight) {
             buffered.push(event);
+            if (refreshInFlight) trailingRefresh = true;
             return;
           }
           setState({ snapshot: projection.apply(event), connection: "live", error: null });
-          void refreshAuthoritativeSnapshot();
+          scheduleAuthoritativeRefresh();
         },
         error: recover,
       });
@@ -118,6 +143,7 @@ export function useLiveEvaluation(rawEvaluationId: string): LiveEvaluationState 
       disconnect?.();
       activeController?.abort();
       if (retryTimer !== undefined) clearTimeout(retryTimer);
+      if (refreshTimer !== undefined) clearTimeout(refreshTimer);
     };
   }, [rawEvaluationId]);
 

@@ -7,7 +7,7 @@ import {
 } from "@tracegate/shared";
 
 import { getTracegateServer } from "../../../../server/composition.ts";
-import { apiErrorResponse, noStoreJson } from "../../../../server/http.ts";
+import { apiErrorResponse, assertLoopbackControlPlaneRequest, noStoreJson } from "../../../../server/http.ts";
 
 const notFound = () => new TraceGateError(createControlError("not_found", "Evaluation events not found.", {
   category: "incorrect_state",
@@ -19,6 +19,7 @@ export const Route = createFileRoute("/api/evaluations/$id/events")({
     handlers: {
       GET: async ({ params, request }) => {
         try {
+          assertLoopbackControlPlaneRequest(request);
           const evaluationId = EvaluationIdSchema.parse(params.id);
           const server = await getTracegateServer();
           if (request.headers.get("accept")?.includes("application/json") === true) {

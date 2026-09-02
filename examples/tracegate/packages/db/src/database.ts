@@ -170,6 +170,37 @@ function channelForDiscoveredKind(
   return kind;
 }
 
+function metadataNumber(value: unknown, key: string): number {
+  if (typeof value !== "object" || value === null || !(key in value)) return 0;
+  const candidate = (value as Record<string, unknown>)[key];
+  return typeof candidate === "number" && Number.isFinite(candidate) ? candidate : 0;
+}
+
+function discoveryReadiness(
+  event: Extract<EventEnvelope, { readonly type: "run.discovery.completed" }> | undefined,
+  channel: InterfaceChannel,
+): { readonly discovered: number; readonly admitted: number } {
+  if (event === undefined || channel === "visual_fallback") return { discovered: 0, admitted: 0 };
+  if (channel === "semantic_ui") {
+    const available = event.payload.semanticControlCount > 0 ? 1 : 0;
+    return { discovered: available, admitted: available };
+  }
+  if (channel === "page_webmcp") {
+    return {
+      discovered: event.payload.webMcpGate === "unavailable" ? 0 : 1,
+      admitted: event.payload.webMcpGate === "admitted_read_only" ? 1 : 0,
+    };
+  }
+  if (channel === "llms_txt") return { discovered: event.payload.llmsTxt.status === "available" ? 1 : 0, admitted: 0 };
+  if (channel === "json_ld") return { discovered: event.payload.jsonLdTypes.length > 0 ? 1 : 0, admitted: 0 };
+
+  const configured = event.payload.interfaces.filter((entry) => channelForDiscoveredKind(entry.kind) === channel);
+  return {
+    discovered: configured.some((entry) => entry.metadata.status !== "unavailable") ? 1 : 0,
+    admitted: configured.some((entry) => metadataNumber(entry.metadata, "admittedToolCount") > 0) ? 1 : 0,
+  };
+}
+
 function projectInterfaceUsage(
   explicit: InterfaceUsageSummary | undefined,
   runEvents: readonly EventEnvelope[],
@@ -178,8 +209,13 @@ function projectInterfaceUsage(
   const tracedChannels = new Set<InterfaceChannel>();
   const completedToolCallIds = new Set<string>();
   const completed = new Map<InterfaceChannel, { invoked: number; succeeded: number; failed: number }>();
+  const orderedEvents = [...runEvents].sort((left, right) => {
+    const leftCursor = BigInt(left.cursor);
+    const rightCursor = BigInt(right.cursor);
+    return leftCursor < rightCursor ? -1 : leftCursor > rightCursor ? 1 : 0;
+  });
 
-  for (const event of runEvents) {
+  for (const event of orderedEvents) {
     if (event.type === "run.discovery.completed") latestDiscovery = event;
     if (event.type === "run.tool.started") {
       const source = event.payload.interfaceSource;
@@ -213,26 +249,25 @@ function projectInterfaceUsage(
           succeeded: persisted?.succeeded ?? 0,
           failed: persisted?.failed ?? 0,
         };
-      const discovered = latestDiscovery?.payload.interfaces.filter(
-        (entry) => channelForDiscoveredKind(entry.kind) === channel,
-      ).length ?? 0;
-      const admitted = channel === "page_webmcp" && latestDiscovery?.payload.webMcpGate === "admitted_read_only" ? 1 : 0;
-      return {
-        channel,
-        discovered: persisted !== undefined && persisted.discovered > 0
-          ? persisted.discovered
-          : Math.max(discovered, usage.invoked > 0 ? 1 : 0),
-        admitted: persisted !== undefined && persisted.admitted > 0
-          ? persisted.admitted
-          : Math.max(admitted, usage.invoked > 0 ? 1 : 0),
-        ...usage,
-      };
+      const readiness = persisted === undefined
+        ? discoveryReadiness(latestDiscovery, channel)
+        : {
+          discovered: persisted.discovered > 0 ? 1 : 0,
+          admitted: persisted.admitted > 0 ? 1 : 0,
+        };
+      return { channel, ...readiness, ...usage };
     }),
   });
 }
 
 function projectRunSnapshot(run: Run, committedEvents: readonly EventEnvelope[]): RunSnapshot {
-  const runEvents = committedEvents.filter((event) => event.runId === run.id);
+  const runEvents = committedEvents
+    .filter((event) => event.runId === run.id)
+    .sort((left, right) => {
+      const leftCursor = BigInt(left.cursor);
+      const rightCursor = BigInt(right.cursor);
+      return leftCursor < rightCursor ? -1 : leftCursor > rightCursor ? 1 : 0;
+    });
   const completedToolCallIds = new Set<string>();
   let maxIteration = 0;
   let startedToolCalls = 0;
