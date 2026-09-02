@@ -4,6 +4,12 @@ import { terminalError } from "./errors.ts";
 
 const bytes = (value: unknown): number => Buffer.byteLength(JSON.stringify(value), "utf8");
 
+function documentLocation(url: string): string {
+  const parsed = new URL(url);
+  parsed.hash = "";
+  return parsed.href;
+}
+
 function compactHistoricalContent(message: AgentModelMessage): string | null {
   if (message.content === null) return null;
   if (message.role === "tool") {
@@ -52,6 +58,7 @@ export class AgentConversationHistory {
   readonly #maxObservationBytes: number;
   readonly #maxHistoryBytes: number;
   #latestObservation: UntrustedAgentObservation;
+  #documentTransitions = 0;
 
   constructor(base: readonly AgentModelMessage[], observation: UntrustedAgentObservation, maxObservationBytes: number, maxHistoryBytes: number) {
     this.#base = [...base.slice(0, -1)];
@@ -60,27 +67,41 @@ export class AgentConversationHistory {
     this.#maxHistoryBytes = maxHistoryBytes;
   }
 
-  appendTurn(messages: readonly AgentModelMessage[], observation?: UntrustedAgentObservation): void {
+  appendTurn(
+    messages: readonly AgentModelMessage[],
+    observation?: UntrustedAgentObservation,
+    options: { readonly documentTransition?: boolean } = {},
+  ): void {
+    const nextObservation = observation
+      ? boundedObservation(observation, this.#maxObservationBytes)
+      : this.#latestObservation;
+    const transitioned = options.documentTransition === true
+      || documentLocation(nextObservation.url) !== documentLocation(this.#latestObservation.url);
+    if (transitioned) {
+      this.#turns.length = 0;
+      this.#documentTransitions += 1;
+    }
     this.#turns.push(messages.map((message) => ({
       ...message,
       content: compactHistoricalContent(message),
       ...(message.toolCalls ? { toolCalls: message.toolCalls.map((call) => ({ ...call, arguments: String(redactJson(call.arguments, { maxStringLength: 8_192 })) })) } : {}),
     })));
-    if (observation) this.#latestObservation = boundedObservation(observation, this.#maxObservationBytes);
+    this.#latestObservation = nextObservation;
   }
 
-  compact(): { messages: AgentModelMessage[]; historyBytes: number } {
+  compact(trustedTrailingMessages: readonly AgentModelMessage[] = []): { messages: AgentModelMessage[]; historyBytes: number; documentTransitions: number } {
     const observation: AgentModelMessage = {
       role: "user",
       content: `UNTRUSTED_BROWSER_OBSERVATION\n${JSON.stringify({ schemaVersion: 2, trust: "untrusted_page_or_tool_content", observation: this.#latestObservation })}`,
     };
     const retained = [...this.#turns];
-    const build = () => [...this.#base, ...retained.flat(), observation];
+    const trailing = trustedTrailingMessages.map((message) => ({ ...message }));
+    const build = () => [...this.#base, ...retained.flat(), ...trailing, observation];
     while (retained.length > 0 && bytes(build()) > this.#maxHistoryBytes) retained.shift();
     const messages = build();
     const historyBytes = bytes(messages);
     if (historyBytes > this.#maxHistoryBytes) throw terminalError("budget_exhausted", "Mandatory prompt context exceeds history byte budget", "agent.history");
-    return { messages, historyBytes };
+    return { messages, historyBytes, documentTransitions: this.#documentTransitions };
   }
 }
 

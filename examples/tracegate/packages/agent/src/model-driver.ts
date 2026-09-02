@@ -1,4 +1,4 @@
-import type { SafeAgentToolSurface, TokenUsage } from "@tracegate/shared";
+import type { RunWarning, SafeAgentToolSurface, TokenUsage } from "@tracegate/shared";
 
 export interface AgentToolCall {
   readonly id: string;
@@ -36,7 +36,8 @@ export interface AgentModelTurnResult {
   readonly messages: readonly AgentModelMessage[];
   readonly assistantSummary: string;
   readonly usage: TokenUsage;
-  readonly resolvedProvider: string;
+  readonly resolvedProvider: string | null;
+  readonly warnings: readonly RunWarning[];
 }
 
 export interface AgentModelDriver {

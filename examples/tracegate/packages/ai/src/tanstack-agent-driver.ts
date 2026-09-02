@@ -10,15 +10,18 @@ import {
   type AgentModelTurnResult,
 } from '@tracegate/agent'
 import {
+  AgentCompletionDispositionSchema,
+  RunWarningSchema,
   WebMcpInvocationInputSchema,
   isTraceGateError,
   redactJson,
   type ConfiguredMcpToolDescriptorV1,
+  type RunWarning,
   type TokenUsage,
   type WebMcpToolDescriptorV1,
 } from '@tracegate/shared'
 import { z } from 'zod'
-import { mapTanStackEvent, normalizeUsage, safeDiagnostic } from './compatibility.js'
+import { mapTanStackEvent, safeDiagnostic } from './compatibility.js'
 import type { TraceGateModelId } from './models.js'
 
 const DEEPSEEK = 'deepseek/deepseek-v4-flash-0731' as const
@@ -43,6 +46,19 @@ interface DriverOptions {
 }
 
 const object = <T extends z.ZodRawShape>(shape: T) => z.object(shape).strict()
+const finishSchema = object({
+  completed: z.boolean(),
+  completionDisposition: AgentCompletionDispositionSchema,
+  summary: z.string().max(2_000),
+}).superRefine((value, context) => {
+  if ((value.completionDisposition === 'completed') !== value.completed) {
+    context.addIssue({
+      code: 'custom',
+      path: ['completionDisposition'],
+      message: 'completed must agree with the explicit completion disposition',
+    })
+  }
+})
 const schemas = {
   navigate: object({ url: z.url().max(2_048) }),
   inspect: object({}),
@@ -52,7 +68,7 @@ const schemas = {
   pressKey: object({ ref: z.string().regex(/^e:[1-9][0-9]*:[0-9]+$/), key: z.enum(['Escape', 'Tab', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Home', 'End', 'PageUp', 'PageDown']) }),
   scroll: object({ direction: z.enum(['up', 'down']), amount: z.number().int().min(1).max(5_000) }),
   wait: object({ durationMs: z.number().int().min(0).max(15_000) }),
-  finish: object({ completed: z.boolean(), summary: z.string().max(2_000) }),
+  finish: finishSchema,
 } as const
 
 function toolFor<K extends keyof typeof schemas>(name: K, schema: (typeof schemas)[K], description: string, input: AgentModelTurnInput) {
@@ -74,7 +90,7 @@ function tools(input: AgentModelTurnInput) {
     ['pressKey', toolFor('pressKey', schemas.pressKey, 'Press one restricted navigation key on an admitted element.', input)],
     ['scroll', toolFor('scroll', schemas.scroll, 'Scroll the current page.', input)],
     ['wait', toolFor('wait', schemas.wait, 'Wait briefly and inspect current state.', input)],
-    ['finish', toolFor('finish', schemas.finish, 'Record your completion belief. This never grades the run.', input)],
+    ['finish', toolFor('finish', schemas.finish, 'Stop with an explicit disposition. Use completed only when the latest observable state supports the task; use policy_refused, blocked, or needs_input with completed false. This never grades the run.', input)],
   ] as const
   const definitions: AnyServerTool[] = candidates.filter(([name]) => selected.has(name)).map(([, definition]) => definition)
   if (selected.has('invokeWebMcpReadOnly')) definitions.push(webMcpTool(input))
@@ -200,9 +216,7 @@ function safeProviderIdentity(value: unknown): string | null {
 function observeGenerationIds(adapter: Adapter, ids: Set<string>, providers: Set<string>): () => void {
   const internals = adapter as unknown as Partial<AdapterInternals>
   const sender = internals.orClient?.chat
-  if (!sender || typeof sender.send !== 'function') {
-    throw terminalError('provider_protocol_error', 'OpenRouter adapter routing instrumentation is unavailable', 'ai.routing')
-  }
+  if (!sender || typeof sender.send !== 'function') return () => {}
   const original = sender.send
   const observedSend = async (...args: unknown[]) => {
     const [request, ...rest] = args
@@ -248,9 +262,12 @@ async function abortableDelay(durationMs: number, signal: AbortSignal): Promise<
   })
 }
 
-async function resolveProvider(adapter: Adapter, ids: ReadonlySet<string>, observedProviders: ReadonlySet<string>, signal: AbortSignal): Promise<string> {
+async function resolveProvider(adapter: Adapter, ids: ReadonlySet<string>, observedProviders: ReadonlySet<string>, signal: AbortSignal): Promise<string | null> {
   if (observedProviders.size === 1) return [...observedProviders][0]!
-  const reader = (adapter as unknown as AdapterInternals).orClient.generations
+  if (observedProviders.size > 1) return null
+  const reader = (adapter as unknown as Partial<AdapterInternals>).orClient?.generations
+  if (!reader || typeof reader.getGeneration !== 'function') return null
+  const resolved = new Set<string>()
   for (const id of ids) {
     for (const wait of [0, 250, 750, 1_500, 3_000]) {
       if (signal.aborted) throw abortedError('ai.routing')
@@ -260,11 +277,46 @@ async function resolveProvider(adapter: Adapter, ids: ReadonlySet<string>, obser
         const root = response && typeof response === 'object' ? response as Record<string, unknown> : null
         const record = root?.data && typeof root.data === 'object' ? root.data as Record<string, unknown> : root
         const provider = safeProviderIdentity(record?.providerName ?? record?.provider_name)
-        if (provider) return provider
+        if (provider) resolved.add(provider)
       } catch { /* generation metadata is eventually consistent */ }
+      if (resolved.size > 1) return null
     }
   }
-  throw terminalError('provider_protocol_error', 'OpenRouter did not resolve a safe provider identity', 'ai.routing')
+  return resolved.size === 1 ? [...resolved][0]! : null
+}
+
+function validTokenCount(value: unknown): number | null {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null
+}
+
+function normalizeRuntimeUsage(value: unknown): { usage: TokenUsage; anomalous: boolean } {
+  const record = value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null
+  const promptTokens = validTokenCount(record?.promptTokens)
+  const completionTokens = validTokenCount(record?.completionTokens)
+  let totalTokens = validTokenCount(record?.totalTokens)
+  let anomalous = promptTokens === null || completionTokens === null || totalTokens === null
+  if (promptTokens !== null && completionTokens !== null && totalTokens !== null && promptTokens + completionTokens !== totalTokens) {
+    totalTokens = null
+    anomalous = true
+  }
+  return { usage: { promptTokens, completionTokens, totalTokens }, anomalous }
+}
+
+function providerWarning(code: 'unknown_provider_event' | 'usage_unavailable'): RunWarning {
+  return RunWarningSchema.parse({
+    schemaVersion: 1,
+    code,
+    category: 'model_provider',
+    phase: code === 'unknown_provider_event' ? 'ai.routing' : 'ai.usage',
+    retryable: false,
+    message: code === 'unknown_provider_event'
+      ? 'Provider identity was unavailable for this run.'
+      : 'Provider token usage was unavailable or inconsistent for this run.',
+    fieldIssues: [],
+    causeChain: [],
+  })
 }
 
 function convertMessages(messages: readonly AgentModelMessage[]) {
@@ -295,6 +347,7 @@ export class TanStackOpenRouterAgentDriver implements AgentModelDriver {
     const turnMessages: AgentModelMessage[] = []
     let assistantText = ''
     let usage: TokenUsage | null = null
+    let usageAnomalyObserved = false
     let protocolFailure: Error | null = null
     const abortController = new AbortController()
     const onAbort = () => abortController.abort(input.signal.reason)
@@ -380,8 +433,9 @@ export class TanStackOpenRouterAgentDriver implements AgentModelDriver {
         }
       },
       onUsage: (_context, value) => {
-        const normalized = normalizeUsage(value)
-        usage = normalized ? { promptTokens: normalized.promptTokens, completionTokens: normalized.completionTokens, totalTokens: normalized.totalTokens } : null
+        const normalized = normalizeRuntimeUsage(value)
+        usage = normalized.usage
+        usageAnomalyObserved ||= normalized.anomalous
       },
       onError: (_context, info) => {
         if (!protocolFailure) protocolFailure = terminalError('provider_protocol_error', safeDiagnostic(info.error), 'ai.stream')
@@ -405,15 +459,22 @@ export class TanStackOpenRouterAgentDriver implements AgentModelDriver {
       for await (const _chunk of stream as AsyncIterable<StreamChunk>) { /* middleware owns bounded mapping */ }
       await Promise.all(boundaryTasks)
       if (protocolFailure) throw protocolFailure
-      if (!usage) throw terminalError('provider_protocol_error', 'Provider usage was missing or malformed', 'ai.usage')
+      if (!usage) {
+        usage = { promptTokens: null, completionTokens: null, totalTokens: null }
+        usageAnomalyObserved = true
+      }
       if (turnMessages.length === 0) turnMessages.push({ role: 'assistant', content: assistantText })
       for (const state of open.values()) if (!state.ended || !state.resulted) throw terminalError('provider_protocol_error', 'Provider stream ended with an incomplete tool lifecycle', 'ai.stream')
       const resolvedProvider = await resolveProvider(this.#adapter, generationIds, observedProviders, input.signal)
+      const warnings: RunWarning[] = []
+      if (resolvedProvider === null) warnings.push(providerWarning('unknown_provider_event'))
+      if (usageAnomalyObserved) warnings.push(providerWarning('usage_unavailable'))
       return {
         messages: turnMessages,
         assistantSummary: String(redactJson(assistantText || (open.size ? `proposed ${open.size} tool call(s)` : 'assistant turn completed'), { maxStringLength: 4_000 })),
         usage,
         resolvedProvider,
+        warnings,
       }
     } catch (error) {
       if (input.signal.aborted) throw abortedError('ai.stream')

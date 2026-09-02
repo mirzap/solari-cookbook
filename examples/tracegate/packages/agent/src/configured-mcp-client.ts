@@ -1,3 +1,4 @@
+import { lookup as dnsLookup } from "node:dns/promises";
 import {
   ConfiguredMcpEndpointV1Schema,
   ConfiguredMcpDiscoveryResultV1Schema,
@@ -5,6 +6,8 @@ import {
   ConfiguredMcpToolCatalogV1Schema,
   UntrustedConfiguredMcpResultV1Schema,
   WebMcpClosedInputSchema,
+  classifyNetworkHostname,
+  classifyResolvedIp,
   isTraceGateError,
   redactJson,
   type ConfiguredMcpClientPort,
@@ -43,6 +46,12 @@ interface Session {
 }
 
 type Fetch = typeof fetch;
+type Lookup = (
+  hostname: string,
+  options: { readonly all: true; readonly verbatim: true },
+) => Promise<ReadonlyArray<{ readonly address: string }>>;
+
+const EXPLICIT_LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
 
 function record(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
@@ -208,11 +217,19 @@ function boundedOutput(result: Record<string, unknown>): { output: JsonObject; s
 
 export class StreamableHttpConfiguredMcpClient implements ConfiguredMcpClientPort {
   readonly #fetch: Fetch;
+  readonly #lookup: Lookup;
   readonly #sessions = new Map<string, Promise<Session>>();
+  #closing = false;
+  #closed = false;
+  #closePromise: Promise<void> | null = null;
 
-  constructor(fetchImplementation: Fetch = fetch) { this.#fetch = fetchImplementation; }
+  constructor(fetchImplementation: Fetch = fetch, lookupImplementation: Lookup = dnsLookup as Lookup) {
+    this.#fetch = fetchImplementation;
+    this.#lookup = lookupImplementation;
+  }
 
   async discover(endpointInput: ConfiguredMcpEndpointV1, signal: AbortSignal): Promise<ConfiguredMcpDiscoveryResultV1> {
+    this.#assertOpen();
     const endpoint = ConfiguredMcpEndpointV1Schema.parse(endpointInput);
     const session = await this.#session(endpoint, signal);
     const descriptors: ConfiguredMcpToolDescriptorV1[] = [];
@@ -281,6 +298,7 @@ export class StreamableHttpConfiguredMcpClient implements ConfiguredMcpClientPor
   }
 
   async invoke(endpointInput: ConfiguredMcpEndpointV1, requestInput: ConfiguredMcpInvocationRequest, signal: AbortSignal): Promise<UntrustedConfiguredMcpResultV1> {
+    this.#assertOpen();
     const endpoint = ConfiguredMcpEndpointV1Schema.parse(endpointInput);
     const request = ConfiguredMcpInvocationRequestSchema.parse(requestInput);
     if (request.endpointId !== endpoint.id) throw terminalError("unsafe_action_blocked", "Configured MCP endpoint identity changed after admission", "agent.configured_mcp", { policyCode: "native_tool_forbidden" });
@@ -306,23 +324,46 @@ export class StreamableHttpConfiguredMcpClient implements ConfiguredMcpClientPor
   }
 
   async close(signal: AbortSignal): Promise<void> {
-    throwIfAborted(signal, "agent.configured_mcp");
-    const sessions = await Promise.allSettled(this.#sessions.values());
-    for (const settled of sessions) {
-      if (settled.status !== "fulfilled" || !settled.value.sessionId) continue;
-      const session = settled.value;
-      const response = await this.#fetch(session.endpoint.endpointUrl, {
-        method: "DELETE", redirect: "error", signal,
-        headers: this.#headers(session, "shutdown"),
-      });
-      if (!response.ok && response.status !== 405) {
-        throw terminalError("target_evidence_lost", "Configured MCP session cleanup was not confirmed", "agent.configured_mcp");
+    if (this.#closePromise !== null) return this.#closePromise;
+    this.#closing = true;
+    this.#closePromise = this.#closeAll(signal);
+    return this.#closePromise;
+  }
+
+  async #closeAll(signal: AbortSignal): Promise<void> {
+    let cleanupFailureCount = 0;
+    try {
+      const sessions = await Promise.allSettled([...this.#sessions.values()]);
+      for (const settled of sessions) {
+        if (settled.status !== "fulfilled" || !settled.value.sessionId) continue;
+        const session = settled.value;
+        try {
+          await this.#admitDestination(session.endpoint, signal);
+          const response = await this.#fetch(session.endpoint.endpointUrl, {
+            method: "DELETE",
+            redirect: "error",
+            signal,
+            headers: this.#headers(session, "shutdown"),
+          });
+          if (!response.ok && response.status !== 405) cleanupFailureCount += 1;
+          try { await response.body?.cancel(); } catch { /* continue exhaustive cleanup */ }
+        } catch {
+          cleanupFailureCount += 1;
+        }
       }
+    } finally {
+      this.#sessions.clear();
+      this.#closing = false;
+      this.#closed = true;
     }
-    this.#sessions.clear();
+    if (signal.aborted) throwIfAborted(signal, "agent.configured_mcp");
+    if (cleanupFailureCount > 0) {
+      throw terminalError("target_evidence_lost", "One or more configured MCP session cleanup attempts were not confirmed", "agent.configured_mcp");
+    }
   }
 
   async #session(endpoint: ConfiguredMcpEndpointV1, signal: AbortSignal): Promise<Session> {
+    this.#assertOpen();
     const key = `${endpoint.id}\u0000${endpoint.endpointUrl}\u0000${endpoint.selectedTools.join("\u0000")}`;
     const existing = this.#sessions.get(key);
     if (existing) {
@@ -358,6 +399,7 @@ export class StreamableHttpConfiguredMcpClient implements ConfiguredMcpClientPor
   }
 
   async #notification(session: Session, method: string, signal: AbortSignal): Promise<void> {
+    await this.#admitDestination(session.endpoint, signal);
     const response = await this.#fetch(session.endpoint.endpointUrl, {
       method: "POST", redirect: "error", signal,
       headers: this.#headers(session, method),
@@ -368,6 +410,7 @@ export class StreamableHttpConfiguredMcpClient implements ConfiguredMcpClientPor
 
   async #post(endpoint: ConfiguredMcpEndpointV1, session: Session | null, id: number, method: string, params: Record<string, unknown>, signal: AbortSignal): Promise<{ response: JsonRpcResponse; sessionId: string | null; result?: unknown }> {
     throwIfAborted(signal, "agent.configured_mcp");
+    await this.#admitDestination(endpoint, signal);
     let response: Response;
     try {
       response = await this.#fetch(endpoint.endpointUrl, {
@@ -384,6 +427,71 @@ export class StreamableHttpConfiguredMcpClient implements ConfiguredMcpClientPor
     if (parsed.error) throw terminalError("target_evidence_lost", "Configured MCP returned a protocol error", "agent.configured_mcp");
     const sessionId = safeSessionId(response.headers.get("mcp-session-id"));
     return { response: parsed, sessionId, result: parsed.result };
+  }
+
+  async #admitDestination(endpointInput: ConfiguredMcpEndpointV1, signal: AbortSignal): Promise<void> {
+    throwIfAborted(signal, "agent.configured_mcp");
+    const endpoint = ConfiguredMcpEndpointV1Schema.parse(endpointInput);
+    const url = new URL(endpoint.endpointUrl);
+    const hostname = url.hostname.startsWith("[") && url.hostname.endsWith("]")
+      ? url.hostname.slice(1, -1).toLowerCase()
+      : url.hostname.toLowerCase();
+    const hostnameClass = classifyNetworkHostname(hostname);
+    if (EXPLICIT_LOOPBACK_HOSTS.has(hostname)) {
+      if (hostname === "localhost") {
+        const addresses = await this.#resolveAll(hostname, signal);
+        if (addresses.length < 1 || addresses.some((address) => classifyResolvedIp(address) !== "loopback")) {
+          throw this.#destinationDenied();
+        }
+      } else if (classifyResolvedIp(hostname) !== "loopback") {
+        throw this.#destinationDenied();
+      }
+      return;
+    }
+    if (url.protocol !== "https:" || hostnameClass !== "public_dns_name") {
+      throw this.#destinationDenied();
+    }
+    const addresses = await this.#resolveAll(hostname, signal);
+    if (addresses.length < 1 || addresses.some((address) => classifyResolvedIp(address) !== "public")) {
+      throw this.#destinationDenied();
+    }
+  }
+
+  async #resolveAll(hostname: string, signal: AbortSignal): Promise<readonly string[]> {
+    let rejectCancellation: ((error: unknown) => void) | null = null;
+    const cancellation = new Promise<never>((_resolve, reject) => { rejectCancellation = reject; });
+    const onAbort = () => rejectCancellation?.(new Error("configured MCP destination admission cancelled"));
+    signal.addEventListener("abort", onAbort, { once: true });
+    if (signal.aborted) onAbort();
+    try {
+      const results = await Promise.race([
+        this.#lookup(hostname, { all: true, verbatim: true }),
+        cancellation,
+      ]);
+      throwIfAborted(signal, "agent.configured_mcp");
+      return results.map((result) => result.address);
+    } catch (error) {
+      if (signal.aborted) throwIfAborted(signal, "agent.configured_mcp");
+      if (isTraceGateError(error)) throw error;
+      throw this.#destinationDenied();
+    } finally {
+      signal.removeEventListener("abort", onAbort);
+    }
+  }
+
+  #destinationDenied(): ReturnType<typeof terminalError> {
+    return terminalError(
+      "unsafe_action_blocked",
+      "Configured MCP destination did not pass network admission",
+      "agent.configured_mcp",
+      { policyCode: "origin_not_admitted" },
+    );
+  }
+
+  #assertOpen(): void {
+    if (this.#closing || this.#closed) {
+      throw terminalError("target_evidence_lost", "Configured MCP client is closing or already closed", "agent.configured_mcp");
+    }
   }
 
   #headers(session: Session | null, method: string, name?: string): Headers {

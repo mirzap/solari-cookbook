@@ -1,6 +1,19 @@
 import type { RuntimeBudgets, TokenUsage } from "@tracegate/shared";
 import { abortedError, terminalError, throwIfAborted } from "./errors.ts";
 
+export interface BudgetProgress {
+  readonly wallClockMsRemaining: number;
+  readonly modelTurnsRemaining: number;
+  readonly toolCallsRemaining: number;
+  readonly browserActionsRemaining: number;
+  readonly knownTokenLowerBound: number;
+  readonly maxTotalTokens: number;
+}
+
+function validTokenCount(value: unknown): number | null {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+
 export class BudgetLedger {
   readonly #budget: RuntimeBudgets;
   readonly #startedAt: number;
@@ -9,6 +22,7 @@ export class BudgetLedger {
   toolCalls = 0;
   browserActions = 0;
   usage: TokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
+  #knownTokenLowerBound = 0;
 
   constructor(budget: RuntimeBudgets, now: () => number = performance.now.bind(performance)) {
     this.#budget = budget;
@@ -42,17 +56,44 @@ export class BudgetLedger {
     return ++this.browserActions;
   }
 
-  addUsage(usage: TokenUsage): void {
-    if (usage.promptTokens === null || usage.completionTokens === null || usage.totalTokens === null ||
-        usage.promptTokens + usage.completionTokens !== usage.totalTokens) {
-      throw terminalError("provider_protocol_error", "Provider returned missing or inconsistent usage", "agent.usage");
+  addUsage(usage: TokenUsage): boolean {
+    const promptTokens = validTokenCount(usage.promptTokens);
+    const completionTokens = validTokenCount(usage.completionTokens);
+    let totalTokens = validTokenCount(usage.totalTokens);
+    let anomalous = promptTokens === null || completionTokens === null || totalTokens === null;
+    if (promptTokens !== null && completionTokens !== null && totalTokens !== null &&
+        promptTokens + completionTokens !== totalTokens) {
+      totalTokens = null;
+      anomalous = true;
     }
+    this.#knownTokenLowerBound += totalTokens
+      ?? ((promptTokens ?? 0) + (completionTokens ?? 0));
     this.usage = {
-      promptTokens: (this.usage.promptTokens ?? 0) + usage.promptTokens,
-      completionTokens: (this.usage.completionTokens ?? 0) + usage.completionTokens,
-      totalTokens: (this.usage.totalTokens ?? 0) + usage.totalTokens,
+      promptTokens: this.usage.promptTokens === null || promptTokens === null
+        ? null
+        : this.usage.promptTokens + promptTokens,
+      completionTokens: this.usage.completionTokens === null || completionTokens === null
+        ? null
+        : this.usage.completionTokens + completionTokens,
+      totalTokens: this.usage.totalTokens === null || totalTokens === null
+        ? null
+        : this.usage.totalTokens + totalTokens,
     };
-    if ((this.usage.totalTokens ?? 0) > this.#budget.maxTotalTokens) throw terminalError("budget_exhausted", "Token budget exhausted", "agent.usage");
+    if (this.#knownTokenLowerBound > this.#budget.maxTotalTokens) {
+      throw terminalError("budget_exhausted", "Token budget exhausted", "agent.usage");
+    }
+    return anomalous;
+  }
+
+  progress(): BudgetProgress {
+    return {
+      wallClockMsRemaining: Math.max(0, Math.floor(this.#budget.wallClockMs - (this.#now() - this.#startedAt))),
+      modelTurnsRemaining: Math.max(0, this.#budget.maxModelTurns - this.modelTurns),
+      toolCallsRemaining: Math.max(0, this.#budget.maxToolCalls - this.toolCalls),
+      browserActionsRemaining: Math.max(0, this.#budget.maxBrowserActions - this.browserActions),
+      knownTokenLowerBound: this.#knownTokenLowerBound,
+      maxTotalTokens: this.#budget.maxTotalTokens,
+    };
   }
 
   async withToolTimeout<T>(operation: (signal: AbortSignal) => Promise<T>, parent: AbortSignal): Promise<T> {

@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import {
+  AgentCompletionDispositionSchema,
   FailureAwareRunToolCompletedEventSchema,
   FailureRecordSchema,
   SafeAgentActionSchema,
@@ -13,6 +14,7 @@ import {
   browserPolicyDiagnosticFromFailureRecord,
   isTraceGateError,
   redactJson,
+  type AgentCompletionDisposition,
   type ErrorCategory,
   type RunToolCompletionFailurePhase,
   type RunToolCompletionFailureV1,
@@ -72,7 +74,8 @@ type FailureAwareCompletion = Readonly<{
 )>;
 type OperationSettlement =
   | { readonly status: "fulfilled"; readonly value: unknown }
-  | { readonly status: "rejected"; readonly error: unknown };
+  | { readonly status: "rejected"; readonly error: unknown }
+  | { readonly status: "unsettled" };
 
 class StagedExecutionFailure {
   constructor(
@@ -117,6 +120,7 @@ const RECOVERABLE_PORT_REJECTION_POLICY_CODES = new Set([
 const MAX_SAFE_TOOL_FEEDBACK_BYTES = 2_048;
 const MAX_TRACKED_SEMANTIC_FAILURES = 16;
 const MAX_EQUIVALENT_FAILURE_COUNT = 99;
+const POST_TIMEOUT_SETTLEMENT_GRACE_MS = 1_000;
 
 function interfaceSource(tool: SafeAgentToolName): ToolInterfaceSource {
   if (tool === "invokeWebMcpReadOnly") return "page_webmcp";
@@ -285,8 +289,12 @@ export class SerializedSafeToolExecutor implements AgentToolExecutor {
   #tail: Promise<void> = Promise.resolve();
   #observation: UntrustedAgentObservation;
   #surface: SafeAgentToolSurface | null = null;
-  #finished: { completed: boolean; summary: string } | null = null;
+  #finished: { completed: boolean; completionDisposition: AgentCompletionDisposition; summary: string } | null = null;
   #terminalUncertainty: ReturnType<typeof terminalError> | null = null;
+  #successfulToolCalls = 0;
+  #failedToolProposals = 0;
+  #documentTransitions = 0;
+  #policyRefusalProviderCallId: string | null = null;
 
   constructor(input: {
     tools: SafeAgentToolPort;
@@ -308,7 +316,22 @@ export class SerializedSafeToolExecutor implements AgentToolExecutor {
   }
 
   get observation(): UntrustedAgentObservation { return this.#observation; }
-  get finishBelief(): { completed: boolean; summary: string } | null { return this.#finished; }
+  get finishBelief(): { completed: boolean; completionDisposition: AgentCompletionDisposition; summary: string } | null { return this.#finished; }
+  get documentTransitions(): number { return this.#documentTransitions; }
+
+  progress(): {
+    readonly successfulToolCalls: number;
+    readonly failedToolProposals: number;
+    readonly documentTransitions: number;
+    readonly observationRevision: number;
+  } {
+    return {
+      successfulToolCalls: this.#successfulToolCalls,
+      failedToolProposals: this.#failedToolProposals,
+      documentTransitions: this.#documentTransitions,
+      observationRevision: this.#observation.revision,
+    };
+  }
 
   assertTargetEvidenceAvailable(): void {
     if (this.#terminalUncertainty) throw this.#terminalUncertainty;
@@ -344,9 +367,10 @@ export class SerializedSafeToolExecutor implements AgentToolExecutor {
     const parsedName = SafeAgentToolNameSchema.safeParse(toolNameInput);
     const toolName = parsedName.success ? parsedName.data : null;
     let rejection: SafeToolErrorReason | null = null;
+    let parsedArguments: unknown = null;
     if (Buffer.byteLength(rawArguments, "utf8") > 8_192) rejection = "malformed_proposal";
     else {
-      try { JSON.parse(rawArguments); }
+      try { parsedArguments = JSON.parse(rawArguments); }
       catch { rejection = "malformed_proposal"; }
     }
     if (toolName === null || !surface.tools.includes(toolName)) rejection = "tool_unavailable";
@@ -357,6 +381,18 @@ export class SerializedSafeToolExecutor implements AgentToolExecutor {
       return rejected;
     }
     if (toolName === null) throw terminalError("provider_protocol_error", "Rejected tool admission was not retained", "agent.tool");
+    if (toolName === "finish" && parsedArguments !== null && typeof parsedArguments === "object" && !Array.isArray(parsedArguments)) {
+      const declaration = parsedArguments as Record<string, unknown>;
+      if (declaration.completed === false && declaration.completionDisposition === "policy_refused" &&
+          typeof declaration.summary === "string" && declaration.summary.length <= 2_000) {
+        this.#policyRefusalProviderCallId ??= providerCallId;
+        this.#finished = {
+          completed: false,
+          completionDisposition: "policy_refused",
+          summary: declaration.summary,
+        };
+      }
+    }
     const admission: Admission = {
       normalizedId,
       ordinal,
@@ -396,6 +432,7 @@ export class SerializedSafeToolExecutor implements AgentToolExecutor {
     }
     await this.#emitStartedIfNeeded(admission, "proposal rejected before a safe tool result was available");
     this.#completed.add(admission.providerCallId);
+    this.#failedToolProposals += 1;
     if (admission.toolName === null) return;
     await this.#emitCompleted(admission, {
       tool: admission.toolName,
@@ -446,6 +483,15 @@ export class SerializedSafeToolExecutor implements AgentToolExecutor {
           const settlement = await this.#awaitInFlightSettlement(inFlight.operation, parent);
           if (settlement?.status === "fulfilled" && typeof settlement.value === "string") return settlement.value;
           if (settlement?.status === "rejected" && MUTATING_ACTIONS.has(admission.toolName)) settledFailure = settlement.error;
+          if (settlement?.status === "unsettled") {
+            const dispatchDisposition = originalDispatch.disposition;
+            const completionFailure = completionFailureFromError(caught, completionFailurePhase(null, dispatchDisposition));
+            const terminalFailure = dispatchDisposition === "dispatched"
+              ? this.#loseTargetEvidence(caught)
+              : caught;
+            await this.#failAdmittedNow(admission, completionFailure, dispatchDisposition, "tool_failed");
+            throw terminalFailure;
+          }
         }
         const staged = settledFailure instanceof StagedExecutionFailure ? settledFailure : null;
         const error = toolTimedOut && staged?.stage === "pre_dispatch" ? caught : staged?.cause ?? settledFailure;
@@ -507,12 +553,27 @@ export class SerializedSafeToolExecutor implements AgentToolExecutor {
   ): Promise<string> {
     let action: SafeAgentAction;
     let surface: SafeAgentToolSurface;
+    let completionDisposition: AgentCompletionDisposition | null = null;
     try {
-      if (this.#finished) throw terminalError("provider_protocol_error", "Tool proposal arrived after finish", "agent.tool");
+      if (this.#finished && admission.providerCallId !== this.#policyRefusalProviderCallId) {
+        throw terminalError("provider_protocol_error", "Tool proposal arrived after finish", "agent.tool");
+      }
       surface = await this.refreshSurface(linked);
       const argumentsValue = JSON.parse(admission.rawArguments) as unknown;
+      const rawArguments = argumentsValue && typeof argumentsValue === "object" && !Array.isArray(argumentsValue)
+        ? { ...argumentsValue as Record<string, unknown> }
+        : {};
+      if (admission.toolName === "finish") {
+        const parsedDisposition = AgentCompletionDispositionSchema.safeParse(rawArguments.completionDisposition);
+        if (!parsedDisposition.success || typeof rawArguments.completed !== "boolean" ||
+            ((parsedDisposition.data === "completed") !== rawArguments.completed)) {
+          throw new MalformedProposalFailure(terminalError("provider_protocol_error", "Finish requires a matching explicit completion disposition", "agent.tool"));
+        }
+        completionDisposition = parsedDisposition.data;
+        delete rawArguments.completionDisposition;
+      }
       const actionCandidate = SafeAgentActionSchema.safeParse({
-        ...(argumentsValue && typeof argumentsValue === "object" && !Array.isArray(argumentsValue) ? argumentsValue : {}),
+        ...rawArguments,
         kind: admission.toolName,
         toolCallId: admission.normalizedId,
         observationRevision: admission.observationRevision,
@@ -525,6 +586,9 @@ export class SerializedSafeToolExecutor implements AgentToolExecutor {
         throw new MalformedProposalFailure(terminalError("provider_protocol_error", "Tool identity changed after admission", "agent.tool"));
       }
       this.#policy.assertAction(action, this.#observation, surface);
+      if (action.kind === "finish" && completionDisposition === "policy_refused") {
+        this.#finished = { completed: false, completionDisposition, summary: action.summary };
+      }
       const fingerprint = semanticActionFailureFingerprint(action, this.#observation);
       if (fingerprint !== null) {
         const previousFailureCount = this.#semanticFailures.get(fingerprint);
@@ -540,6 +604,7 @@ export class SerializedSafeToolExecutor implements AgentToolExecutor {
     }
 
     const semanticFailureFingerprint = semanticActionFailureFingerprint(action, this.#observation);
+    const previousDocumentLocation = this.#documentLocation(this.#observation.url);
     let rawResult: unknown;
     try {
       originalDispatch.disposition = "dispatched";
@@ -561,6 +626,12 @@ export class SerializedSafeToolExecutor implements AgentToolExecutor {
         const observation = UntrustedAgentObservationSchema.parse(result.observation);
         this.#policy.assertObservation(observation);
         this.#observation = observation;
+        if (action.kind === "navigate" || this.#documentLocation(observation.url) !== previousDocumentLocation) {
+          this.#documentTransitions += 1;
+        }
+      }
+      if (action.kind === "finish" && (result.tool !== "finish" || result.finishedBelief !== action.completed)) {
+        throw terminalError("target_evidence_lost", "Finish result did not preserve the explicit completion declaration", "agent.tool");
       }
     } catch (error) {
       throw new StagedExecutionFailure("post_dispatch_validation", error, semanticFailureFingerprint);
@@ -575,8 +646,12 @@ export class SerializedSafeToolExecutor implements AgentToolExecutor {
       );
     }
     if (result.tool === "finish" && result.finishedBelief !== null) {
-      this.#finished = { completed: result.finishedBelief, summary: result.summary };
+      if (completionDisposition === null) {
+        throw new StagedExecutionFailure("post_dispatch_validation", terminalError("provider_protocol_error", "Finish disposition was lost after validation", "agent.tool"));
+      }
+      this.#finished = { completed: result.finishedBelief, completionDisposition, summary: result.summary };
     }
+    this.#successfulToolCalls += 1;
     this.#completed.add(admission.providerCallId);
     await this.#emitCompleted(admission, {
       tool: action.kind,
@@ -588,22 +663,23 @@ export class SerializedSafeToolExecutor implements AgentToolExecutor {
   }
 
   async #awaitInFlightSettlement(operation: Promise<unknown>, parent: AbortSignal): Promise<OperationSettlement | null> {
-    if (parent.aborted) return null;
     return new Promise((resolve) => {
       let settled = false;
       const finish = (value: OperationSettlement | null) => {
         if (settled) return;
         settled = true;
+        clearTimeout(timer);
         parent.removeEventListener("abort", onAbort);
         resolve(value);
       };
       const onAbort = () => finish(null);
-      parent.addEventListener("abort", onAbort, { once: true });
-      if (parent.aborted) onAbort();
       operation.then(
         (value) => finish({ status: "fulfilled", value }),
         (error) => finish({ status: "rejected", error }),
       );
+      const timer = setTimeout(() => finish({ status: "unsettled" }), POST_TIMEOUT_SETTLEMENT_GRACE_MS);
+      parent.addEventListener("abort", onAbort, { once: true });
+      if (parent.aborted) onAbort();
     });
   }
 
@@ -639,6 +715,12 @@ export class SerializedSafeToolExecutor implements AgentToolExecutor {
       if (inFlight.operation !== null) await this.#awaitInFlightSettlement(inFlight.operation, parent);
       return false;
     }
+  }
+
+  #documentLocation(url: string): string {
+    const parsed = new URL(url);
+    parsed.hash = "";
+    return parsed.href;
   }
 
   #recordEquivalentFailure(fingerprint: string): TrustedRuntimeFailurePolicy {
