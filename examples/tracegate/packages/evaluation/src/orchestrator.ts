@@ -57,6 +57,7 @@ export class FunctionalEvaluationExecutor {
     }
 
     const results: Array<RunExecutionResult | undefined> = new Array(runs.length);
+    const runFailures = new Map<number, SystemicFailure>();
     const active = new Map<number, Promise<SettledRun>>();
     let next = 0;
     let systemicFailure: SystemicFailure | null = null;
@@ -64,10 +65,13 @@ export class FunctionalEvaluationExecutor {
     const noteSystemicFailure = (failure: SystemicFailure): void => {
       systemicFailure ??= failure;
     };
+    const noteRunFailure = (index: number, failure: SystemicFailure): void => {
+      if (!runFailures.has(index)) runFailures.set(index, failure);
+    };
     const acceptSettled = (settled: SettledRun): void => {
       active.delete(settled.index);
       if (settled.error !== undefined) {
-        noteSystemicFailure({
+        noteRunFailure(settled.index, {
           phase: "evaluation_execution",
           message: "A run could not persist a trustworthy terminal state.",
         });
@@ -75,26 +79,38 @@ export class FunctionalEvaluationExecutor {
       }
       const result = settled.result;
       if (result === undefined) {
-        noteSystemicFailure({
+        noteRunFailure(settled.index, {
           phase: "evaluation_execution",
           message: "A run executor returned without a result.",
         });
         return;
       }
-      results[settled.index] = result;
       if (!result.terminalized || result.run === null) {
-        noteSystemicFailure({
+        noteRunFailure(settled.index, {
           phase: "evaluation_cleanup",
           message: "A dispatched run could not confirm lease-safe terminal cleanup.",
         });
         return;
       }
       if (result.run.id !== runs[settled.index]?.id || result.run.evaluationId !== evaluation.id) {
-        noteSystemicFailure({
+        noteRunFailure(settled.index, {
           phase: "evaluation_execution",
           message: "A run executor returned a terminal record for the wrong run.",
         });
+        return;
       }
+      if (result.run.status !== "completed" || result.run.outcome === null) {
+        if (signal.aborted && result.run.status === "cancelled") {
+          results[settled.index] = result;
+          return;
+        }
+        noteRunFailure(settled.index, {
+          phase: "evaluation_execution",
+          message: "A run executor returned without a completed durable outcome.",
+        });
+        return;
+      }
+      results[settled.index] = result;
     };
     const drainActive = async (): Promise<void> => {
       while (active.size > 0) acceptSettled(await Promise.race(active.values()));
@@ -150,6 +166,23 @@ export class FunctionalEvaluationExecutor {
       return this.#failEvaluation(evaluation, completeResults, systemicFailure);
     }
 
+    if (signal.aborted) {
+      if (!await this.#evaluations.compareAndSetStatus(evaluation.id, "running", "cancelling", {}, AbortSignal.timeout(5_000))) {
+        throw new Error("evaluation cancellation start lost compare-and-set");
+      }
+      if (!await this.#evaluations.compareAndSetStatus(evaluation.id, "cancelling", "cancelled", {
+        finishedAt: this.#clock.nowIso(),
+      }, AbortSignal.timeout(5_000))) {
+        throw new Error("evaluation cancellation completion lost compare-and-set");
+      }
+      return {
+        evaluation: await this.#evaluations.get(evaluation.id, AbortSignal.timeout(5_000)),
+        runs: completeResults,
+        aggregate: null,
+        completed: false,
+      };
+    }
+
     const hasCompleteConfiguredSample = results.every((result, index) =>
       result !== undefined
       && result.terminalized
@@ -177,24 +210,9 @@ export class FunctionalEvaluationExecutor {
       };
     }
 
-    if (signal.aborted) {
-      if (!await this.#evaluations.compareAndSetStatus(evaluation.id, "running", "cancelling", {}, AbortSignal.timeout(5_000))) {
-        throw new Error("evaluation cancellation start lost compare-and-set");
-      }
-      if (!await this.#evaluations.compareAndSetStatus(evaluation.id, "cancelling", "cancelled", {
-        finishedAt: this.#clock.nowIso(),
-      }, AbortSignal.timeout(5_000))) {
-        throw new Error("evaluation cancellation completion lost compare-and-set");
-      }
-      return {
-        evaluation: await this.#evaluations.get(evaluation.id, AbortSignal.timeout(5_000)),
-        runs: completeResults,
-        aggregate: null,
-        completed: false,
-      };
-    }
-
-    return this.#failEvaluation(evaluation, completeResults, {
+    const lowestFailedIndex = runs.findIndex((_run, index) => runFailures.has(index) || results[index] === undefined);
+    const selectedFailure = lowestFailedIndex >= 0 ? runFailures.get(lowestFailedIndex) : undefined;
+    return this.#failEvaluation(evaluation, completeResults, selectedFailure ?? {
       phase: "evaluation_execution",
       message: "At least one configured run did not reach a durable terminal state.",
     });

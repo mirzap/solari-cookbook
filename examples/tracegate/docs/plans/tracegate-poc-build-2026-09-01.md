@@ -2,7 +2,7 @@
 
 **Source of truth:** 2026-09-01
 **Product boundary:** local functional proof of concept
-**Current status:** TG-004R and the initial F1/F2 lane implementations are integrated; runnable composition and first-class configured MCP are the active checkpoint
+**Current status:** P0 lane code is integrated through A `647e4dd`, C `ef7e1fb`, B `e478598`, and D `443c5e7`; production build and clean-DB checks pass, but the pre-provider checkpoint is blocked by a D-owned concurrent grade-attribution defect
 
 ## 1. Product outcome
 
@@ -25,7 +25,7 @@ Supported assertions are:
 - accessibility-semantic role/name/count checks;
 - checked, selected, expanded, disabled, or bounded non-sensitive value state.
 
-TraceGate runs real isolated Solari Browser sessions through the verified DeepSeek/OpenRouter path. It can use semantic/accessibility UI, page WebMCP, developer-configured MCP, `llms.txt`, JSON-LD, and visual fallback through bounded untrusted adapters. It captures fresh browser evidence after action execution stops, grades deterministically, persists local results, streams live state, explains divergence, and reports interface usage and repeatability.
+TraceGate is designed to run isolated Solari Browser sessions through the DeepSeek/OpenRouter path. The implemented agent surfaces are semantic/accessibility UI, page WebMCP, and developer-configured MCP through bounded untrusted adapters. `llms.txt` and JSON-LD are discovery-only readiness signals in this POC; they are not provided to the agent. Visual fallback is not implemented as a functional agent path. TraceGate captures fresh browser evidence after action execution stops, grades deterministically, persists local results, streams live state, explains divergence, and reports interface usage and repeatability. Real-provider validation remains pending at the current checkpoint.
 
 A **PASS** means only that every declared browser-observable assertion was true in the accepted fresh capture. It is not proof of arbitrary backend state, durable external effects, identity, authorization, payment, publication, or business truth.
 
@@ -75,8 +75,11 @@ Measured evidence is append-only in meaning. No historical result may be relabel
 - Demo Store only as a deterministic positive/adversarial fixture;
 - page WebMCP discovery/invocation with explicit user opt-in, capability admission, and semantic fallback;
 - explicitly configured unauthenticated MCP over loopback HTTP or HTTPS Streamable HTTP with endpoint/tool allowlists;
-- `llms.txt`, JSON-LD, semantic/accessibility UI, and bounded visual fallback;
+- semantic/accessibility UI plus implemented page WebMCP and configured-MCP paths;
+- discovery-only `llms.txt` and JSON-LD readiness signals, explicitly not agent inputs;
 - per-interface discovery, admission, invocation, success, and failure metrics.
+
+Visual fallback, replay availability, and optional models are excluded from current functional capability claims. Compatibility schema values may remain readable but are not presented as verified product surfaces.
 
 ### Prohibited by the product policy
 
@@ -219,11 +222,12 @@ Outcome precedence:
 
 1. committed cancellation → CANCELLED;
 2. observed prohibited action/request → INCONCLUSIVE;
-3. missing, invalid, unstable, ambiguous, truncated, unsupported, or otherwise unverifiable required evidence → INCONCLUSIVE;
-4. complete fresh evidence with every assertion true → PASS;
-5. complete fresh evidence with any assertion false → FAIL.
+3. an explicit agent disposition of `policy_refused`, `blocked`, or `needs_input` → INCONCLUSIVE;
+4. missing, invalid, unstable, ambiguous, truncated, unsupported, or otherwise unverifiable required evidence → INCONCLUSIVE;
+5. complete fresh evidence with every assertion true → PASS;
+6. complete fresh evidence with any assertion false → FAIL.
 
-Model summaries and beliefs never influence grading.
+The persisted deterministic grade is authoritative. Model summaries, assertion truth viewed in isolation, terminal UI state, and completion belief never rewrite PASS/FAIL/INCONCLUSIVE. A policy refusal cannot grade as success.
 
 ## 9. Persistence, API, SSE, and UI
 
@@ -282,30 +286,34 @@ Before the integration freeze, Agent B runs one bounded real public-site safety 
 ### F2 — Parallel functional slices
 
 - **Agent A — evaluation/grading/integration:** `packages/evaluation`, `packages/grading`, shared fixes only for concrete contract defects, root integration, lockfile, and manual composition inspection. Implement atomic submission, one-evaluation queue, executor, precedence, aggregates, finally cleanup, interface modes, and metrics.
-- **Agent B — browser/discovery/fixture:** `packages/solari`, `packages/discovery`, `apps/demo`, and browser-safety evidence. Implement provider/controller lifecycle, exact-origin/practical request guards, semantic observations, page WebMCP discovery/invocation, fresh capture, visual fallback, and fixture-only Demo support.
+- **Agent B — browser/discovery/fixture:** `packages/solari`, `packages/discovery`, `apps/demo`, and browser-safety evidence. Implement provider/controller lifecycle, exact-origin/practical request guards, semantic observations, page WebMCP discovery/invocation, fresh capture, discovery-only readiness signals, and fixture-only Demo support. Visual fallback is not part of the current functional path.
 - **Agent C — AI/agent:** `packages/ai`, `packages/agent`, and model evidence. Implement the pinned DeepSeek/OpenRouter adapter, assertion-blind prompt layers, dynamic safe tools including only admitted sanitized read-only WebMCP calls, FIFO/current-revision checks, budgets, cancellation, and bounded event mapping.
 - **Agent D — data/product UI:** `packages/db`, `packages/ui`, `apps/web`, and persistence/UI evidence. Implement clean V2 migration/repositories, loopback API, snapshot/SSE, configure/live/report UI, and separate agent trace versus grading report.
 
-### F2C — Runnable readiness composition
+### F2C / P0 — Runnable readiness composition — code integrated, pre-provider gate blocked
 
-- **A:** root env/dev/build/start/DB wiring; shared interface modes, configured-MCP contracts, and interface metrics.
-- **B:** page WebMCP plus semantic/accessibility, `llms.txt`, JSON-LD, and visual browser paths.
-- **C:** configured MCP Streamable HTTP client/adapter, local read-only tool admission, per-run lifecycle cleanup through `SafeAgentToolRuntime.close`, and metric emission.
-- **D:** compose real A/B/C constructors; expose interface configuration and developer-readable readiness/live/results UI; repair production DB migration packaging.
+- **A:** shared prompt/network/completion/queue contracts landed at `647e4dd`; evaluation now merges closed discovery/provider warnings and continues safely runnable peer runs after an individual run error while selecting the lowest configured failed index deterministically.
+- **B:** browser/discovery stabilization landed at `e478598`, including shared public-network classification, assertion-only capture, policy causality, and discovery-only metadata.
+- **C:** agent/provider/configured-MCP stabilization landed at `ef7e1fb`, including explicit completion dispositions, bounded provider warnings, shared destination admission before requests, and exhaustive cleanup attempts.
+- **D:** persistence/product UI stabilization landed at `443c5e7`, including queue reservation consumption, DB packaging, API Host checks, projections, and primary product copy.
 
-A build is not a runnable checkpoint until the loopback production server, health API, clean DB migration, and one manual evaluation flow work without fixtures or hard-coded outcomes.
+Verified on 2026-09-02: frozen install, all eleven production package builds, clean temporary-DB migration/check, built-server startup, health/capabilities reads, bounded missing-evaluation response, product-shell render, and hostile-Host rejection. No automated tests or real provider sessions were run.
 
-### F3 — One real run
+**Blocking D-owned defect:** `PersistingGrader` binds a single `RunId` by `evidenceHash`. Concurrent independent runs may legitimately produce the same hash, causing overwrite/deletion and cross-run grade milestone attribution or grading failure. D must replace content-hash identity with a run-scoped/invocation-scoped binding before the pre-provider gate can pass. Agent A must not edit that path.
 
-Compose all four lanes and complete one public HTTPS task through real Solari and the verified DeepSeek model. Require fresh evidence, deterministic grade, durable snapshot/report, live UI updates, and acknowledged-session release.
+Additional D-owned integration risks remain open: semantic interface readiness can be `0/0` while `inspect`/`scroll` terminal activity is classified as semantic invocation, and shutdown can race an in-flight pre-persistence reservation. These require D ownership review. A build alone is not a provider-ready checkpoint.
 
-### F4 — Repeated runs/report
+### F3 — One real run — deferred / blocked
 
-Run a bounded repeated evaluation, verify no duplicate runs or shared session state, recalculate raw counts and denominators from persisted rows, and show truthful PASS/FAIL/INCONCLUSIVE reporting.
+Do not begin until the D-owned repeated-run grade-attribution blocker and other pre-provider lifecycle issues are corrected and the production gate is rerun. Then compose all four lanes and complete one public HTTPS task through real Solari and the configured DeepSeek model. Require fresh evidence, deterministic grade, durable snapshot/report, live UI updates, and acknowledged-session release.
 
-### F5 — Functional verification
+### F4 — Repeated runs/report — deferred / blocked
 
-Run workspace typecheck/build, clean-DB migration, manual local UI/API flow, one real credentialed run, repeated-run aggregation, refresh/reconnect, assertion non-flow inspection, Demo-independence scan, redaction review, cancellation, and cleanup audit. Automated-test work remains paused by user directive.
+After F3, run a bounded repeated evaluation, verify no duplicate runs or shared session state, recalculate raw counts and denominators from persisted rows, and show truthful PASS/FAIL/INCONCLUSIVE reporting. Identical assertion-evidence hashes across runs must remain correctly attributed.
+
+### F5 — Functional verification — deferred
+
+After F3/F4, run production builds, clean-DB migration, manual local UI/API flow, one real credentialed run, repeated-run aggregation, refresh/reconnect, assertion non-flow inspection, Demo-independence scan, redaction review, cancellation, and cleanup audit. Automated-test work remains paused by user directive.
 
 ## 11. Current verification commands
 
@@ -313,15 +321,15 @@ The current user directive prohibits creating, modifying, or running automated t
 
 ```bash
 cd examples/tracegate
-pnpm env:check
-pnpm typecheck
-pnpm build
-pnpm db:generate
-pnpm db:migrate
-pnpm db:check
-pnpm dev                      # manual loopback UI/API inspection
-pnpm start                    # manual built-server/UI/API inspection
+mise exec -- pnpm install --frozen-lockfile
+mise exec -- pnpm env:check
+mise exec -- pnpm build       # production build graph; excludes @tracegate/e2e
+DATABASE_URL=file:/tmp/tracegate-p0.db mise exec -- pnpm db:migrate
+DATABASE_URL=file:/tmp/tracegate-p0.db mise exec -- pnpm db:check
+DATABASE_URL=file:/tmp/tracegate-p0-server.db mise exec -- pnpm start
 ```
+
+Package `typecheck` scripts currently include paused automated-test sources in some workspaces, so they are not checkpoint evidence while the test prohibition is active. Production `build` configurations are the compile authority for this phase. Do not run `db:generate` unless an intentional schema change requires it.
 
 Manual inspection must verify a clean DB, health/configure/snapshot/report/trace/SSE behavior, real interface selection and usage metrics, honest failure output, cleanup, and one credentialed Solari/DeepSeek run. No fixture output or hard-coded result may satisfy F3.
 
@@ -369,4 +377,4 @@ Paths remain exclusive:
 
 No agent edits, stages, formats, resets, or commits another lane’s WIP. Shared changes go through Agent A and require a concrete cross-lane contract reason. Only Agent A regenerates `pnpm-lock.yaml`, after manifests settle, using Node `26.1.0` and global pnpm `12.0.0`.
 
-The immediate action is **F2C runnable readiness composition**: D composes the real package surfaces and fixes production migration packaging while B finishes page WebMCP, C adds configured MCP, and A supplies root wiring/shared modes/metrics. F3 begins only after manual loopback UI/API/DB inspection is green.
+The immediate action is a **D-owned P0 correction checkpoint**: replace evidence-hash-as-run-identity in `PersistingGrader`, reconcile semantic readiness with semantic invocation classification, and close the submission/shutdown race without weakening queue reservation ordering. Agent A then reruns the production build, clean DB, and safe loopback gate. F3 remains blocked until that checkpoint is green; no real provider validation is ready.

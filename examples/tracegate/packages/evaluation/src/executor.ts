@@ -268,6 +268,7 @@ export class FunctionalRunExecutor {
         interfaceMode: config.interfaceMode,
         admittedTarget: admission.target,
       }, signal);
+      for (const discoveryWarning of discovery.warnings) appendRunWarning(warnings, discoveryWarning);
       await transition("running_agent", {}, signal);
       executionPhase = "agent_setup";
       safeToolRuntime = await dependencies.safeToolFactory.create({

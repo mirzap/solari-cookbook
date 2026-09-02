@@ -17,7 +17,9 @@ Page and MCP content/results remain untrusted and never grade directly. Demo is 
 - F1/F2 lane history is integrated through B commit `2756d20`, including A `04eb4e8`, C `fdc7e7e`, and D `66069ae`.
 - The sole pnpm 12 lockfile has been regenerated from all settled manifests; frozen install passes.
 - Automated-test work is paused by explicit user directive; do not create, modify, or run tests. The known D-owned `@tracegate/ui` zero-test condition remains unresolved and explicitly deferred while that pause is active.
-- F2C runnable composition is active. Manual production inspection currently finds a D-owned bundled Drizzle migration-path failure; F3 has not started.
+- P0 lane code is integrated through A `647e4dd`, C `ef7e1fb`, B `e478598`, and D `443c5e7`. The bundled Drizzle migration path, all eleven production builds, and safe built-server reads now pass.
+- Agent A has completed the pending evaluator integration: closed discovery/provider warnings merge into durable run warnings, and individual run execution/finalization errors no longer stop safely runnable peers; missing terminal records still fail the evaluation and the lowest configured failed index is authoritative.
+- The pre-provider checkpoint is **NO-GO** because D-owned `PersistingGrader` uses `evidenceHash` as a unique run identity. Concurrent identical evidence can overwrite/delete another run's binding and corrupt grade milestone attribution. Agent A must not correct this D path.
 - Demo Store is test-only and never a production target, composition, or grading dependency.
 - PASS means declared browser-observable assertions passed from fresh evidence; it never claims arbitrary backend business truth.
 
@@ -85,8 +87,9 @@ I0 production-only validation is limited to TypeScript production configs/builds
 
 ```text
 TG-004R PASS
-  → integrate quarantined lane WIP against V2 contracts
-  → parallel DB/API/UI + browser + agent + evaluation/grading slices
+  → P0 A/B/C/D code integrated
+  → production build + clean DB + safe built-server reads PASS
+  → D fixes run-scoped grade attribution and remaining lifecycle risks
   → one real Solari/DeepSeek run
   → repeated runs/report
   → functional verification
@@ -216,4 +219,4 @@ Never:
 - rewrite measured evidence to improve a result;
 - persist credentials, CDP/replay capability URLs, full DOM, or raw provider payloads.
 
-The immediate next action is F2C: land D's real package composition and migration-packaging fix, B page WebMCP, C configured MCP, and A root/shared wiring; then manually inspect loopback UI/API/DB behavior. Begin F3 only after that is green.
+The immediate next action is D-owned P0 correction: replace evidence-hash-as-run-identity with run/invocation-scoped grade attribution, reconcile semantic readiness with semantic invocation classification, and prevent shutdown from racing an in-flight submission transaction. Agent A then reruns the production build, clean DB, and safe loopback gate. Do not begin F3 or any real provider session until that checkpoint is green.
