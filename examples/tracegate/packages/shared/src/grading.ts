@@ -9,6 +9,7 @@ import { FailureRecordSchema } from "./errors.ts";
 import { EvidenceHashSchema, UtcDateTimeSchema } from "./ids.ts";
 import { SafetyPolicyVersionV1Schema } from "./policy.ts";
 import { RunOutcomeSchema } from "./states.ts";
+import { AgentCompletionDispositionSchema } from "./completion.ts";
 
 export const GradeAssertionStatusSchema = z.enum(["passed", "failed", "unverifiable"]);
 
@@ -47,6 +48,7 @@ export const GradeInputV2Schema = z.object({
   assertions: AssertionSetV1Schema,
   transient: TransientCanonicalCaptureV1Schema.optional(),
   evidence: BrowserAssertionEvidenceV1Schema,
+  agentCompletionDisposition: AgentCompletionDispositionSchema.default("completed"),
 }).strict().superRefine((value, context) => {
   const expected = value.assertions.map((assertion) => assertion.id);
   const actual = value.evidence.assertions.map((item) => item.assertionId);
@@ -67,6 +69,7 @@ export const GradeInputV2Schema = z.object({
 export const UniversalDispositionSchema = z.enum(["cancelled", "passed", "failed", "inconclusive"]);
 export const UniversalPrecedenceInputSchema = z.object({
   cancellationCommitted: z.boolean(),
+  agentCompletionDisposition: AgentCompletionDispositionSchema.default("completed"),
   prohibitedActivity: z.boolean(),
   evidenceValid: z.boolean(),
   assertionStatuses: z.array(GradeAssertionStatusSchema).min(1).max(20),
@@ -76,6 +79,7 @@ export function resolveUniversalDisposition(input: z.input<typeof UniversalPrece
   const value = UniversalPrecedenceInputSchema.parse(input);
   if (value.cancellationCommitted) return "cancelled";
   if (value.prohibitedActivity) return "inconclusive";
+  if (value.agentCompletionDisposition !== "completed") return "inconclusive";
   if (!value.evidenceValid || value.assertionStatuses.includes("unverifiable")) return "inconclusive";
   if (value.assertionStatuses.includes("failed")) return "failed";
   return "passed";

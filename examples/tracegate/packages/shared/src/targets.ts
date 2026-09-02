@@ -1,13 +1,16 @@
 import { z } from "zod";
 import { UtcDateTimeSchema } from "./ids.ts";
-
-const IP_LITERAL = /^(?:\d{1,3}(?:\.\d{1,3}){3}|\[?[0-9a-f:]+\]?)$/i;
+import { classifyNetworkHostname } from "./network-safety.ts";
 
 export const PublicHttpsUrlSchema = z.url().max(2_048).superRefine((value, context) => {
   const url = new URL(value);
   if (url.protocol !== "https:") context.addIssue({ code: "custom", message: "must use HTTPS" });
   if (url.username || url.password) context.addIssue({ code: "custom", message: "credentials are forbidden" });
-  if (IP_LITERAL.test(url.hostname)) context.addIssue({ code: "custom", message: "IP-literal targets require admission rejection" });
+  const hostnameClassification = classifyNetworkHostname(url.hostname);
+  if (hostnameClassification === "ip_literal") context.addIssue({ code: "custom", message: "IP-literal targets require admission rejection" });
+  if (hostnameClassification === "loopback_name" || hostnameClassification === "forbidden_special_name") {
+    context.addIssue({ code: "custom", message: "special-use target hostnames are forbidden" });
+  }
 }).brand<"PublicHttpsUrl">();
 
 export const PublicHttpsOriginSchema = z.string().max(300).superRefine((value, context) => {
@@ -21,7 +24,11 @@ export const PublicHttpsOriginSchema = z.string().max(300).superRefine((value, c
   if (url.origin !== value || url.pathname !== "/" || url.search || url.hash) {
     context.addIssue({ code: "custom", message: "must be a canonical exact origin" });
   }
-  if (IP_LITERAL.test(url.hostname)) context.addIssue({ code: "custom", message: "IP-literal origins are forbidden" });
+  const hostnameClassification = classifyNetworkHostname(url.hostname);
+  if (hostnameClassification === "ip_literal") context.addIssue({ code: "custom", message: "IP-literal origins are forbidden" });
+  if (hostnameClassification === "loopback_name" || hostnameClassification === "forbidden_special_name") {
+    context.addIssue({ code: "custom", message: "special-use origin hostnames are forbidden" });
+  }
 }).brand<"PublicHttpsOrigin">();
 
 export const PublicEvaluationTargetV2Schema = z.object({

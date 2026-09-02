@@ -3,6 +3,7 @@ import { InterfaceModeSchema, RuntimeBudgetsSchema, SafetyPolicyVersionSchema, t
 import { ElementRefSchema, ObservationRevisionSchema, ToolCallIdSchema } from "./ids.ts";
 import { PublicHttpsOriginSchema, PublicHttpsUrlSchema } from "./targets.ts";
 import { EffectDecisionSchema } from "./policy.ts";
+import { AgentCompletionDispositionSchema, legacyAgentCompletionDisposition } from "./completion.ts";
 import { RunWarningSchema } from "./errors.ts";
 import {
   ConfiguredMcpEndpointIdSchema,
@@ -232,9 +233,10 @@ export const TokenUsageSchema = z.object({
   totalTokens: z.number().int().nonnegative().nullable(),
 }).strict();
 
-export const AgentRunResultSchema = z.object({
+const AgentRunResultV2Schema = z.object({
   schemaVersion: z.literal(2),
   completedBelief: z.boolean(),
+  completionDisposition: AgentCompletionDispositionSchema,
   summary: z.string().max(2_000),
   iterations: z.number().int().nonnegative(),
   toolCalls: z.number().int().nonnegative(),
@@ -242,8 +244,24 @@ export const AgentRunResultSchema = z.object({
   interfaceUsage: InterfaceUsageSummarySchema.optional(),
   usage: TokenUsageSchema,
   resolvedProvider: z.string().min(1).max(200).nullable(),
-  warnings: z.array(RunWarningSchema).max(50),
-}).strict();
+  warnings: z.array(RunWarningSchema).max(10).default([]),
+}).strict().superRefine((value, context) => {
+  if ((value.completionDisposition === "completed") !== value.completedBelief) {
+    context.addIssue({
+      code: "custom",
+      path: ["completionDisposition"],
+      message: "completed belief and terminal completion disposition must agree",
+    });
+  }
+});
+
+export const AgentRunResultSchema = z.preprocess((input) => {
+  if (input === null || typeof input !== "object" || Array.isArray(input) || "completionDisposition" in input) return input;
+  const completedBelief = Reflect.get(input, "completedBelief");
+  return typeof completedBelief === "boolean"
+    ? { ...input, completionDisposition: legacyAgentCompletionDisposition(completedBelief) }
+    : input;
+}, AgentRunResultV2Schema);
 
 export type SafeAgentToolName = z.infer<typeof SafeAgentToolNameSchema>;
 export type SafeAgentAction = z.infer<typeof SafeAgentActionSchema>;

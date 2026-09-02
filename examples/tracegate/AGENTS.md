@@ -21,6 +21,66 @@ Page and MCP content/results remain untrusted and never grade directly. Demo is 
 - Demo Store is test-only and never a production target, composition, or grading dependency.
 - PASS means declared browser-observable assertions passed from fresh evidence; it never claims arbitrary backend business truth.
 
+## Integration Checkpoint I0 workstream gate (2026-09-02)
+
+This is an Agent A workstream checkpoint only. It does not advance the authoritative plan, F3, or any product capability claim. External/provider validation remains blocked until the downstream handoffs below land and the later whole-workspace production gate is observed.
+
+### Prompt admission contract and D handoff
+
+`classifyPromptAdmission(...)` is the sole deterministic, model-independent prompt-admission classifier. `PublicEvaluationConfigV2Schema` invokes it, so prohibited requested effects fail validation before persistence even if a caller omits the explicit server check. Decisions contain only a closed code and static product-safe message; prompt text is never copied into the decision.
+
+Closed rejection codes are:
+
+- `messaging_or_submission_requested` for send/message/submit/publish effects;
+- `authentication_or_account_creation_requested` for signup/login/authentication effects;
+- `financial_transaction_requested` for purchase/payment/checkout/booking/trading/donation effects;
+- `destructive_action_requested` for deletion, cancellation, unsubscribe, or account/data-changing effects;
+- `file_transfer_or_permission_requested` for upload/download/install/import/export or device-permission effects;
+- `sensitive_data_requested` for credential or sensitive-personal-data entry/collection;
+- `prompt_out_of_bounds` for input outside the 1–1,000 character contract.
+
+Safe surface inspection is distinct from requesting an effect. Phrases such as `open the contact page without sending anything`, `open the registration page`, and other explicit page/screen/form inspection remain admissible. Immediate negation is bounded and lexical; it never delegates policy classification to a model.
+
+**D must:** call `classifyPromptAdmission(raw.prompt)` before queue reservation or repository access so it can map a rejection to `unsafe_prompt_rejected` with the returned static message; retain schema parsing as defense in depth; create no evaluation/run/event row and publish no SSE event for a rejection. D must not add target-specific exceptions or infer safety from assertions.
+
+### Completion disposition and grading handoff
+
+`AgentCompletionDisposition` is closed to `completed | policy_refused | blocked | needs_input`. `resolveRunCompletionDisposition(...)` maps only `completed` to `gradable`; every other value maps to `blocked` with required outcome `inconclusive`. Legacy `AgentRunResult` values are read conservatively: `completedBelief: true` becomes `completed`, while `false` becomes `blocked`. `completedBelief` and `completionDisposition` must agree.
+
+The deterministic grader is authoritative. A non-completed disposition produces overall `INCONCLUSIVE` with one of `agent_policy_refused`, `agent_blocked`, or `agent_needs_input`, even when unrelated fresh assertion evidence was already true. Genuine captured assertion projections may remain visible as evidence, but neither a producer nor a projection may rewrite the run to PASS or FAIL. Browser policy evidence retains precedence as `unsafe_action_blocked` when a fatal browser policy event is present.
+
+**C must:** extend its finish proposal/runner state with an explicit closed disposition; emit `completed` only with `completed: true`; require `policy_refused`, `blocked`, or `needs_input` with `completed: false`; never infer disposition from free-form summaries. Every `AgentRunResult` must carry the explicit disposition after C adopts the contract.
+
+**D must:** treat persisted `GradeResultV2.outcome` and its closed failure as authoritative. It must render the three agent non-completion failures as inconclusive/blocked evidence, never as task success, and must not use `completedBelief`, assertion truth, summary text, or a terminal UI pipeline alone to infer PASS/FAIL.
+
+### Provider-warning handoff to C
+
+`AgentRunResult.warnings` defaults to `[]` and is capped at 10. C may emit only closed `RunWarning` values with static bounded messages: missing provider identity → `unknown_provider_event`; missing or inconsistent usage → `usage_unavailable`. Provider payloads, IDs, headers, causes, and arbitrary error text are forbidden. These warnings never change browser evidence or deterministic grade. A's run executor deduplicates them by `(code, phase, message)`, merges them into the existing run-warning collection, and retains the run-level cap of 50.
+
+### Synchronous queue reservation handoff to D
+
+`OneEvaluationQueue.reserve(evaluationId, execute)` is synchronous. It occupies one active-or-pending slot immediately and throws typed `EvaluationQueueFullError` (`code: evaluation_queue_full`) or `DuplicateEvaluationJobError` (`code: duplicate_evaluation_job`) before any await. Duplicate detection includes active, committed pending, and uncommitted reserved IDs. Queue state exposes reservations separately as `reservedEvaluationIds`; they are not durable evaluations.
+
+A reservation is single-use. `commit()` synchronously moves a still-reserved job into runnable FIFO state and returns its result promise; a second/late commit throws `EvaluationQueueReservationStateError`. `release()` frees only an uncommitted reservation and is idempotent/no-op after commit. `cancel()` aborts an active job, rejects a committed pending job with `AbortError`, or marks an uncommitted reservation `cancelled` without running it. `idle()` includes uncommitted reservations. `enqueue()` remains the compatibility wrapper and preserves promise rejection for admission failures.
+
+**D must use this exact order:** validate prompt/config/capabilities → construct evaluation and runs in memory → synchronously reserve → attempt the atomic submission transaction → release on transaction failure → publish only committed queued events → commit the held reservation → attach asynchronous job failure handling. Queue-full/duplicate admission maps to bounded HTTP 409 with no rows/events. Shutdown releases uncommitted reservations; it must not turn a never-started shutdown reservation into a failed durable evaluation. Safely persisted queued evaluations remain recoverable.
+
+### Network classifier handoffs to B and C
+
+`classifyNetworkHostname(...)` and `classifyResolvedIp(...)` are the only shared structural classifiers. They are pure, perform no DNS, import no Node APIs, normalize case/bracketed IPv6, classify IPv4-mapped IPv6 by its embedded address, and close over loopback, private, link-local, unspecified, multicast, documentation/reserved, carrier-grade NAT, and public ranges.
+
+**B must:** replace local hostname/IP range logic in public target admission. Public HTTPS admission requires `public_dns_name`, at least one resolved A/AAAA answer, and every answer classified `public`. Preserve exact-origin navigation semantics, best-effort DNS evidence, redaction, and all existing recovery/cleanup contracts.
+
+**C must:** use the same helpers before every configured-MCP network request. Explicit loopback permits only `localhost`, `127.0.0.1`, or `::1` and requires all hostname answers to be loopback. Public HTTPS requires `public_dns_name`, a nonempty answer set, and every answer `public`. Reject mixed/public-private results before `fetch`; retain `redirect: "error"`, no authentication headers, bounded safe errors, and the documented no-DNS-pinning limitation.
+
+### Reconfirmed post-I0 orchestration and event invariants
+
+I0 does not claim the independent-run orchestration change complete. At its later A integration step, an individual run execution/finalization error is recorded by configured run index and must not stop safely runnable peers; only cancellation or an evaluation-systemic capacity/control-plane failure stops new dispatch. Active work drains, missing durable terminal records fail the evaluation without fabricated run outcomes, and the selected evaluation failure is the lowest configured failed index rather than promise-settlement order.
+
+The shared event contract is unchanged: sort by numeric cursor; first `run.tool.completed` per `(runId, toolCallId)` wins; `run.tool.started` is trace-only; `resolveToolDispatchDisposition(...)`, `toolCompletionInterfaceUsageDelta(...)`, and `toolCompletionBrowserActionDelta(...)` are authoritative; a legacy success proves dispatch while a legacy failure is `legacy_unclassified`; never infer dispatch, invocation, browser action, or outcome from starts, names, summaries, durations, or arbitrary text. C produces these terminal facts and D consumes them exactly as specified in the existing handoff below.
+
+I0 production-only validation is limited to TypeScript production configs/builds and static review. No automated test may be created, changed, compiled as claimed evidence, or run. The package `typecheck` script currently includes paused test sources; any unrelated test-source compile failure is recorded as a blocker rather than fixed in this workstream.
+
 ## Short critical path
 
 ```text

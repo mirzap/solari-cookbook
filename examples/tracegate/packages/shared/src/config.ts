@@ -3,6 +3,7 @@ import { AssertionSetV1Schema, validateAssertionOrigins } from "./assertions.ts"
 import { ConfiguredMcpEndpointV1Schema } from "./mcp.ts";
 import { ModelIdSchema } from "./models.ts";
 import { PublicEvaluationTargetV2Schema } from "./targets.ts";
+import { classifyPromptAdmission } from "./prompt-admission.ts";
 
 export const InterfaceModeSchema = z.enum(["auto", "semantic-only", "mcp-preferred"]);
 export const SafetyPolicyVersionSchema = z.literal("public-safe-v1");
@@ -54,6 +55,10 @@ export const PublicEvaluationConfigV2Schema = z.object({
     maxTotalTokens: 100_000,
   }),
 }).strict().superRefine((value, context) => {
+  const promptAdmission = classifyPromptAdmission(value.prompt);
+  if (promptAdmission.decision === "reject") {
+    context.addIssue({ code: "custom", path: ["prompt"], message: promptAdmission.message });
+  }
   if (new Set(value.modelIds).size !== value.modelIds.length) {
     context.addIssue({ code: "custom", path: ["modelIds"], message: "model IDs must be unique" });
   }

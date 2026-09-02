@@ -1,4 +1,5 @@
 import {
+  AgentRunResultSchema,
   BrowserSessionSummarySchema,
   EventAppendInputSchema,
   FailureRecordSchema,
@@ -131,6 +132,12 @@ const terminalFailure = (
     causeChain: options.causeChain ?? [],
     policyCode: options.policyCode ?? null,
   }), options.potentialSessionLeak ?? false);
+};
+
+const appendRunWarning = (warnings: RunWarning[], candidate: RunWarning): void => {
+  if (warnings.length >= 50) return;
+  if (warnings.some((item) => item.code === candidate.code && item.phase === candidate.phase && item.message === candidate.message)) return;
+  warnings.push(candidate);
 };
 
 const warning = (code: RunWarning["code"], phase: string, message: string, retryable = false): RunWarning => RunWarningSchema.parse({
@@ -273,11 +280,12 @@ export class FunctionalRunExecutor {
       }, signal);
       const surface = await safeToolRuntime.tools.surface(initialObservation.revision, signal);
       executionPhase = "agent_execution";
-      agentResult = await dependencies.agent.run(
+      agentResult = AgentRunResultSchema.parse(await dependencies.agent.run(
         buildAgentExecutionInputV2(config, initialObservation, surface.tools),
         safeToolRuntime.tools,
         signal,
-      );
+      ));
+      for (const agentWarning of agentResult.warnings) appendRunWarning(warnings, agentWarning);
       await transition("grading", {}, signal);
       executionPhase = "assertion_capture";
       const captured = await dependencies.capture.capture(controller, { assertions: config.assertions }, signal);
@@ -286,6 +294,7 @@ export class FunctionalRunExecutor {
         assertions: config.assertions,
         transient: captured.transient,
         evidence: captured.evidence,
+        agentCompletionDisposition: agentResult.completionDisposition,
       }, signal);
       failure = grade.failure;
     } catch (error) {
@@ -321,14 +330,14 @@ export class FunctionalRunExecutor {
           try {
             await safeToolRuntime.close(AbortSignal.timeout(15_000));
           } catch (error) {
-            warnings.push(warning("cleanup_failed", "safe_tool_close", error instanceof Error ? error.message : "Safe tool runtime close failed.", true));
+            appendRunWarning(warnings, warning("cleanup_failed", "safe_tool_close", error instanceof Error ? error.message : "Safe tool runtime close failed.", true));
           }
         }
         if (controller !== null) {
           try {
             await controller.close(AbortSignal.timeout(15_000));
           } catch (error) {
-            warnings.push(warning("cleanup_failed", "browser_close", error instanceof Error ? error.message : "Controller close failed.", true));
+            appendRunWarning(warnings, warning("cleanup_failed", "browser_close", error instanceof Error ? error.message : "Controller close failed.", true));
           }
         }
         try {
@@ -341,7 +350,7 @@ export class FunctionalRunExecutor {
             warning: warning("cleanup_failed", "browser_release", error instanceof Error ? error.message : "Session release failed.", true),
           };
         }
-        if (release.warning !== null) warnings.push(release.warning);
+        if (release.warning !== null) appendRunWarning(warnings, release.warning);
         try {
           await dependencies.browserSessions.upsert(BrowserSessionSummarySchema.parse({
             schemaVersion: 2,
