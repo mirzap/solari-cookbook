@@ -916,6 +916,15 @@ export interface FunctionalRuntimeOptions {
   readonly maximumConcurrency?: number;
 }
 
+interface DurableCancellationAdmissionPort {
+  requestCancellation(evaluationId: EvaluationId, signal: AbortSignal): Promise<boolean>;
+}
+
+function durableCancellationAdmissionPort(value: unknown): DurableCancellationAdmissionPort | null {
+  if (typeof value !== "object" || value === null || !("requestCancellation" in value)) return null;
+  return typeof value.requestCancellation === "function" ? value as DurableCancellationAdmissionPort : null;
+}
+
 export class FunctionalTracegateRuntime {
   readonly #queue = new OneEvaluationQueue(0);
   readonly #registry = new RunRuntimeRegistry();
@@ -937,7 +946,7 @@ export class FunctionalTracegateRuntime {
     const capacity = new RuntimeCapacity(options.maximumConcurrency ?? 3);
     this.#server = serverFactory({
       reserve: (evaluation, runs) => this.reserve(evaluation, runs),
-      cancel: (evaluationId) => this.#queue.cancel(evaluationId),
+      cancel: (evaluationId, signal) => this.cancel(evaluationId, signal),
     });
     this.#evaluations = publishingEvaluationRepository(repositories.evaluations, this.#server, this.#ids, this.#clock);
     const webMcp = new SolariWebMcpReadOnlyAdapter();
@@ -973,6 +982,19 @@ export class FunctionalTracegateRuntime {
   }
 
   get server(): TracegateServer { return this.#server; }
+
+  async cancel(evaluationId: EvaluationId, signal: AbortSignal): Promise<boolean> {
+    if (this.#closing || this.#queue.state().activeEvaluationId !== evaluationId) return false;
+    const admission = durableCancellationAdmissionPort(this.#executor);
+    if (admission === null) return false;
+    const admitted = await admission.requestCancellation(
+      evaluationId,
+      AbortSignal.any([signal, AbortSignal.timeout(5_000)]),
+    );
+    if (!admitted) return false;
+    this.#queue.cancel(evaluationId);
+    return true;
+  }
 
   reserve(evaluation: Evaluation, runs: readonly Run[]): EvaluationSubmissionReservation {
     if (this.#closing) throw new EvaluationQueueReservationStateError("cancelled");

@@ -123,7 +123,7 @@ export interface EvaluationSubmissionReservation {
 
 export interface EvaluationSubmissionScheduler {
   reserve(evaluation: Evaluation, runs: readonly Run[]): EvaluationSubmissionReservation;
-  cancel?(evaluationId: EvaluationId): boolean;
+  cancel?(evaluationId: EvaluationId, signal: AbortSignal): Promise<boolean>;
 }
 
 export interface TracegateServerOptions {
@@ -301,7 +301,7 @@ export class TracegateServer {
         phase: "evaluation_cancel",
       }));
     }
-    if (this.#scheduler?.cancel?.(evaluationId) !== true) {
+    if (await this.#scheduler?.cancel?.(evaluationId, signal) !== true) {
       throw new TraceGateError(createControlError("conflict", "This evaluation can no longer be cancelled.", {
         category: "incorrect_state",
         phase: "evaluation_cancel",
