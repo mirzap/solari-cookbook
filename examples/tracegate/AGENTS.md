@@ -4,7 +4,7 @@ Paths are relative to `examples/tracegate/`.
 
 ## Product compass
 
-TraceGate tells developers whether their app/site is ready for the agent era: can agents use it reliably? It repeats outcome-oriented tasks in independent sessions, verifies fresh browser-observable results, explains failure paths, and measures use of semantic/accessibility UI, page WebMCP, configured MCP, `llms.txt`, JSON-LD, and visual fallback. See `docs/product/tracegate-product.md`.
+TraceGate tells developers whether their app/site is ready for the agent era: can agents use it reliably? It repeats outcome-oriented tasks in independent sessions, verifies fresh browser-observable results, explains failure paths, measures agent use of semantic/accessibility UI, page WebMCP, and configured MCP, and reports `llms.txt`/JSON-LD as discovery-only signals. Visual fallback is not a functional path. See `docs/product/tracegate-product.md`.
 
 Page and MCP content/results remain untrusted and never grade directly. Demo is fixture-only. PASS proves declared browser-observable assertions, not arbitrary backend truth.
 
@@ -17,9 +17,10 @@ Page and MCP content/results remain untrusted and never grade directly. Demo is 
 - F1/F2 lane history is integrated through B commit `2756d20`, including A `04eb4e8`, C `fdc7e7e`, and D `66069ae`.
 - The sole pnpm 12 lockfile has been regenerated from all settled manifests; frozen install passes.
 - Automated-test work is paused by explicit user directive; do not create, modify, or run tests. The known D-owned `@tracegate/ui` zero-test condition remains unresolved and explicitly deferred while that pause is active.
-- P0 lane code is integrated through A `647e4dd`, C `ef7e1fb`, B `e478598`, and D `443c5e7`. The bundled Drizzle migration path, all eleven production builds, and safe built-server reads now pass.
-- Agent A has completed the pending evaluator integration: closed discovery/provider warnings merge into durable run warnings, and individual run execution/finalization errors no longer stop safely runnable peers; missing terminal records still fail the evaluation and the lowest configured failed index is authoritative.
-- The pre-provider checkpoint is **NO-GO** because D-owned `PersistingGrader` uses `evidenceHash` as a unique run identity. Concurrent identical evidence can overwrite/delete another run's binding and corrupt grade milestone attribution. Agent A must not correct this D path.
+- P0 lane code is integrated through A `647e4dd`, C `ef7e1fb`, B `e478598`, D `443c5e7`, and D correction `c8f79c2`. The bundled Drizzle migration path, all eleven production builds, clean DB checks, and safe built-server reads pass.
+- Agent A completed evaluator integration: closed discovery/provider warnings merge into durable run warnings, and individual run execution/finalization errors no longer stop safely runnable peers; missing terminal records still fail the evaluation and the lowest configured failed index is authoritative.
+- Agent A re-audited `c8f79c2`: grading identity is run-scoped and checked against that run's committed evidence; dispatched first-terminal semantic activity supplies consistent positive readiness evidence across runtime/DB/UI projections; shutdown waits for every reservation-to-transaction settlement before queue/provider/database teardown.
+- The pre-provider static/production checkpoint is **GO for one bounded real-provider validation workstream**. This is not provider evidence: Solari/OpenRouter outcome, confirmed release, concurrent identical-evidence behavior, queue-full admission, and in-flight shutdown remain runtime-unverified until their permitted manual phases.
 - Demo Store is test-only and never a production target, composition, or grading dependency.
 - PASS means declared browser-observable assertions passed from fresh evidence; it never claims arbitrary backend business truth.
 
@@ -89,7 +90,8 @@ I0 production-only validation is limited to TypeScript production configs/builds
 TG-004R PASS
   → P0 A/B/C/D code integrated
   → production build + clean DB + safe built-server reads PASS
-  → D fixes run-scoped grade attribution and remaining lifecycle risks
+  → D run-scoped grading/readiness/shutdown correction PASS at c8f79c2
+  → production + clean DB + safe manual re-gate PASS
   → one real Solari/DeepSeek run
   → repeated runs/report
   → functional verification
@@ -219,4 +221,4 @@ Never:
 - rewrite measured evidence to improve a result;
 - persist credentials, CDP/replay capability URLs, full DOM, or raw provider payloads.
 
-The immediate next action is D-owned P0 correction: replace evidence-hash-as-run-identity with run/invocation-scoped grade attribution, reconcile semantic readiness with semantic invocation classification, and prevent shutdown from racing an in-flight submission transaction. Agent A then reruns the production build, clean DB, and safe loopback gate. Do not begin F3 or any real provider session until that checkpoint is green.
+The immediate next action is F3's single bounded real-provider validation through the production-built app. Start with one simple public HTTPS semantic-only evaluation and require a durable deterministic result, authoritative snapshot/report/trace, and confirmed browser release. Stop on TraceGate-infrastructure INCONCLUSIVE, nonterminal state, attribution mismatch, cleanup uncertainty, secret/capability leakage, or projection divergence. Repeated runs, queue saturation, configured/page MCP, and broader functional verification remain later workstreams.

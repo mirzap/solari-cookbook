@@ -2,7 +2,7 @@
 
 **Source of truth:** 2026-09-01
 **Product boundary:** local functional proof of concept
-**Current status:** P0 lane code is integrated through A `647e4dd`, C `ef7e1fb`, B `e478598`, and D `443c5e7`; production build and clean-DB checks pass, but the pre-provider checkpoint is blocked by a D-owned concurrent grade-attribution defect
+**Current status:** P0 lane code is integrated through A `647e4dd`, C `ef7e1fb`, B `e478598`, D `443c5e7`, and D correction `c8f79c2`; the final production/clean-DB/safe-manual gate passes and the workstream is ready to enter one bounded real-provider validation, whose outcome remains unverified
 
 ## 1. Product outcome
 
@@ -290,24 +290,22 @@ Before the integration freeze, Agent B runs one bounded real public-site safety 
 - **Agent C — AI/agent:** `packages/ai`, `packages/agent`, and model evidence. Implement the pinned DeepSeek/OpenRouter adapter, assertion-blind prompt layers, dynamic safe tools including only admitted sanitized read-only WebMCP calls, FIFO/current-revision checks, budgets, cancellation, and bounded event mapping.
 - **Agent D — data/product UI:** `packages/db`, `packages/ui`, `apps/web`, and persistence/UI evidence. Implement clean V2 migration/repositories, loopback API, snapshot/SSE, configure/live/report UI, and separate agent trace versus grading report.
 
-### F2C / P0 — Runnable readiness composition — code integrated, pre-provider gate blocked
+### F2C / P0 — Runnable readiness composition — pre-provider gate passed
 
 - **A:** shared prompt/network/completion/queue contracts landed at `647e4dd`; evaluation now merges closed discovery/provider warnings and continues safely runnable peer runs after an individual run error while selecting the lowest configured failed index deterministically.
 - **B:** browser/discovery stabilization landed at `e478598`, including shared public-network classification, assertion-only capture, policy causality, and discovery-only metadata.
 - **C:** agent/provider/configured-MCP stabilization landed at `ef7e1fb`, including explicit completion dispositions, bounded provider warnings, shared destination admission before requests, and exhaustive cleanup attempts.
-- **D:** persistence/product UI stabilization landed at `443c5e7`, including queue reservation consumption, DB packaging, API Host checks, projections, and primary product copy.
+- **D:** persistence/product UI stabilization landed at `443c5e7`; correction `c8f79c2` replaces evidence-hash identity with per-run async invocation context plus committed-evidence verification, derives semantic readiness consistently from authoritative deduplicated dispatched terminal evidence, and fences shutdown on every in-flight reservation-to-transaction settlement.
 
-Verified on 2026-09-02: frozen install, all eleven production package builds, clean temporary-DB migration/check, built-server startup, health/capabilities reads, bounded missing-evaluation response, product-shell render, and hostile-Host rejection. No automated tests or real provider sessions were run.
+Re-audited and verified on 2026-09-02: frozen install, environment parsing, all eleven production package builds, clean temporary-DB migration/check, built-server startup, health/capabilities reads, bounded missing-evaluation response, unsafe-prompt rejection with zero evaluation/run/event rows, product-shell render, and hostile-Host rejection. No automated tests or real provider sessions were run.
 
-**Blocking D-owned defect:** `PersistingGrader` binds a single `RunId` by `evidenceHash`. Concurrent independent runs may legitimately produce the same hash, causing overwrite/deletion and cross-run grade milestone attribution or grading failure. D must replace content-hash identity with a run-scoped/invocation-scoped binding before the pre-provider gate can pass. Agent A must not edit that path.
+The three former D blockers are resolved in code. Equal evidence hashes no longer carry run identity. Semantic positive readiness is derived only when the first deduplicated terminal completion proves actual dispatch through the admitted semantic tool surface, and the same rule is used by runtime finalization, DB reconstruction, and UI projection. Shutdown sets closing synchronously, rejects new reservations, waits for all already-registered submission settlements, then waits for queue idle before provider/database close.
 
-Additional D-owned integration risks remain open: semantic interface readiness can be `0/0` while `inspect`/`scroll` terminal activity is classified as semantic invocation, and shutdown can race an in-flight pre-persistence reservation. These require D ownership review. A build alone is not a provider-ready checkpoint.
+### F3 — One real run — ready to begin, outcome unverified
 
-### F3 — One real run — deferred / blocked
+Complete one simple public HTTPS semantic-only task through real Solari and the configured DeepSeek model. Require fresh evidence, deterministic grade, durable snapshot/report/trace, live UI updates, and acknowledged-session release. Stop immediately on TraceGate-infrastructure INCONCLUSIVE, nonterminal state, incorrect run attribution, cleanup uncertainty, leaked credentials/capability URLs, or projection divergence. Passing the pre-provider gate is permission to validate; it is not evidence that the provider workflow succeeds.
 
-Do not begin until the D-owned repeated-run grade-attribution blocker and other pre-provider lifecycle issues are corrected and the production gate is rerun. Then compose all four lanes and complete one public HTTPS task through real Solari and the configured DeepSeek model. Require fresh evidence, deterministic grade, durable snapshot/report, live UI updates, and acknowledged-session release.
-
-### F4 — Repeated runs/report — deferred / blocked
+### F4 — Repeated runs/report — deferred until F3 passes
 
 After F3, run a bounded repeated evaluation, verify no duplicate runs or shared session state, recalculate raw counts and denominators from persisted rows, and show truthful PASS/FAIL/INCONCLUSIVE reporting. Identical assertion-evidence hashes across runs must remain correctly attributed.
 
@@ -377,4 +375,4 @@ Paths remain exclusive:
 
 No agent edits, stages, formats, resets, or commits another lane’s WIP. Shared changes go through Agent A and require a concrete cross-lane contract reason. Only Agent A regenerates `pnpm-lock.yaml`, after manifests settle, using Node `26.1.0` and global pnpm `12.0.0`.
 
-The immediate action is a **D-owned P0 correction checkpoint**: replace evidence-hash-as-run-identity in `PersistingGrader`, reconcile semantic readiness with semantic invocation classification, and close the submission/shutdown race without weakening queue reservation ordering. Agent A then reruns the production build, clean DB, and safe loopback gate. F3 remains blocked until that checkpoint is green; no real provider validation is ready.
+The immediate action is **F3's single bounded real-provider validation** through the production-built app. It is ready to start but not yet verified. Repeated runs, queue saturation, configured/page MCP capability validation, assertion-canary inspection, restart recovery, and broader functional verification remain subsequent gates.

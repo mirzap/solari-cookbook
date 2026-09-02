@@ -51,4 +51,6 @@ Demo Store is a fixture only. Production evaluation, grading, and reporting must
 
 ## Current readiness
 
-Production package composition, clean migration/check, and safe built-server reads pass. Real Solari/OpenRouter sessions were intentionally not run in the current phase. The external validation workstream is **not ready**: concurrent runs with identical evidence hashes can currently collide in the D-owned grade-milestone binding, so F3/F4 remain blocked until that run-attribution defect and the remaining submission/readiness lifecycle risks are corrected and the production gate is rerun.
+Production package composition, frozen installation, clean migration/check, unsafe-prompt no-row rejection, Host enforcement, and safe built-server reads pass. Agent D correction `c8f79c2` removes evidence hashes as run identity, verifies grading against run-scoped committed evidence, projects semantic readiness consistently from authoritative dispatched terminal activity, and waits for in-flight submission settlement before shutdown closes runtime resources.
+
+The code is ready to enter one bounded real Solari/OpenRouter validation workstream. No provider session was run in this checkpoint, so successful browser acquisition, deterministic outcome, confirmed release, provider metadata/usage, and report/trace behavior remain unverified. Repeated-run identical-evidence attribution, queue saturation, in-flight submission shutdown, page/configured MCP invocation, and restart/reconnect behavior remain later manual validation conditions—not completed product claims.

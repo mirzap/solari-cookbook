@@ -114,32 +114,85 @@ All successful runtime commands used the installed mise toolchain; Corepack was 
 
 Queue-full behavior was not exercised because safely occupying the queue would require evaluation submissions that could start real provider work. Its no-row/no-event guarantee is static-review-only at this checkpoint.
 
-## Blocking D-owned findings
+## Agent D correction re-audit — `c8f79c2`
 
-### Pre-provider blocker
+Agent A reviewed commit `c8f79c29aa03f2c57ae00338fa38f749c1df4582` without modifying its four D-owned files.
 
-`apps/web/src/server/functional-runtime.ts` binds `PersistingGrader` state as one `Map<evidenceHash, RunId>`. Independent concurrent runs can legitimately produce identical evidence hashes. A later bind can overwrite the first run, the first grade can emit under the wrong run and delete the shared binding, and the other grade can then fail as unbound. This violates independent-run attribution and blocks repeated-run/provider validation.
+### Run-scoped grading identity — resolved
 
-Required D correction: use run-scoped or exact-invocation/object-scoped grade binding. Do not make evidence hashes run-specific; identical evidence should remain identical content evidence.
+- `FunctionalTracegateRuntime` creates an `AsyncLocalStorage<RunId>` context around each `runExecutor.execute(...)` invocation.
+- Assertion capture requires the async run ID to match the controller's registered run ID before evidence persistence.
+- `PersistingGrader` no longer stores `evidenceHash → RunId`. It obtains the active run ID from the invocation context, reloads committed evidence by that run ID, and requires the canonical persisted evidence to match the grading input.
+- Equal evidence hashes therefore remain equal content evidence and cannot overwrite or consume another concurrent run's grading binding.
 
-### Additional D-owned lifecycle risks
+This is statically and production-build verified. Concurrent equal-hash provider executions remain a later F4 runtime observation, not a current provider claim.
 
-- Semantic readiness is derived from retained semantic control count, while terminal `inspect`/`scroll` activity can be classified as `semantic_ui`; a `0/0` readiness tuple plus invocation can fail the interface-usage invariant.
-- Shutdown cancels uncommitted reservations and may consider the queue idle while `transactionallyCreateSubmission` is still in flight, allowing database close or a cancelled reservation to race a just-committed durable submission.
+### Semantic evidence projection — resolved
 
-These paths were reviewed but not edited because they are D-owned.
+- `PersistingAgentRunner` deduplicates the first `run.tool.completed` event per tool call and uses `toolCompletionInterfaceUsageDelta(...)`; starts, names, summaries, durations, and arbitrary text do not establish invocation.
+- A dispatched semantic terminal completion is positive evidence that the proposal passed refreshed surface, schema/revision, and policy checks and entered the admitted semantic tool port. It therefore supports binary semantic `discovered/admitted = 1/1`, independent of whether the terminal call succeeded or failed.
+- The same evidence rule is applied in runtime finalization, DB snapshot reconstruction, and UI/report projection. Explicit persisted invocation remains the fallback only when that channel has no terminal tool trace.
+
+This resolves the former `0/0` semantic readiness plus invocation schema failure without turning tool activity into task or grade success. Real provider-generated terminal projection remains unverified until F3/F4.
+
+### Submission shutdown settlement fence — resolved
+
+- Every successful queue reservation registers a settlement promise before returning to `TracegateServer`.
+- `commit()` and `release()` settle the promise exactly once through a shared guarded closure.
+- Shutdown sets `#closing` synchronously, preventing later reservations; cancels the current queue snapshot; waits for all already-registered reservation-to-transaction settlements; then waits for queue idle before closing the provider and database.
+- A transaction already in flight can finish while the database remains open. If shutdown won the race, the reservation is released and any durably queued evaluation remains recoverable instead of starting against closing resources.
+
+This is statically and production-build verified. A shutdown during a deliberately delayed live submission was not exercised because tests and provider-triggering submissions are forbidden in this phase.
+
+## Final production-only re-gate
+
+Commands:
+
+```bash
+cd examples/tracegate
+mise exec -- node --version
+mise exec -- pnpm --version
+mise exec -- pnpm install --frozen-lockfile
+mise exec -- pnpm env:check
+mise exec -- pnpm build
+DATABASE_URL=file:/tmp/tracegate-agent-a-dreaudit-20260902.db mise exec -- pnpm db:migrate
+DATABASE_URL=file:/tmp/tracegate-agent-a-dreaudit-20260902.db mise exec -- pnpm db:check
+DATABASE_URL=file:/tmp/tracegate-agent-a-dreaudit-server-20260902.db TRACEGATE_PORT=3104 mise exec -- pnpm start
+```
+
+Observed:
+
+- Node `v26.1.0`, pnpm `12.0.0`;
+- frozen install passed its 294-entry supply-chain policy check and reported the lockfile current;
+- environment parsing passed with loopback binding and configured credentials without disclosing them;
+- all 11 production packages built successfully; `@tracegate/e2e` was excluded;
+- fresh migration `0000` and Drizzle `db:check` passed;
+- built server started on `127.0.0.1:3104`;
+- health returned `200 degraded`, with DB/WebMCP `ok` and model/Solari honestly `degraded` because no live provider usage occurred;
+- capabilities returned `200`, database verified and model/Solari pending;
+- missing evaluation read returned bounded `404 not_found`;
+- prohibited purchase prompt returned `400 unsafe_prompt_rejected`;
+- hostile Host returned `403`;
+- product shell returned `200` with 7,082 bytes;
+- SQLite counts remained `0|0|0` for evaluations/runs/events after the rejected prompt;
+- Ctrl-C stopped the foreground preview and produced the wrapper's expected interruption exit.
+
+No automated tests, test files, provider sessions, or D-owned edits were involved. `pnpm-lock.yaml` did not change.
+
+Queue-full behavior was not exercised because occupying the queue could start provider work. Its reservation-before-persistence behavior remains static-review-only for this checkpoint.
 
 ## Checkpoint decision and residual gaps
 
-**Decision: pre-provider NO-GO.** Production compilation, DB packaging, prompt rejection, and safe loopback reads are green, but the D-owned grade-attribution defect must be corrected before a real provider validation workstream is ready.
+**Decision: pre-provider GO for one bounded F3 validation.** The former three D blockers are genuinely resolved, the final production graph and clean DB gate pass, and no new P0 blocker was found. This decision authorizes the real-provider validation workstream; it does not claim that workstream succeeds.
 
-Deferred or unverified:
+Still unverified or deferred:
 
-- real Solari/OpenRouter run and confirmed release;
+- one real Solari/OpenRouter run, deterministic terminal outcome, authoritative snapshot/report/trace, and confirmed release;
+- concurrent equal-evidence run attribution and repeated-run aggregate reconstruction;
+- queue-full runtime rejection without rows/events;
+- shutdown while a submission transaction is actually in flight;
 - page WebMCP invocation against a real or explicitly labeled capability fixture;
 - configured-MCP invocation/cleanup and public-HTTPS limitation validation;
-- queue-full runtime rejection without rows/events;
-- repeated independent sessions and aggregate/report reconstruction;
 - assertion canary non-flow inspection;
 - cancellation, reconnect/gap recovery, and restart recovery;
 - recording/replay, optional models, and visual fallback remain unavailable or outside current claims;
