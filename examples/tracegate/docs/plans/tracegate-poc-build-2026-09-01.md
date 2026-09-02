@@ -2,7 +2,7 @@
 
 **Source of truth:** 2026-09-01
 **Product boundary:** local functional proof of concept
-**Current status:** P0 lane code is integrated through A `647e4dd`, C `ef7e1fb`, B `e478598`, D `443c5e7`, and D correction `c8f79c2`; the final production/clean-DB/safe-manual gate and F3's real Solari/DeepSeek API/SSE/DB run pass, while browser-observed live UI projection remains required before the full F3 milestone can close or F4 can start
+**Current status:** P0 lane code is integrated through A `647e4dd`, C `ef7e1fb`, B `e478598`, D `443c5e7`, and D correction `c8f79c2`; production/clean-DB gates, F3's single provider run, and the explicitly authorized F4 three-run provider/API/SSE/DB gate pass, while browser-hydrated live UI projection and broader F5 verification remain open
 
 ## 1. Product outcome
 
@@ -297,7 +297,7 @@ Before the integration freeze, Agent B runs one bounded real public-site safety 
 - **C:** agent/provider/configured-MCP stabilization landed at `ef7e1fb`, including explicit completion dispositions, bounded provider warnings, shared destination admission before requests, and exhaustive cleanup attempts.
 - **D:** persistence/product UI stabilization landed at `443c5e7`; correction `c8f79c2` replaces evidence-hash identity with per-run async invocation context plus committed-evidence verification, derives semantic readiness consistently from authoritative deduplicated dispatched terminal evidence, and fences shutdown on every in-flight reservation-to-transaction settlement.
 
-Re-audited and verified on 2026-09-02: frozen install, environment parsing, all eleven production package builds, clean temporary-DB migration/check, built-server startup, health/capabilities reads, bounded missing-evaluation response, unsafe-prompt rejection with zero evaluation/run/event rows, product-shell render, and hostile-Host rejection. No automated tests or real provider sessions were run.
+Re-audited and verified on 2026-09-02: frozen install, environment parsing, all eleven production package builds, clean temporary-DB migration/check, built-server startup, health/capabilities reads, bounded missing-evaluation response, unsafe-prompt rejection with zero evaluation/run/event rows, product-shell render, and hostile-Host rejection. At that pre-provider checkpoint, no automated tests or real provider sessions were run.
 
 The three former D blockers are resolved in code. Equal evidence hashes no longer carry run identity. Semantic positive readiness is derived only when the first deduplicated terminal completion proves actual dispatch through the admitted semantic tool surface, and the same rule is used by runtime finalization, DB reconstruction, and UI projection. Shutdown sets closing synchronously, rejects new reservations, waits for all already-registered submission settlements, then waits for queue idle before provider/database close.
 
@@ -307,9 +307,13 @@ One semantic-only evaluation was submitted through the production-built API agai
 
 The run directly observed API, SSE transport, and DB state. It did not place a browser UI on the evaluation page during the run. A later read-only terminal route GET returned HTTP 200 with the expected client-loading shell but cannot prove live client consumption or hydrated terminal projection. The original F3 live-UI criterion therefore remains open. This is a one-run provider-path validation, not a reliability-rate claim. Page/configured MCP, recording/replay, optional models, queue saturation, reconnect/restart, and provider-grade egress hardening remain unverified or deferred.
 
-### F4 — Repeated runs/report — blocked on F3 live UI gate
+### F4 — Repeated runs/report — provider/API/SSE/DB gate passed 2026-09-02
 
-After browser-observed live UI consumption and hydrated terminal projection agree with the authoritative API/SSE/DB result, run a separately authorized bounded three-run evaluation. Verify three provider-confirmed independent sessions with no duplicate runs or shared session state, recalculate raw counts and denominators from persisted rows, and show truthful PASS/FAIL/INCONCLUSIVE reporting. Identical assertion-evidence hashes across runs must remain correctly attributed. Track rather than suppress the non-fatal passive-policy warning observed in the F3 provider run.
+Under direct authorization, one evaluation requested three runs at concurrency three against the same external Talon task/assertion. All three started within 1 ms, acquired distinct acknowledged Solari sessions, completed `passed`, and reached provider-confirmed release. Durations were 42,316/39,829/42,327 ms; each run used three model iterations, three successful dispatched tools, two browser actions, fresh two-attempt evidence with zero unverifiable assertions, and preserved one non-fatal `passive_policy_blocked` warning. Aggregate requested/started/passed was `3/3/3`; failed, inconclusive, cancelled, nonterminal, and potential leaks were zero; both declared denominators were `3/3`.
+
+All three captures shared exactly one evidence hash. The DB nevertheless contained three distinct run-bound evidence rows and three distinct run-bound grade rows; for every configured run index, run/evidence/grade hashes agreed and the URL/query assertion passed. This real concurrent observation validates `c8f79c2`'s run-scoped identical-evidence correction. Three distinct provider sessions and three create attempts were confirmed released, with zero unresolved sessions/attempts after shutdown. Live SSE covered cursors 17–95 and authoritative JSON history covered all contiguous cursors 1–95. See `docs/evidence/f4-repeated-run-talon-2026-09-02.md`.
+
+F4 does not claim general reliability beyond these three observations and does not validate browser-hydrated UI, replay, page/configured MCP, visual fallback, optional models, cancellation, reconnect/restart, or queue saturation.
 
 ### F5 — Functional verification — deferred
 
@@ -331,7 +335,7 @@ DATABASE_URL=file:/tmp/tracegate-p0-server.db mise exec -- pnpm start
 
 Package `typecheck` scripts currently include paused automated-test sources in some workspaces, so they are not checkpoint evidence while the test prohibition is active. Production `build` configurations are the compile authority for this phase. Do not run `db:generate` unless an intentional schema change requires it.
 
-Manual inspection verified a clean DB, health/capabilities/snapshot/report/trace/events/SSE behavior, real semantic interface selection and usage metrics, fresh deterministic grading, and one credentialed Solari/DeepSeek run with confirmed cleanup. The earliest six events preceded the evaluation-specific SSE subscription and were recovered through the authoritative JSON history endpoint. The terminal UI route returned its client-loading shell, but browser-hydrated live update/final projection was not observed and remains the last F3 criterion. No fixture output or hard-coded result satisfied the provider subgate.
+Manual inspection verified clean DBs, health/capabilities/snapshot/report/trace/events/SSE behavior, real semantic interface selection and usage metrics, fresh deterministic grading, one single-run and one three-concurrent-run credentialed Solari/DeepSeek evaluation, identical-evidence run attribution, aggregate denominators, and confirmed cleanup. Evaluation-specific SSE subscriptions necessarily began after their POST responses; complete cursor histories were recovered through the authoritative JSON endpoint. The terminal UI route returned its client-loading shell, but browser-hydrated live update/final projection was not observed. No fixture output or hard-coded result satisfied either provider gate.
 
 Review focus:
 
@@ -377,4 +381,4 @@ Paths remain exclusive:
 
 No agent edits, stages, formats, resets, or commits another lane’s WIP. Shared changes go through Agent A and require a concrete cross-lane contract reason. Only Agent A regenerates `pnpm-lock.yaml`, after manifests settle, using Node `26.1.0` and global pnpm `12.0.0`.
 
-The immediate next action is a **browser-observed UI projection gate during a separately authorized live evaluation**: verify live SSE consumption plus hydrated warning, trace, semantic-readiness, deterministic-grade, and cleanup projection against authoritative API/DB state. Only after that closes F3 may F4's separately authorized bounded three-run validation begin. Queue saturation, configured/page MCP capability validation, assertion-canary inspection, restart/reconnect recovery, and broader functional verification remain subsequent gates.
+The immediate next action is the remaining **browser-observed UI projection/F5 gate during a separately authorized live evaluation**: verify hydrated live SSE consumption plus warning, trace, semantic-readiness, deterministic-grade, aggregate, and cleanup projection against authoritative API/DB state. Queue saturation, configured/page MCP capability validation, assertion-canary inspection, restart/reconnect recovery, and broader functional verification remain subsequent gates.
