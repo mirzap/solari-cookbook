@@ -126,21 +126,22 @@ export function projectInterfaceUsageMetrics(
 
     for (const run of runs) {
       const explicit = run.interfaceUsage?.metrics.find((candidate) => candidate.channel === channel);
-      const readiness = explicit === undefined
+      const projectedReadiness = explicit === undefined
         ? readinessFromDiscovery(latestDiscoveryByRun.get(run.id), channel)
         : { discovered: binary(explicit.discovered), admitted: binary(explicit.admitted) };
-      discovered += readiness.discovered;
-      admitted += readiness.admitted;
 
       const key = runChannelKey(run.id, channel);
       const terminal = terminalByRunChannel.get(key) ?? { invoked: 0, succeeded: 0, failed: 0, durationMs: 0 };
+      let authoritativeInvocations = 0;
       if (tracedRunChannels.has(key)) {
+        authoritativeInvocations = terminal.invoked;
         invoked += terminal.invoked;
         succeeded += terminal.succeeded;
         failed += terminal.failed;
         durationMs += terminal.durationMs;
         if (terminal.invoked > 0) usedRunIds.add(run.id);
       } else if (explicit !== undefined) {
+        authoritativeInvocations = explicit.invoked;
         invoked += explicit.invoked;
         succeeded += explicit.succeeded;
         failed += explicit.failed;
@@ -149,6 +150,10 @@ export function projectInterfaceUsageMetrics(
           hasDurationlessFallback = true;
         }
       }
+
+      const semanticInvocationObserved = channel === "semantic_ui" && authoritativeInvocations > 0;
+      discovered += semanticInvocationObserved ? 1 : projectedReadiness.discovered;
+      admitted += semanticInvocationObserved ? 1 : projectedReadiness.admitted;
     }
 
     return {

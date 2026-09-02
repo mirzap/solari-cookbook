@@ -267,10 +267,11 @@ export class TracegateServer {
       reservation?.release();
       throw error;
     }
-    this.#publishPersisted(persisted.queuedEvents);
     try {
+      this.#publishPersisted(persisted.queuedEvents);
       reservation?.commit();
     } catch (error) {
+      reservation?.release();
       throw schedulerConflict(error) ?? error;
     }
     return CreateEvaluationResponseSchema.parse({

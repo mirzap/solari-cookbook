@@ -249,12 +249,16 @@ function projectInterfaceUsage(
           succeeded: persisted?.succeeded ?? 0,
           failed: persisted?.failed ?? 0,
         };
-      const readiness = persisted === undefined
+      const projectedReadiness = persisted === undefined
         ? discoveryReadiness(latestDiscovery, channel)
         : {
           discovered: persisted.discovered > 0 ? 1 : 0,
           admitted: persisted.admitted > 0 ? 1 : 0,
         };
+      const semanticInvocationObserved = channel === "semantic_ui" && usage.invoked > 0;
+      const readiness = semanticInvocationObserved
+        ? { discovered: 1, admitted: 1 }
+        : projectedReadiness;
       return { channel, ...readiness, ...usage };
     }),
   });

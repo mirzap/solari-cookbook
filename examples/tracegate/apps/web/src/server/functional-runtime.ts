@@ -1,6 +1,7 @@
 import { AgentPolicy, TraceGateAgentRunner, createConfiguredMcpClient, type AgentMilestone } from "@tracegate/agent";
 import { createDeepSeekOpenRouterDriverFactory } from "@tracegate/ai";
 import { createTracegateRepositories, type TracegateDatabase, type TracegateRepositories } from "@tracegate/db";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { PracticalTargetAdmission, TraceGateDiscoveryController, type BrowserDiscoverySource } from "@tracegate/discovery";
 import {
   EvaluationQueueReservationStateError,
@@ -833,10 +834,11 @@ class PersistingAgentRunner implements AgentRunner {
     const metrics: InterfaceUsageMetric[] = channels.map((channel) => {
       const available = readiness.get(channel) ?? { discovered: 0, admitted: 0 };
       const used = activity.get(channel) ?? { invoked: 0, succeeded: 0, failed: 0 };
+      const semanticInvocationObserved = channel === "semantic_ui" && used.invoked > 0;
       return {
         channel,
-        discovered: available.discovered,
-        admitted: available.admitted,
+        discovered: semanticInvocationObserved ? 1 : available.discovered,
+        admitted: semanticInvocationObserved ? 1 : available.admitted,
         invoked: used.invoked,
         succeeded: used.succeeded,
         failed: used.failed,
@@ -854,13 +856,18 @@ class PersistingEvidenceCapture implements AssertionEvidenceCapture {
   constructor(
     private readonly database: TracegateDatabase,
     private readonly registry: RunRuntimeRegistry,
+    private readonly runContext: AsyncLocalStorage<RunId>,
     private readonly server: TracegateServer,
     private readonly ids: UuidV7Generator,
     private readonly clock: Clock,
   ) {}
 
   async capture(controller: BrowserController, input: AssertionCaptureInput, signal: AbortSignal): Promise<AssertionCaptureResult> {
-    const runId = this.registry.requireRunId(controller, this.registry.controllerRunIds, "Browser controller");
+    const controllerRunId = this.registry.requireRunId(controller, this.registry.controllerRunIds, "Browser controller");
+    const runId = this.runContext.getStore();
+    if (runId === undefined || runId !== controllerRunId) {
+      throw new Error("Assertion capture is not bound to the active run invocation");
+    }
     await appendRunStep(this.server, this.registry, this.ids, this.clock, runId, { type: "run.evidence.capture_started", payload: { attempt: 1 } }, { kind: "grading", interactionMode: "system", observationRevision: null, durationMs: null }, signal);
     const started = performance.now();
     const captured = await this.#inner.capture(controller, input, signal);
@@ -878,39 +885,28 @@ class PersistingEvidenceCapture implements AssertionEvidenceCapture {
 }
 
 class PersistingGrader implements Grader {
-  readonly #runByEvidenceHash = new Map<string, RunId>();
   constructor(
     private readonly inner: Grader,
+    private readonly database: TracegateDatabase,
     private readonly registry: RunRuntimeRegistry,
+    private readonly runContext: AsyncLocalStorage<RunId>,
     private readonly server: TracegateServer,
     private readonly ids: UuidV7Generator,
     private readonly clock: Clock,
   ) {}
 
-  bind(runId: RunId, evidenceHash: string): void { this.#runByEvidenceHash.set(evidenceHash, runId); }
-
   async grade(input: GradeInputV2, signal: AbortSignal): Promise<GradeResultV2> {
-    const runId = this.#runByEvidenceHash.get(input.evidence.evidenceHash);
-    if (runId === undefined) throw new Error("Committed evidence is not bound to the active run");
+    const runId = this.runContext.getStore();
+    if (runId === undefined) throw new Error("Grading is not bound to the active run invocation");
+    const committedEvidence = await this.database.getAssertionEvidence(runId, signal);
+    if (committedEvidence === null || JSON.stringify(committedEvidence) !== JSON.stringify(input.evidence)) {
+      throw new Error("Grading input does not match the active run's committed canonical evidence");
+    }
     await appendRunStep(this.server, this.registry, this.ids, this.clock, runId, { type: "run.grade.started", payload: { evidenceHash: input.evidence.evidenceHash } }, { kind: "grading", interactionMode: "system", observationRevision: null, durationMs: null }, signal);
     const started = performance.now();
-    try {
-      const grade = await this.inner.grade(input, signal);
-      await appendRunStep(this.server, this.registry, this.ids, this.clock, runId, { type: "run.grade.completed", payload: grade }, { kind: "grading", interactionMode: "system", observationRevision: null, durationMs: Math.max(0, Math.floor(performance.now() - started)) }, signal);
-      return grade;
-    } finally {
-      this.#runByEvidenceHash.delete(input.evidence.evidenceHash);
-    }
-  }
-}
-
-class BindingEvidenceCapture implements AssertionEvidenceCapture {
-  constructor(private readonly inner: PersistingEvidenceCapture, private readonly grader: PersistingGrader, private readonly registry: RunRuntimeRegistry) {}
-  async capture(controller: BrowserController, input: AssertionCaptureInput, signal: AbortSignal): Promise<AssertionCaptureResult> {
-    const captured = await this.inner.capture(controller, input, signal);
-    const runId = this.registry.requireRunId(controller, this.registry.controllerRunIds, "Browser controller");
-    this.grader.bind(runId, captured.evidence.evidenceHash);
-    return captured;
+    const grade = await this.inner.grade(input, signal);
+    await appendRunStep(this.server, this.registry, this.ids, this.clock, runId, { type: "run.grade.completed", payload: grade }, { kind: "grading", interactionMode: "system", observationRevision: null, durationMs: Math.max(0, Math.floor(performance.now() - started)) }, signal);
+    return grade;
   }
 }
 
@@ -929,6 +925,8 @@ export class FunctionalTracegateRuntime {
   readonly #server: TracegateServer;
   readonly #clock: Clock;
   readonly #ids: UuidV7Generator;
+  readonly #runContext = new AsyncLocalStorage<RunId>();
+  readonly #inFlightSubmissions = new Set<Promise<void>>();
   #closing = false;
 
   constructor(database: TracegateDatabase, options: FunctionalRuntimeOptions, serverFactory: (scheduler: EvaluationSubmissionScheduler) => TracegateServer) {
@@ -940,8 +938,8 @@ export class FunctionalTracegateRuntime {
     this.#server = serverFactory({ reserve: (evaluation, runs) => this.reserve(evaluation, runs) });
     this.#evaluations = publishingEvaluationRepository(repositories.evaluations, this.#server, this.#ids, this.#clock);
     const webMcp = new SolariWebMcpReadOnlyAdapter();
-    const grader = new PersistingGrader(new DeterministicObservableGrader(this.#clock), this.#registry, this.#server, this.#ids, this.#clock);
-    const capture = new BindingEvidenceCapture(new PersistingEvidenceCapture(database, this.#registry, this.#server, this.#ids, this.#clock), grader, this.#registry);
+    const grader = new PersistingGrader(new DeterministicObservableGrader(this.#clock), database, this.#registry, this.#runContext, this.#server, this.#ids, this.#clock);
+    const capture = new PersistingEvidenceCapture(database, this.#registry, this.#runContext, this.#server, this.#ids, this.#clock);
     const runExecutor = new FunctionalRunExecutor({
       admission: new PracticalTargetAdmission(),
       browserProvider: new InstrumentedBrowserProvider(this.#provider, repositories.providerCreateAttempts, repositories.capabilities, this.#server, this.#registry, this.#ids, this.#clock),
@@ -958,7 +956,17 @@ export class FunctionalTracegateRuntime {
       ids: this.#ids,
       clock: this.#clock,
     });
-    this.#executor = new FunctionalEvaluationExecutor({ evaluations: this.#evaluations, runExecutor, capacity, clock: this.#clock });
+    this.#executor = new FunctionalEvaluationExecutor({
+      evaluations: this.#evaluations,
+      runExecutor: {
+        execute: (run, config, signal) => this.#runContext.run(
+          run.id,
+          () => runExecutor.execute(run, config, signal),
+        ),
+      },
+      capacity,
+      clock: this.#clock,
+    });
   }
 
   get server(): TracegateServer { return this.#server; }
@@ -973,25 +981,43 @@ export class FunctionalTracegateRuntime {
       }
     });
     let committed = false;
+    let submissionSettled = false;
+    let settleSubmission!: () => void;
+    const submission = new Promise<void>((resolve) => { settleSubmission = resolve; });
+    const finishSubmission = (): void => {
+      if (submissionSettled) return;
+      submissionSettled = true;
+      this.#inFlightSubmissions.delete(submission);
+      settleSubmission();
+    };
+    this.#inFlightSubmissions.add(submission);
 
     return {
       commit: () => {
-        if (this.#closing) {
-          queueReservation.release();
-          return;
-        }
-        this.#registry.register(evaluation, runs);
         try {
-          const job = queueReservation.commit();
-          committed = true;
-          void job.catch((error: unknown) => this.#failScheduledEvaluation(evaluation.id, error));
-        } catch (error) {
-          this.#registry.unregister(runs);
-          throw error;
+          if (this.#closing) {
+            queueReservation.release();
+            return;
+          }
+          this.#registry.register(evaluation, runs);
+          try {
+            const job = queueReservation.commit();
+            committed = true;
+            void job.catch((error: unknown) => this.#failScheduledEvaluation(evaluation.id, error));
+          } catch (error) {
+            this.#registry.unregister(runs);
+            throw error;
+          }
+        } finally {
+          finishSubmission();
         }
       },
       release: () => {
-        if (!committed) queueReservation.release();
+        try {
+          if (!committed) queueReservation.release();
+        } finally {
+          finishSubmission();
+        }
       },
     };
   }
@@ -1019,6 +1045,7 @@ export class FunctionalTracegateRuntime {
     if (state.activeEvaluationId !== null) this.#queue.cancel(state.activeEvaluationId);
     for (const id of state.pendingEvaluationIds) this.#queue.cancel(id);
     for (const id of state.reservedEvaluationIds) this.#queue.cancel(id);
+    await Promise.allSettled([...this.#inFlightSubmissions]);
     await this.#queue.idle();
     await this.#provider.close();
     await this.#server.database.close();
